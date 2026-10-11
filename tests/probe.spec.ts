@@ -269,7 +269,9 @@ describe('probeModel', () => {
   })
 
   it('passes the input-token option through to the client', async () => {
-    const probeChat = vi.fn(async () => ({ ok: true, status: 200, retryAfter: null }))
+    const probeChat = vi.fn<NonNullable<QoderProbeClient['probeChat']>>(
+      async () => ({ ok: true, status: 200, retryAfter: null }),
+    )
     await probeModel({
       client: client({ probeChat }),
       credential: { pat: 'pt-x', accountName: 'A' },
