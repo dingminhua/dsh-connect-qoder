@@ -39,6 +39,8 @@
   "files": [
     "lib",
     "icons",
+    "docs/assets",
+    "screenshots.json",
     "cordis.patch.yml",
     "README.md",
     "README.en.md",
@@ -51,7 +53,9 @@
     "build": "tsdown",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.client.json",
-    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build",
+    "probe:cosy": "node scripts/probe-cosy.mjs",
+    "probe:vault": "node scripts/dump-vault.mjs"
   },
   "dsh": {
     "bundle": {
