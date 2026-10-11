@@ -62,6 +62,7 @@ import { QODER_PAT_ENV_VARS } from '../credentials.ts'
 import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
 import { QODER_CARD_CSS } from './styles.ts'
+import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
 import type { Translate } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -159,6 +160,23 @@ function bucketLabel(t: Translate, packageName: string): string {
   }
 }
 
+/**
+ * 某个模型图片开关的说明文字。
+ *
+ * 复选框只对**厂商文档确认原生 multimodal** 的模型默认勾选，所以另外两种
+ * 结果必须说清「为什么没勾」——否则一个文档上纯文本的模型和一个未核实的
+ * 模型，在已经勾选的兄弟旁边看起来是一样地「坏了」。三种状态各给一句不同
+ * 的 tooltip，或直接不显示开关（`router`/`unknown` 的模型该不该勾没有依据，
+ * 但用户仍可手动勾）。
+ */
+function imageCheckboxHint(modelKey: string, t: Translate): string {
+  switch (nativeModalityOf(modelKey)) {
+    case 'multimodal': return t('row.modelImage')
+    case 'text': return t('row.modelImageText')
+    default: return t('row.modelImageUnverified')
+  }
+}
+
 export function QoderCard(props: QoderCardProps): ReactElement {
   const { view } = props
   // The injected `t` is always present in real wiring; fall back to the key when
@@ -244,7 +262,10 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const draft: QoderDraft = drafts[activeRegion] ?? {
     enabledModelKeys: new Set(enabledModelKeys),
     offModelKeys: new Set(offModelKeys),
-    supportsImages: new Set(cartesianModels.filter(m => m.supportsImages === true).map(m => m.key)),
+    // 图片开关的默认值来自**已核对的原生模态表**，不是平台的 `is_vl` 标记：
+    // 后者在本插件的目录里几乎对每个模型都是 true（含纯文本模型），拿它当
+    // 能力答案会在纯文本模型上默认开出图片输入。见 src/native-modality.ts。
+    supportsImages: new Set(cartesianModels.filter(m => imageDefaultFor({ id: m.key, ...(m.supportsImages === undefined ? {} : { supportsImages: m.supportsImages }) })).map(m => m.key)),
     contextBudgets: { ...savedBudgets },
   }
 
@@ -665,7 +686,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                     </span>
                   </label>
                   {model.supportsImages !== undefined ? (
-                    <label className="dsm-qoder-model-image" title={t('row.modelImage')}>
+                    <label className="dsm-qoder-model-image" title={imageCheckboxHint(model.key, t)}>
                       <input
                         type="checkbox"
                         checked={draft.supportsImages.has(model.key)}
