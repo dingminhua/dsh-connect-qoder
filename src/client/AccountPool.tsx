@@ -38,9 +38,17 @@ import { exclusionText } from './exclusion-text.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
 import { inlineProbeReason } from './probe-reason.ts'
+import { probeLabelOf } from './probe-label.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
 import { remainingText } from './remaining.ts'
+
+/** 池日志行的时间戳：只要时钟（日志是「刚刚/刚才」的语境，不需要日期）。 */
+function formatClock(atMs: number): string {
+  const d = new Date(atMs)
+  const pad = (n: number): string => String(n).padStart(2, '0')
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
+}
 import {
   draftBaseFor,
   effectiveMemberIds,
@@ -79,52 +87,6 @@ export interface AccountPoolProps {
   canWrite: boolean
   /** Force the card to re-read its usage snapshot after a Host-side action. */
   onChanged?: (() => void | Promise<unknown>) | undefined
-}
-
-function formatClock(atMs: number): string {
-  const d = new Date(atMs)
-  const pad = (n: number): string => String(n).padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
-}
-
-/**
- * The subset of a probe result the pool table renders (the pool account's own
- * `probe` omits `modelId`, so accept a structural union that covers both).
- */
-interface PoolProbeLike {
-  outcome: QoderWebProbeOutcome
-  retryAtMs?: number | undefined
-  elapsedMs?: number | undefined
-  status?: number | undefined
-  atMs?: number | undefined
-  source?: string | undefined
-  message?: string | undefined
-}
-
-/** The probe result label for one pool row. */
-function probeLabelOf(t: Translate, result: PoolProbeLike | undefined, nowMs: number): string {
-  if (result === undefined) return t('row.poolNeverTested')
-  if (result.retryAtMs !== undefined && (result.outcome === 'rate-limited' || result.outcome === 'out-of-credit')) {
-    const base = result.outcome === 'rate-limited'
-      ? t('row.probeRateLimitedAt', { at: formatClock(result.retryAtMs) })
-      : t('row.probeOutOfCreditAt', { at: formatClock(result.retryAtMs) })
-    const rel = remainingText(t, result.retryAtMs, nowMs)
-    return rel === '' ? base : `${base} ${rel}`.trim()
-  }
-  switch (result.outcome) {
-    case 'ok': return result.elapsedMs === undefined
-      ? t('row.probeOk')
-      : t('row.probeOkMs', { ms: String(result.elapsedMs) })
-    case 'rate-limited': return t('row.probeRateLimitedUnknown')
-    case 'out-of-credit': return t('row.probeOutOfCreditUnknown')
-    case 'credential-rejected': return t('row.probeCredentialRejected')
-    case 'policy-rejected': return t('row.probePolicyRejected')
-    case 'not-found': return t('row.probeNotFound')
-    case 'unavailable': return t('row.probeUnavailable')
-    case 'failed': return result.status === undefined
-      ? t('row.probeFailed')
-      : t('row.probeFailedStatus', { status: String(result.status) })
-  }
 }
 
 export function AccountPool(props: AccountPoolProps): ReactNode {

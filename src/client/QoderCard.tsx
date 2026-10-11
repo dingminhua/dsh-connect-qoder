@@ -58,7 +58,7 @@ import { AccountPool } from './AccountPool.tsx'
 import { AddAccount } from './AddAccount.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
 import { inlineProbeReason } from './probe-reason.ts'
-import { remainingText } from './remaining.ts'
+import { probeResultView } from './probe-label.ts'
 import { QODER_PAT_ENV_VARS } from '../credentials.ts'
 import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
@@ -130,66 +130,11 @@ function dotStyle(status: QoderWebUsage['status']): Record<string, string> {
 }
 
 /**
- * 「何时恢复」的相对说法后缀（` · 约 1 小时后`）。
+ * 积分桶的名称标签（base / addon / org）。
  *
- * 绝对时刻回答「几点」，相对时长回答「等多久」——后者才是用户真正要问的，
- * 且两者都由上游给出的**同一个**时刻推导，永远不会互相矛盾。上游若没给时刻
- * （`retryAtMs === undefined`），这里返回空串，绝不凭空造一个倒计时。
+ * 桶键由宿主给出（`packageName`），文案由卡片本地化——两者解耦，宿主的
+ * DTO 因此不需要携带任何人类可读文案。
  */
-function retrySuffix(t: Translate, untilMs: number | undefined, nowMs: number): string {
-  if (untilMs === undefined) return ''
-  const remaining = remainingText(t, untilMs, nowMs)
-  return remaining === '' ? '' : ` · ${remaining}`
-}
-
-/**
- * 一条探针结果在模型行里显示的文字与色调。
- *
- * 与 workbuddy 的 `probeResultView` 同构：`ok` 显示真实耗时（秒），限流/额度
- * 不足显示上游**明确给出的**恢复时刻（并附相对时长），没有给出时刻就明说
- * 「上游没给时间」，而不是编一个。未取到 `status` 的失败只说「失败」。
- */
-function probeResultView(
-  result: QoderWebProbeResult,
-  t: Translate,
-  nowMs: number = Date.now(),
-): { text: string, tone: 'ok' | 'warn' | 'bad' } {
-  switch (result.outcome) {
-    case 'ok': {
-      const elapsed = result.elapsedMs === undefined ? undefined : `${String(result.elapsedMs / 1000)}s`
-      return { text: elapsed === undefined ? t('row.probeOk') : t('row.probeOkMs', { ms: elapsed }), tone: 'ok' }
-    }
-    case 'rate-limited':
-      return {
-        text: result.retryAtMs === undefined
-          ? t('row.probeRateLimitedUnknown')
-          : t('row.probeRateLimitedAt', { at: formatDate(result.retryAtMs) })
-            + retrySuffix(t, result.retryAtMs, nowMs),
-        tone: 'warn',
-      }
-    case 'out-of-credit':
-      return {
-        text: result.retryAtMs === undefined
-          ? t('row.probeOutOfCreditUnknown')
-          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) })
-            + retrySuffix(t, result.retryAtMs, nowMs),
-        tone: 'bad',
-      }
-    case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }
-    case 'policy-rejected': return { text: t('row.probePolicyRejected'), tone: 'bad' }
-    case 'not-found': return { text: t('row.probeNotFound'), tone: 'bad' }
-    case 'unavailable': return { text: t('row.probeUnavailable'), tone: 'bad' }
-    default:
-      return {
-        text: result.status === undefined
-          ? t('row.probeFailed')
-          : t('row.probeFailedStatus', { status: String(result.status) }),
-        tone: 'bad',
-      }
-  }
-}
-
-/** The credit bucket name label for one packageName. */
 function bucketLabel(t: Translate, packageName: string): string {
   switch (packageName) {
     case 'base': return t('row.usageBucketBase')
