@@ -1,0 +1,6 @@
+# Register the Qoder provider without changing the profile's default model.
+# PAT is configured in the plugin's settings card (or via environment
+# variable); no OAuth flow is started by the plugin itself.
+- insert:
+    - id: dsh-connect-qoder
+      name: dsh-connect-qoder
