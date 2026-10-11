@@ -1,0 +1,6 @@
+url: https://github.com/dingminhua/dsh-connect-qoder
+name: dingminhua/dsh-connect-qoder
+category: model
+description:
+  en: Connects Qoder (Lingma international / CN) PAT-based models to DSH, with per-region model management, a read-only credits overview, and a cosy gateway client.
+  zh: 将 Qoder（通义灵码国际/国内）的 PAT 模型接入 DSH，支持按区域模型管理、只读用量概览，并内置 cosy 网关客户端。

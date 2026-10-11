@@ -20,6 +20,9 @@
   },
   "main": "lib/index.js",
   "types": "lib/index.d.ts",
+  "bin": {
+    "dsh-connect-qoder": "lib/bin.js"
+  },
   "icon": "icons/dsh-connect-qoder-128.png",
   "exports": {
     ".": {
@@ -38,6 +41,9 @@
     "icons",
     "cordis.patch.yml",
     "README.md",
+    "README.en.md",
+    "CHANGELOG.md",
+    "THIRD_PARTY_NOTICES.md",
     "LICENSE"
   ],
   "scripts": {

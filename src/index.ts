@@ -89,7 +89,7 @@ const modelConfig = z.object({
 
 const regionStateConfig = z.object({
   /** 本区域 PAT（Personal Access Token）。留空则读环境变量。 */
-  pat: asVolatile(z.string().default('').description('Qoder PAT（留空时读取环境变量）')),
+  pat: z.string().default('').description('Qoder PAT（留空时读取环境变量）'),
   /** 本区域 provider 是否启用；显式 false 才停用（opt-out）。 */
   enabled: z.boolean(),
   /** 用户保存的模型目录（卡片“保存”时写入）。 */
@@ -107,11 +107,11 @@ export interface Config {
   }>
 }
 
-export const Config: z<Config> = asVolatile(
-  z.object({
-    regions: z.dict(regionStateConfig).default({}).description('Per-region PAT and model selection, keyed cn | global'),
-  }),
-) as unknown as z<Config>
+// volatile 必须放在固定路径上（`$.regions`），不能放在 dict 通配路径内
+// （`regions.*.pat`）——0.2 线的 schema 校验会拒绝后者。
+export const Config: z<Config> = z.object({
+  regions: asVolatile(z.dict(regionStateConfig).default({}).description('Per-region PAT and model selection, keyed cn | global')),
+}) as unknown as z<Config>
 
 /** 某区域的配置状态（缺省 slots 返回空对象）。 */
 export function regionStateOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): Record<string, unknown> {
