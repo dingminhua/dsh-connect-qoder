@@ -29,6 +29,7 @@ import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
+import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
 import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
 import { createQoderAdapter, type QoderAdapter, QODER_PROVIDERS, QODER_PROVIDER_DISPLAY_NAMES, regionOfProvider } from './adapter.ts'
 import { probeModel, probeUserMessage, type QoderProbeClient, type QoderProbeError } from './probe.ts'
@@ -204,6 +205,26 @@ function contextBudgetsOf(config: { regions?: Record<string, unknown> | null }, 
 function offModelKeysOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): readonly string[] {
   const state = regionStateOf(config, region)
   return Array.isArray(state.offModelKeys) ? (state.offModelKeys as string[]) : []
+}
+
+/**
+ * 把用户保存的「可关闭思考」选择盖印到运行时目录上。
+ *
+ * 上游声明的 `canDisableThinking` 并不可全信（见 src/off-thinking.ts）。运行时
+ * 适配器只读模型自报的该字段，所以必须在此之前把校正后的答案写上去。用户尚未
+ * 保存过（选择为空）时用 `defaultOffModelIds` 作为种子——只对上游显式声明可关闭、
+ * 且不在已知拒绝集里的模型提供 off。
+ */
+function stampOffSelection(
+  config: { regions?: Record<string, unknown> | null },
+  region: QoderRegion,
+  models: QoderModelInfo[],
+): QoderModelInfo[] {
+  const saved = new Set(offModelKeysOf(config, region))
+  const selection = saved.size > 0
+    ? saved
+    : new Set(defaultOffModelIds(models.map(offCapabilityOf)))
+  return withEffectiveOff(models, selection)
 }
 
 /** 某区域保存的 enabledModelKeys。 */
@@ -538,7 +559,8 @@ export function apply(ctx: Context, config: Config): void {
         const parsed = upstream.map(parseUpstreamModel)
         const saved = new Set(enabledModelKeysOf(config, region))
         const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
-        stacks[region].catalog.set(deriveCatalog(withTiers, saved.size > 0 ? saved : initialEnabledKeys(withTiers)))
+        const stamped = stampOffSelection(config, region, withTiers)
+        stacks[region].catalog.set(deriveCatalog(stamped, saved.size > 0 ? saved : initialEnabledKeys(stamped)))
         invalidateCatalog()
         void refreshUsage(region)
       } catch (error: unknown) {
@@ -579,6 +601,7 @@ export function apply(ctx: Context, config: Config): void {
     for (const region of QODER_REGIONS) {
       stacks[region].catalog.set(configuredModels(value, region, stacks[region].catalog.current()))
       stacks[region].catalog.set(applyContextBudgets(stacks[region].catalog.current(), contextBudgetsOf(value, region)))
+      stacks[region].catalog.set(stampOffSelection(value, region, stacks[region].catalog.current()))
     }
     invalidateCatalog()
     syncRegionRegistration(value)
