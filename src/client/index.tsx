@@ -18,6 +18,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { QoderCard } from './QoderCard.tsx'
 import type { QoderCardInjected } from './QoderCard.tsx'
+import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
 
@@ -89,7 +90,48 @@ export function apply(ctx: QoderClientContext): void {
 
     registerCard('plugins.bundle.config', 'dsh-connect-qoder')
     registerCard('plugins.row.config', 'dsh-connect-qoder#dsh-connect-qoder')
+
+    /**
+     * Credit readout in the composer tool row (`conversation.input.left`, a
+     * session-scope list slot).
+     *
+     * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
+     *   — 该项目的 `registerComposerCredits`：无条件注册插槽、由 gate 读
+     *     `modelSelection` 投影自行决定是否渲染。Qoder 沿用同一形态；不同在于
+     *     读数标注与 provider 路由不同（`qoder` / `qoder-global`）。
+     *
+     * Provider-scoped on purpose: it renders only while the session's selected
+     * model belongs to this plugin, which keeps two connector plugins from
+     * competing for one shared row. Registration is unconditional; the gate
+     * reads the Host's `modelSelection` projection and returns null for every
+     * other provider.
+     */
+    const registerComposerCredits = (): void => {
+      try {
+        ctx.slots.inject('conversation.input.left' as never, () => (ctx.slots as unknown as {
+          register(
+            options: { name: string; id: string; order: number; locale: string; inject: () => QoderCardInjected },
+            component: unknown,
+          ): () => void
+        }).register({
+          name: 'conversation.input.left',
+          id: 'dsh-connect-qoder-composer-credits',
+          order: 4,
+          locale: namespace,
+          // `settingsScope` rides along so the gate can honor the card's
+          // per-region switch without a second writer.
+          inject: () => settingsScope === undefined
+            ? { t }
+            : { t, settingsScope },
+        }, ComposerCreditsGate))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-qoder] composer credits slot failed to register (host provider unaffected):', error)
+      }
+    }
+
+    registerComposerCredits()
   } catch (error: unknown) {
+    // Degrade silently on the page: the host provider still serves models.
     console.error('[dsh-connect-qoder] client apply failed:', error)
   }
 }

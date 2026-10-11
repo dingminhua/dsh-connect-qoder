@@ -36,7 +36,12 @@
 - **模型可用性测试** —— 每个模型行有一个「测一测」按钮，直达上游确认该模型此刻能否使用：限流（429）报「被限流」、凭据无效报「凭据无效」、内容审核拒绝报「内容被审核拒绝」、额度耗尽报「额度已耗尽」，其余上游瞬时故障如实分类。探测在后台发起，**凭据不会传到页面**；结果不写入设置，也不改变你已保存的勾选。**它发的是真实请求**（会消耗少量上游额度），因此只能按单个模型手工点，没有「测试已勾选」这类批量按钮。
 - **用量概览（只读）** —— 每个区域展示基础额度 / 附加额度 / 组织额度的已用、总量、剩余、占比与到期时间（来自 Qoder 的 `sash/api/v2/me/usage`）。查询是**只读**的、不消耗积分。
 - **安全 loopback shim** —— 每区域一个随机端口 + 进程内随机 secret，真实 Qoder PAT **不交给 pi-ai**：pi-ai 只与本地 shim 对话，shim 用 cosy 会话做上游请求，PAT 永不出进程。
-- **命令行诊断** —— `dsh-connect-qoder doctor|status [--json]`，按区域报告 PAT 来源、cosy 指纹派生与上游可达性，无需浏览器即可确认宿主状态。
+- **多账号池（PAT）** —— 每区域一个本地 vault `$DSH_HOME/.qoder-accounts.<region>.json`（0600），把设置 PAT、环境变量与 vault 账号三源去重合并；卡片可新增（粘贴 `pt-…`，经 `JobToken` 交换校验并取显示名）/ 移除 / 改名账号，也可显式选择某一账号服务（`regions.<region>.accountId`，留空自动按 settings → env → vault 选取）。
+- **按实测排序与故障转移** —— 「测一测」批量对账号池每个成员发真实请求，结果落 `$DSH_HOME/.qoder-pool.<region>.json`；聊天流在首字节前按 `rankPool`（可用性 → 额度从高到低 → 到期最近 → id）自动换账号，失败回写 `live-request` 探测。Qoder **没有每日签到**，故账号池不出现签到列。
+- **账号转移（导入 / 导出）** —— 按区域把 vault 账号导出为传输文件，预览后按索引导入；跨区域域名（`qoder.com.cn` / `qoder.sh`）正向匹配，不匹配的记录计入 `skipped`。
+- **上下文预算** —— 从上游 `context_config` 解析模型声明的档位，按档位选择上下文预算，仅在已声明档位内生效（否则回落原生值）。
+- **composer 积分读数** —— 会话输入区（`conversation.input.left`）按区域显示 `QD CN` / `QD AI` 与当前账号余额，受每区域 `showCreditsInMainUi`（默认开，opt-out）控制；每账号明细走 `account-credits` 路由。
+- **命令行诊断** —— `dsh-connect-qoder doctor|status|logout [--json] [--region cn|global]`：`doctor` 报 PAT 来源、cosy 指纹派生、pi-ai 代际、宿主心跳存活与 vault 账号计数；`status` 报凭据来源、上游可达性与当前剩余积分；`logout` 清除指定区域的 vault 账号与账号池测量副本。无需浏览器即可确认宿主状态。
 
 ## 工作原理
 
@@ -101,15 +106,24 @@ pnpm run check        # typecheck + test + build 全绿后再安装
 
 卡片每个 tab 右侧的勾选框控制该区域是否参与模型选择（opt-out：**显式取消勾选才停用**）。停用只摘除路由与目录条目，配置全部保留。
 
+### 多账号池与凭据来源
+
+除设置 PAT 与环境变量外，每区域还有一个本地 vault（`$DSH_HOME/.qoder-accounts.<region>.json`，权限 0600）保存多个 PAT 账号。三源按 **settings → env → vault** 的优先级去重合并（同一个 PAT 只在最高优先级的来源里列出一次）。
+
+- 卡片可新增（粘贴 `pt-…`，经 `JobToken` 交换校验并取回显示名）/ 移除 / 改名 vault 账号，也可显式选择某一账号服务（`regions.<region>.accountId`，留空自动）。
+- 选中的凭据只用于会话的 jobToken 交换与后续 cosy 请求，从不进入 pi-ai 或页面。
+- `logout [--region cn|global]` 会清除指定区域的 vault 账号与账号池测量副本（`$DSH_HOME/.qoder-accounts.<region>.json` 与 `.qoder-pool.<region>.json`）。
+
 ## 命令行诊断
 
 ```bash
-dsh-connect-qoder doctor                # PAT 来源 + cosy 指纹派生（纯本地，不发请求）
-dsh-connect-qoder status                # 每区域 PAT 存在性 + 上游模型目录可达性（需 PAT）
+dsh-connect-qoder doctor                # PAT 来源 + cosy 指纹派生 + pi-ai 代际 + 心跳 + vault 计数（纯本地，不发请求）
+dsh-connect-qoder status                # 每区域凭据来源 + 上游模型目录可达性 + 剩余积分（需 PAT）
+dsh-connect-qoder logout --region cn    # 清除指定区域的 vault 账号与账号池测量副本
 dsh-connect-qoder doctor --json         # 机器可读输出
 ```
 
-`status` 会真实交换一次 jobToken 并拉取模型目录，因此需要对应区域的环境变量 PAT；`doctor` 完全离线。
+`status` 会真实交换一次 jobToken 并拉取模型目录（随后只读查询一次用量），因此需要对应区域的环境变量或 vault PAT；`doctor` 完全离线。
 
 ## 平台支持
 

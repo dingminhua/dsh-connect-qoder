@@ -194,7 +194,17 @@ export class QoderUpstreamClient {
   private readonly logger: (message: string) => void
   private readonly installSalt: string | undefined
   private readonly fetchImpl: typeof fetch
-  private holder: QoderSessionHolder | undefined
+  /**
+   * 按凭证键控的会话缓存。
+   *
+   * 一个区域实例会同时服务多个账号（账号池批量探测、按账号查额度），
+   * 不同 PAT 的 cosy 会话互不相通，所以会话必须按凭证分开缓存——用单个
+   * 字段会互相覆盖（上一个账号的会话被下一个冲掉）。键是 PAT 本身：
+   * 会话不可再交换，必须绑定到它交换来的那份凭证。
+   */
+  private readonly holders = new Map<string, QoderSessionHolder>()
+  /** 最近使用的主会话（默认解析路径复用它）。 */
+  private currentKey: string | undefined
 
   constructor(region: QoderRegion, options: QoderUpstreamOptions = {}) {
     this.region = QODER_REGIONS[region]!
@@ -207,12 +217,18 @@ export class QoderUpstreamClient {
     this.logger(`dsh-connect-qoder: ${message}`)
   }
 
-  /** 当前会话是否已过期（或即将过期）。 */
-  isSessionValid(nowMs = Date.now()): boolean {
-    if (this.holder === undefined) return false
-    const remaining = this.holder.expireAtMs - nowMs
+  /** 某一凭证的会话是否已过期（或即将过期）。 */
+  isSessionValid(credential: string, nowMs = Date.now()): boolean {
+    const holder = this.holders.get(credential)
+    if (holder === undefined) return false
+    const remaining = holder.expireAtMs - nowMs
     // 提前 5 分钟视为过期，给续期留时间。
     return remaining > 5 * 60_000
+  }
+
+  /** 最近使用的凭证，沿用直觉意义上「当前账号」的引用。 */
+  currentCredential(): string | undefined {
+    return this.holders.has(this.currentKey ?? '') ? this.currentKey : undefined
   }
 
   /**
@@ -266,12 +282,14 @@ export class QoderUpstreamClient {
     }
     const identity = { name: jobToken.name, aid: jobToken.id, uid: jobToken.id, yx_uid: '', organization_id: '', organization_name: '', user_type: jobToken.userType, security_oauth_token: jobToken.securityOauthToken, refresh_token: jobToken.refreshToken }
     const session = newCosySession(identity, fingerprint.machineId, fingerprint.machineToken, fingerprint.machineType)
-    this.holder = {
+    const holder: QoderSessionHolder = {
       session,
       fingerprint,
       jobToken,
       expireAtMs: jobToken.expireTime > 0 ? jobToken.expireTime : 0,
     }
+    this.holders.set(credential, holder)
+    this.currentKey = credential
     this.log(`jobToken 已交换: ${jobToken.name} (${jobToken.id})`)
     return jobToken
   }
@@ -281,9 +299,11 @@ export class QoderUpstreamClient {
    * 已有有效会话时直接复用（不重复交换）。
    */
   async ensureSession(credential: string): Promise<QoderSessionHolder> {
-    if (this.isSessionValid()) return this.holder!
+    if (this.isSessionValid(credential)) {
+      return this.holders.get(credential)!
+    }
     await this.exchangeJobToken(credential)
-    return this.holder!
+    return this.holders.get(credential)!
   }
 
   /**

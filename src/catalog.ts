@@ -54,10 +54,24 @@ export interface QoderModelInfo {
   isDefault: boolean
   isFree: boolean
   isNew: boolean
+  /**
+   * 网关声明可用的上下文档位（`context_config` 各项的 token_count，升序）。
+   * 不存在时无档位可选，卡片不渲染预算选择器。
+   */
+  contextTiers?: number[]
 }
 
 /** 默认上下文预算（模型未声明任何档位时）。 */
 export const QODER_DEFAULT_CONTEXT = 200_000
+
+/** 从 context_config 档位表提取升序 token 档位（无档位返回 undefined）。 */
+export function contextTiersOf(raw: QoderUpstreamModel): number[] | undefined {
+  const cc = raw.context_config
+  if (!cc) return undefined
+  const counts = Object.values(cc).map(v => v.token_count).filter(Number.isFinite)
+  if (counts.length === 0) return undefined
+  return [...new Set(counts)].sort((a, b) => a - b)
+}
 
 /** 把上游 snake_case 条目解析成 DSH 侧模型信息。 */
 export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
@@ -75,6 +89,7 @@ export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
     isDefault: raw.is_default,
     isFree: raw.is_free === true,
     isNew: false,
+    ...tiersField(contextTiersOf(raw)),
   }
 }
 
@@ -87,6 +102,11 @@ export function pickDefaultContextWindow(raw: QoderUpstreamModel): number | unde
   const def = entries.find(([, v]) => v.is_default === true)
   if (def) return def[1].token_count
   return Math.min(...entries.map(([, v]) => v.token_count))
+}
+
+/** `contextTiers` 的可选字段投影（undefined 时略去字段，避免写入 undefined）。 */
+function tiersField(tiers: number[] | undefined): { contextTiers?: number[] } {
+  return tiers === undefined || tiers.length <= 1 ? {} : { contextTiers: tiers }
 }
 
 /** 把 fallback 条目解析成模型信息。 */
@@ -104,6 +124,28 @@ export function fallbackModelInfo(m: QoderFallbackModel): QoderModelInfo {
     isFree: false,
     isNew: false,
   }
+}
+
+/**
+ * 应用用户保存的每模型上下文档位。
+ *
+ * Qoder 的窗口是**档位选择**而非任意上限：一模型说得出几个 `context_config`
+ * 档，用户保存的预算就只能在档位里挑（选了不在档位里的值没有效果，保持原生）。
+ * 这样卡片渲染的 `<select>` 选项与运行期生效的窗口永远一致 —— 不会出现存档里
+ * 存了 200K 而该模型根本没这个档的时候，运行期悄悄用别的东西。
+ *
+ * `contextWindow` 不降反升的情形只可能发生在档位表的**原生档**高于默认窗口时
+ * （例如默认档 96K、另有一档 400K），此时按档位选择是诚实的用户决定。
+ */
+export function applyContextBudgets(
+  catalog: readonly QoderModelInfo[],
+  budgets: Readonly<Record<string, number | undefined>> = {},
+): QoderModelInfo[] {
+  return catalog.map(model => {
+    const chosen = budgets[model.key]
+    if (model.contextTiers === undefined || chosen === undefined) return model
+    return model.contextTiers.includes(chosen) ? { ...model, contextWindow: chosen } : model
+  })
 }
 
 /**

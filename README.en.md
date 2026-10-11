@@ -36,7 +36,12 @@ A standalone [DeepSeek Harness (DSH)](https://github.com/deepseek-ai/deepseek-ha
 - **Per-model availability probe** — every model row has a "Test" button that goes straight to upstream: rate-limited (429) → "Rate limited", invalid credential → "Invalid credential", content-policy rejection → "Blocked by content policy", quota exhausted → "Quota exhausted", and other upstream transient failures are classified honestly. Probes run in the background, **credentials never reach the page**; results are not written into settings and do not change your saved selections. **Probes are real requests** (they consume a small amount of upstream credit), so they are per-model and manual only — there is no batch "test all checked" button.
 - **Read-only credits overview** — per region: base / add-on / org quota with used, total, remaining, percentage, and expiry (from Qoder's `sash/api/v2/me/usage`). Read-only and free.
 - **Secure loopback shim** — one random port + in-process random secret per region, so the real Qoder PAT **never reaches pi-ai**: pi-ai only talks to the local shim, which performs upstream requests with cosy sessions.
-- **CLI diagnostics** — `dsh-connect-qoder doctor|status [--json]` reports PAT source, cosy fingerprint derivation, and upstream reachability per region, without a browser.
+- **Multi-account pool (PAT)** — a per-region local vault `$DSH_HOME/.qoder-accounts.<region>.json` (0600) merges the settings PAT, environment variable, and vault accounts into one de-duplicated list; the card can add (paste a `pt-…`, validated via a `JobToken` exchange that returns the display name), remove, and rename accounts, and can pin a specific account to serve (`regions.<region>.accountId`, empty = automatic by settings → env → vault).
+- **Probe-ranked selection and failover** — "Test" sends a real request to each pool member and persists results to `$DSH_HOME/.qoder-pool.<region>.json`; before the first SSE byte the chat stream switches accounts by `rankPool` (usability → highest credits → soonest expiry → id) and writes failures back as `live-request` probes. Qoder has **no daily check-in**, so the pool never shows a check-in column.
+- **Account transfer (import / export)** — export a region's vault accounts to a transfer file, preview it, and import by index; cross-region domains (`qoder.com.cn` / `qoder.sh`) are positively matched and non-matching records are counted as `skipped`.
+- **Context budgets** — declared context tiers are parsed from upstream `context_config`; pick a tier per model, and it applies only when the model declares it (otherwise the native value is kept).
+- **Composer credits readout** — the session input (`conversation.input.left`) shows `QD CN` / `QD AI` and the current account's balance per region, gated by per-region `showCreditsInMainUi` (default on, opt-out); per-account detail comes from the `account-credits` route.
+- **CLI diagnostics** — `dsh-connect-qoder doctor|status|logout [--json] [--region cn|global]`: `doctor` reports PAT source, cosy fingerprint derivation, pi-ai generation, host heartbeat liveness, and vault account counts; `status` reports credential source, upstream reachability, and remaining credits; `logout` clears a region's vault accounts and pool measurements. No browser needed.
 
 ## How it works
 
@@ -101,15 +106,24 @@ Create a PAT (`pt-…`) in your Qoder account settings. Two ways to provide it �
 
 The checkbox on each tab controls whether that region participates in the model picker (opt-out: **only an explicit uncheck disables it**). Disabling only removes the route and the directory entries; configuration is kept.
 
+### Multi-account pool and credential sources
+
+Besides the settings PAT and the environment variable, each region has a local vault (`$DSH_HOME/.qoder-accounts.<region>.json`, mode 0600) that stores multiple PAT accounts. The three sources are merged de-duplicated by **settings → env → vault** (a PAT appearing in two sources is listed once, under the higher-priority source).
+
+- The card can add (paste a `pt-…`, validated via a `JobToken` exchange that returns the display name), remove, and rename vault accounts, and can pin a specific account to serve (`regions.<region>.accountId`, empty = automatic).
+- The selected credential is used only for the session's jobToken exchange and subsequent cosy requests — it never reaches pi-ai or the page.
+- `logout [--region cn|global]` clears that region's vault accounts and pool measurements (`.qoder-accounts.<region>.json` and `.qoder-pool.<region>.json`).
+
 ## CLI diagnostics
 
 ```bash
-dsh-connect-qoder doctor                # PAT sources + cosy fingerprint derivation (offline)
-dsh-connect-qoder status                # per region: PAT presence + upstream model-list reachability (needs PAT)
+dsh-connect-qoder doctor                # PAT source + cosy fingerprint + pi-ai generation + heartbeat + vault counts (offline)
+dsh-connect-qoder status                # per region: credential source + upstream model-list reachability + remaining credits (needs PAT)
+dsh-connect-qoder logout --region cn    # clear that region's vault accounts and pool measurements
 dsh-connect-qoder doctor --json         # machine-readable output
 ```
 
-`status` really exchanges a jobToken and fetches the model catalog, so it needs that region's environment PAT; `doctor` is fully offline.
+`status` really exchanges a jobToken and fetches the model catalog (then reads usage once, read-only), so it needs that region's environment or vault PAT; `doctor` is fully offline.
 
 ## Platform support
 

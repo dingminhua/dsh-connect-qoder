@@ -1,13 +1,21 @@
 /**
- * dsh-connect-qoder：为 DeepSeek Harness 提供 Qoder（通义灵码国际/国内）
- * 模型供应商的 Cordis 插件。
+ * dsh-connect-qoder：为 DeepSeek Harness 提供 Qoder（通义灵码国际/国内）模型
+ * 供应商的 Cordis 插件。
  *
- * 设计沿用 dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）的
- * 骨架：每区域一条「凭据 → 回环 shim → pi-ai 适配器 → registerAdapter /
+ * 设计沿用 dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）的骨架：
+ * 每个区域一条「凭据存储 → 回环 shim → pi-ai 适配器 → registerAdapter /
  * registerConfigurableProviders / registerModelDiscovery」栈，CN 与 Global
- * 双区域并行服务。区别：本插件凭据是 Qoder PAT（设置卡片填写或环境变量），
- * 不读取桌面端加密凭据文件；聊天直接走 Qoder cosy 网关协议（见
- * src/upstream.ts），模型目录为网关 model/list 的实时快照。
+ * 双区域并行服务。区别（按 Qoder 上游的现实）：
+ *   - 凭据是 Qoder PAT：设置卡片填 `regions.<region>.pat`，环境变量兜底
+ *     （QODERCN_PERSONAL_ACCESS_TOKEN / QODER_PERSONAL_ACCESS_TOKEN），并叠加
+ *     `$DSH_HOME/.qoder-accounts.<region>.json` vault 的多账号池；
+ *   - 聊天直接走 Qoder cosy 网关协议（见 src/upstream.ts），模型目录为网关
+ *     model/list 的实时快照（src/catalog.ts）；
+ *   - 没有 daily check-in（`pool.checkinSupported` 恒 false），没有扫码 OAuth
+ *     （账号增删走 PAT 粘贴的 accounts 路由），没有桌面临终诊断 / markup 恢复；
+ *   - 多账号池「实测优先」：test 批量用各成员凭据探测目标模型，落
+ *     `$DSH_HOME/.qoder-pool.<region>.json`；failover 循环在流首字节前按 rankPool
+ *     换账号。
  *
  * @module dsh-connect-qoder
  */
@@ -16,22 +24,49 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { QoderUpstreamClient } from './upstream.ts'
-import type { QoderUsage } from './upstream.ts'
-import { QoderUpstreamError } from './upstream.ts'
+import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError } from './upstream.ts'
+import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { QoderCatalog, fallbackModelInfo, modelDisplayName, initialEnabledKeys, deriveCatalog } from './catalog.ts'
+import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
-import { createQoderShim, type QoderShim } from './shim.ts'
+import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
 import { createQoderAdapter, type QoderAdapter, QODER_PROVIDERS, QODER_PROVIDER_DISPLAY_NAMES, regionOfProvider } from './adapter.ts'
-import { createQoderProbe } from './probe.ts'
-import { registerQoderStatusRoute } from './web-status.ts'
-import { QODER_SETTINGS_NS, QODER_USAGE_CACHE_MS, QODER_REGION_KEYS, QODER_GITHUB_URL } from './status-paths.ts'
-import { resolvePat } from './credentials.ts'
-import type { QoderRegion } from './upstream.ts'
+import { probeModel, probeUserMessage, type QoderProbeClient, type QoderProbeError } from './probe.ts'
+import {
+  registerQoderWebRoutes,
+  type QoderPoolDeps,
+  type QoderAccountDeps,
+  type QoderAccountEntryLike,
+  type QoderAccountValidationDeps,
+  type QoderSettingsDeps,
+  type QoderTransferDeps,
+} from './web-status.ts'
+import {
+  QODER_SETTINGS_NS,
+  QODER_GITHUB_URL,
+  QODER_REGIONS,
+  unwrapVolatileDeep,
+  type QoderWebProbeResult,
+  type QoderWebProbeOutcome,
+  type QoderWebPoolTestRow,
+  type QoderWebCredits,
+  type QoderWebCreditPackage,
+  type QoderWebAccountCredit,
+} from './status-paths.ts'
+import { qoderAccountId, maskPat, patFromEnv } from './credentials.ts'
+import { QoderAccountStore, type QoderStoredAccount } from './accounts.ts'
 import { QODER_CONNECT_VERSION } from './version.ts'
+import {
+  rankPool,
+  resolveTargetModel,
+  type QoderPoolProbe,
+  type QoderPoolMember,
+} from './account-pool.ts'
+import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
+import { testAllAccounts, type QoderPoolRunnerDeps } from './account-pool-run.ts'
+import { writeHostHeartbeat, clearHostHeartbeat } from './host-heartbeat.ts'
 
 export { QODER_CONNECT_VERSION }
-
 export { QODER_GITHUB_URL }
 
 // ---------------------------------------------------------------------------
@@ -40,16 +75,10 @@ export { QODER_GITHUB_URL }
 
 export const name = 'dsh-connect-qoder'
 
-/** The model registry and settings service required before the provider can register. */
+/** The model registry and settings service required before providers register. */
 export const inject = ['llm', 'settings']
 
-/**
- * The namespace the HOST actually serves this plugin under.
- *
- * 0.1.7 的 settings 服务以 Loader 条目 id 推导命名空间，宿主按**精确匹配**
- * 查表；`ctx.fiber.entry` 由 Loader 添加（Cordis 自身的类型里没有），缺失
- * 时回落到声明值。此探测沿用 workbuddy 的做法。
- */
+/** The namespace the HOST actually serves this plugin under (workbuddy probe). */
 export function settingsNamespaceOf(ctx: unknown): string {
   const id = (ctx as { fiber?: { entry?: { options?: { id?: unknown } } } })?.fiber?.entry?.options?.id
   return typeof id === 'string' && id !== '' ? id : QODER_SETTINGS_NS
@@ -66,7 +95,8 @@ export function asVolatile<T>(schema: z<T>): z<T> {
   return schema
 }
 
-function unwrapVolatile<T>(value: T): T {
+/** Unwrap a schemastery volatile's reactive `.get()` into a plain snapshot. */
+export function unwrapVolatile<T>(value: T): T {
   if (value !== null && typeof value === 'object' && 'get' in (value as object) && typeof (value as unknown as { get(): unknown }).get === 'function') {
     return (value as unknown as { get(): T }).get()
   }
@@ -87,33 +117,43 @@ const modelConfig = z.object({
   isNew: z.boolean(),
 })
 
-const regionStateConfig = z.object({
-  /** 本区域 PAT（Personal Access Token）。留空则读环境变量。 */
+const poolConfig = z.object({
+  enabled: z.boolean().default(false),
+  targetModelId: z.string().default(''),
+  probeInputTokens: z.number().default(0),
+  memberAccountIds: z.array(z.string()).default([]),
+})
+
+const regionConfig = z.object({
+  /** 本区域 PAT。留空读环境变量；env 与 vault 承接连带选择。 */
   pat: z.string().default('').description('Qoder PAT（留空时读取环境变量）'),
   /** 本区域 provider 是否启用；显式 false 才停用（opt-out）。 */
-  enabled: z.boolean(),
-  /** 用户保存的模型目录（卡片“保存”时写入）。 */
-  lastCatalog: z.array(modelConfig),
+  enabled: z.boolean().default(true),
+  /** 用户显式选择的账号 id（'' = 自动：settings → env → vault）。 */
+  accountId: z.string().default(''),
+  /** 是否在主界面展示积分（composer 面板）；opt-out。 */
+  showCreditsInMainUi: z.boolean().default(true),
   /** 用户勾选的模型 key 集合。 */
   enabledModelKeys: z.array(z.string()).default([]),
+  /** 用户关闭的模型 key 集合（独立于硬性关闭）。 */
+  offModelKeys: z.array(z.string()).default([]),
+  /** 每个模型的显式上下文预算（必须是模型声明的 tier，否则用原生值）。 */
+  contextBudgets: z.dict(z.number()).default({}),
+  /** 账号池偏好。 */
+  pool: poolConfig.default({ enabled: false, targetModelId: '', probeInputTokens: 0, memberAccountIds: [] }),
+  /** 保存的模型目录（卡片“保存”时写入）。 */
+  lastCatalog: z.array(modelConfig).default([]),
 })
 
 export interface Config {
-  regions: Record<string, {
-    pat?: unknown
-    enabled?: boolean
-    lastCatalog?: QoderModelInfo[]
-    enabledModelKeys?: string[]
-  }>
+  regions: Record<string, unknown>
 }
 
-// volatile 必须放在固定路径上（`$.regions`），不能放在 dict 通配路径内
-// （`regions.*.pat`）——0.2 线的 schema 校验会拒绝后者。
 export const Config: z<Config> = z.object({
-  regions: asVolatile(z.dict(regionStateConfig).default({}).description('Per-region PAT and model selection, keyed cn | global')),
+  regions: asVolatile(z.dict(regionConfig).default({}).description('Per-region Qoder settings, keyed cn | global')),
 }) as unknown as z<Config>
 
-/** 某区域的配置状态（缺省 slots 返回空对象）。 */
+/** 某区域的配置状态（缺省返回空对象）。 */
 export function regionStateOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): Record<string, unknown> {
   const regions = unwrapVolatile(config.regions) as Record<string, unknown> | undefined
   const stored = regions?.[region]
@@ -121,20 +161,75 @@ export function regionStateOf(config: { regions?: Record<string, unknown> | null
   return {}
 }
 
-/** 某区域是否启用：只有显式 false 才停用。 */
+/** 某区域是否启用（opt-out）。 */
 export function regionEnabled(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
   const state = regionStateOf(config, region)
   return state.enabled !== false
 }
 
-/** 某区域是否配置了 PAT（设置或环境变量其一）。 */
-export function regionHasCredential(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+/** 某区域是否在主界面显示积分（opt-out）。 */
+function regionCreditsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
   const state = regionStateOf(config, region)
-  const pat = typeof state.pat === 'string' ? (state.pat as string) : ''
-  return pat.trim() !== '' || resolvePat(region, undefined) !== undefined
+  return state.showCreditsInMainUi !== false
 }
 
-/** 把保存的目录条目解析为模型信息（历史兼容，缺字段时用默认值）。 */
+/** 某区域是否配置了凭据（设置 PAT 或环境变量其一）。 */
+export function regionHasCredential(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+  const state = regionStateOf(config, region)
+  const pat = typeof state.pat === 'string' ? state.pat.trim() : ''
+  if (pat !== '') return true
+  return patFromEnv(region) !== undefined
+}
+
+/** 某区域显式选择的账号 id（undefined = 自动）。 */
+function selectedAccountId(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): string | undefined {
+  const state = regionStateOf(config, region)
+  const id = state.accountId
+  return typeof id === 'string' && id !== '' ? id : undefined
+}
+
+/** 某区域保存的 contextBudgets。 */
+function contextBudgetsOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): Record<string, number> {
+  const state = regionStateOf(config, region)
+  const raw = state.contextBudgets
+  if (raw === null || raw === undefined || typeof raw !== 'object') return {}
+  const out: Record<string, number> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'number' && Number.isFinite(value)) out[key] = value
+  }
+  return out
+}
+
+/** 某区域保存的 offModelKeys。 */
+function offModelKeysOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): readonly string[] {
+  const state = regionStateOf(config, region)
+  return Array.isArray(state.offModelKeys) ? (state.offModelKeys as string[]) : []
+}
+
+/** 某区域保存的 enabledModelKeys。 */
+function enabledModelKeysOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): readonly string[] {
+  const state = regionStateOf(config, region)
+  return Array.isArray(state.enabledModelKeys) ? (state.enabledModelKeys as string[]) : []
+}
+
+/** 某区域保存的 pool 偏好。 */
+function poolPreferencesOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): {
+  enabled: boolean
+  targetModelId: string
+  probeInputTokens: number
+  memberAccountIds: readonly string[]
+} {
+  const state = regionStateOf(config, region)
+  const raw = (state.pool ?? {}) as Record<string, unknown>
+  return {
+    enabled: raw.enabled === true,
+    targetModelId: typeof raw.targetModelId === 'string' ? raw.targetModelId : '',
+    probeInputTokens: typeof raw.probeInputTokens === 'number' ? raw.probeInputTokens : 0,
+    memberAccountIds: Array.isArray(raw.memberAccountIds) ? (raw.memberAccountIds as string[]) : [],
+  }
+}
+
+/** 把保存的目录条目解析为模型信息（历史兼容）。 */
 function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefined {
   if (typeof raw.key !== 'string' || typeof raw.displayName !== 'string') return undefined
   return {
@@ -149,14 +244,12 @@ function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefin
     isDefault: raw.isDefault === true,
     isFree: raw.isFree === true,
     isNew: raw.isNew === true,
+    ...Array.isArray(raw.contextTiers) ? { contextTiers: (raw.contextTiers as unknown[]).filter((v): v is number => typeof v === 'number') } : {},
   }
 }
 
-/**
- * 某区域当前应展示的目录：
- * 保存过 lastCatalog 用保存的；否则用运行期目录（fallback 或已刷新的实时表）。
- */
-export function configuredModels(
+/** 某区域当前应展示的目录（保存 → 运行期 → fallback）。 */
+function configuredModels(
   config: { regions?: Record<string, unknown> | null },
   region: QoderRegion,
   live: QoderModelInfo[],
@@ -172,15 +265,65 @@ export function configuredModels(
   return live.length > 0 ? live : QODER_FALLBACK_MODELS.map(fallbackModelInfo)
 }
 
-export interface QoderProbe {
-  probe: (modelId: string) => Promise<{ ok: boolean; kind: string; message: string; latencyMs: number; inputTokens: number | null; outputTokens: number | null }>
+/** 把一次用量解析成卡片可渲染的积分包。 */
+function creditsOf(usage: QoderUsage): QoderWebCredits {
+  const packages: QoderWebCreditPackage[] = []
+  let total = 0
+  let expiringSoon = 0
+  let nearestExpiryMs: number | undefined
+  const SOON_MS = 3 * 24 * 3600 * 1000
+
+  const add = (packageName: string, remaining: number, size: number, expiresAtMs?: number): void => {
+    if (size <= 0) return
+    total += remaining
+    if (expiresAtMs !== undefined && remaining > 0) {
+      nearestExpiryMs = nearestExpiryMs === undefined ? expiresAtMs : Math.min(nearestExpiryMs, expiresAtMs)
+      if (expiresAtMs - Date.now() < SOON_MS) expiringSoon += 1
+    }
+    packages.push({
+      packageName,
+      remain: remaining,
+      size,
+      monthly: false,
+      ...(expiresAtMs === undefined ? {} : { expiresAtMs }),
+    })
+  }
+
+  const userQuota = usage.userQuota
+  if (userQuota !== undefined && typeof userQuota.total === 'number') {
+    add('base', Math.max(userQuota.total - (userQuota.used ?? 0), 0), userQuota.total)
+  }
+  const addOnQuota = usage.addOnQuota
+  if (addOnQuota !== undefined && typeof addOnQuota.total === 'number') {
+    add('addon', Math.max(addOnQuota.total - (addOnQuota.used ?? 0), 0), addOnQuota.total, usage.expiresAt)
+  }
+  const org = usage.orgResourcePackage
+  if (org !== undefined && typeof org.cap === 'number') {
+    add('org', Math.max(org.cap - (org.used ?? 0), 0), org.cap)
+  }
+
+  return {
+    total,
+    packages,
+    expiringSoon,
+    ...(nearestExpiryMs === undefined ? {} : { nearestExpiryMs }),
+  }
 }
 
 interface QoderRegionStack {
   upstream: QoderUpstreamClient
   catalog: QoderCatalog
   shim: QoderShim
+  store: QoderAccountStore
+  probeClient: QoderProbeClient
+  adapter?: QoderAdapter
+  /** Runtime probe store (batch tests + live failures), mirrors the disk store. */
+  poolRuntime: Record<string, QoderPoolProbe>
 }
+
+// ---------------------------------------------------------------------------
+// apply
+// ---------------------------------------------------------------------------
 
 export function apply(ctx: Context, config: Config): void {
   const settingsNs = settingsNamespaceOf(ctx)
@@ -188,60 +331,237 @@ export function apply(ctx: Context, config: Config): void {
   let stopped = false
 
   const stacks = {} as Record<QoderRegion, QoderRegionStack>
-  const probes = {} as Record<QoderRegion, ReturnType<typeof createQoderProbe>>
-  const usageCache: Partial<Record<QoderRegion, { usage: QoderUsage | undefined; atMs: number }>> = {}
-  const registration: Record<QoderRegion, {
-    adapter?: AdapterRegistrationHandle
-    directory?: DirectoryRegistrationHandle
-  }> = { cn: {}, global: {} }
+  const usageCache: Partial<Record<QoderRegion, { usage: QoderUsage | undefined; atMs: number; error?: string }>> = {}
+  const registration: Record<QoderRegion, { adapter?: AdapterRegistrationHandle, directory?: DirectoryRegistrationHandle }> = { cn: {}, global: {} }
+  let invalidateCatalog = (): void => {}
 
-  for (const region of QODER_REGION_KEYS) {
+  // 每个区域：上游客户端 + 回环 shim + vault store + 池运行期。
+  for (const region of QODER_REGIONS) {
     const upstream = new QoderUpstreamClient(region, { logger: log })
     const catalog = new QoderCatalog(QODER_FALLBACK_MODELS.map(fallbackModelInfo))
+    const store = new QoderAccountStore(region)
+    let poolRuntime: Record<string, QoderPoolProbe> = {}
+    void readPoolProbes(region).then(probes => { poolRuntime = probes })
+
     const shim = createQoderShim({
       upstream,
-      credential: () => resolvePat(region, typeof regionStateOf(config, region).pat === 'string' ? (regionStateOf(config, region).pat as string) : undefined),
+      credential: () => resolveServingPat(region),
       modelKeyOf: selector => catalog.keyOf(selector),
       supportsImagesOf: selector => catalog.supportsImagesOf(selector),
       logger: log,
+      resolveServing: async () => {
+        const serving = await resolveServing(region)
+        return serving === undefined
+          ? undefined
+          : { accountId: serving.id, accountName: serving.accountName, pat: serving.pat }
+      },
+      failoverAccount: async tried => nextFailoverCredential(region, tried),
+      onServingFailure: (accountId, kind, _message) => {
+        const outcome = FAIL_OVER_OUTCOME[kind]
+        if (outcome !== undefined && accountId !== '') {
+          poolRuntime[accountId] = { outcome, atMs: Date.now(), source: 'live-request' }
+          void writePoolProbes(region, { [accountId]: poolRuntime[accountId]! })
+          log(`pool ${region}: ${maskPat(accountId)} marked ${outcome} by live request`)
+        }
+      },
+      poolServingNotice: accountId => {
+        const selected = selectedAccountId(config, region)
+        return selected === accountId ? undefined : `将由账号 ${maskPat(accountId)} 回答本次问题`
+      },
     })
-    stacks[region] = { upstream, catalog, shim }
-    probes[region] = createQoderProbe({ shim, logger: log })
+
+    stacks[region] = { upstream, catalog, shim, store, probeClient: buildProbeClient(region), poolRuntime }
   }
 
-  let invalidateCatalog = (): void => {}
-
-  const refreshUsage = async (region: QoderRegion): Promise<void> => {
-    const cached = usageCache[region]
-    if (cached !== undefined && Date.now() - cached.atMs < QODER_USAGE_CACHE_MS) return
-    const pat = resolvePat(region, typeof regionStateOf(config, region).pat === 'string' ? (regionStateOf(config, region).pat as string) : undefined)
-    if (!pat) return
-    try {
-      const usage = await stacks[region].upstream.fetchUsage(pat)
-      usageCache[region] = { usage, atMs: Date.now() }
-    } catch {
-      // 用量查询失败不打断主流程；卡片显示「不可用」。
+  /** The region's source PATs (settings + env). */
+  function sourcesOf(region: QoderRegion): { settingsPat?: string | undefined, envPat?: string | undefined } {
+    const state = regionStateOf(config, region)
+    const settingsPat = typeof state.pat === 'string' ? (state.pat as string).trim() : ''
+    const envPat = patFromEnv(region)
+    return {
+      ...settingsPat === '' ? {} : { settingsPat },
+      ...envPat === undefined ? {} : { envPat },
     }
   }
 
+  /** The region's auto-resolved serving PAT (settings → env). Vault is async. */
+  function resolveServingPat(region: QoderRegion): string | undefined {
+    const sources = sourcesOf(region)
+    if (sources.settingsPat) return sources.settingsPat
+    if (sources.envPat) return sources.envPat
+    return undefined
+  }
+
+  /** Full serving credential via the store (honors selection + vault). */
+  async function resolveServing(region: QoderRegion): Promise<
+    { id: string, pat: string, accountName: string, source: 'settings' | 'env' | 'vault' } | undefined
+  > {
+    return stacks[region].store.resolve(sourcesOf(region), selectedAccountId(config, region))
+  }
+
+  /** Next usable PAT for failover: rankPool over members, skip tried. */
+  async function nextFailoverCredential(region: QoderRegion, tried: readonly string[]): Promise<QoderServingAccount | undefined> {
+    const store = stacks[region].store
+    const memberIds = poolPreferencesOf(config, region).memberAccountIds
+    const probes = stacks[region].poolRuntime
+    const now = Date.now()
+    const candidates: QoderPoolMember[] = []
+    for (const accountId of memberIds) {
+      if (tried.includes(accountId)) continue
+      const credit = await store.credentialFor(accountId, sourcesOf(region))
+      if (credit === undefined) continue
+      const probe = probes[accountId]
+      candidates.push({
+        account: { id: credit.id, accountName: credit.accountName },
+        ...probe === undefined ? {} : { probe },
+      })
+    }
+    const chosen = rankPool(candidates, now)[0]
+    if (chosen === undefined || chosen.excludedBy !== undefined) return undefined
+    const credit = await store.credentialFor(chosen.account.id, sourcesOf(region))
+    return credit === undefined ? undefined : { accountId: credit.id, accountName: credit.accountName, pat: credit.pat }
+  }
+
+  /** A probe client for one region backed by chatStream. */
+  function buildProbeClient(region: QoderRegion): QoderProbeClient {
+    return {
+      probeChat: async (credential, modelKey, opts) => {
+        let firstBytes = 0
+        let error: QoderUpstreamError | undefined
+        try {
+          await stacks[region].upstream.chatStream(credential.pat, modelKey, [
+            { role: 'user', content: probeUserMessage(opts.inputTokens) },
+          ], {
+            ...opts.signal === undefined ? {} : { signal: opts.signal },
+            isReasoning: false,
+            isVl: false,
+            onDelta: (delta: QoderChatDelta) => {
+              // 探针只关心“有没有吐出首包”。
+              if (firstBytes === 0) firstBytes = cheapProbeLength(delta)
+            },
+          })
+        } catch (caught: unknown) {
+          if (isQoderUpstreamError(caught)) error = caught
+          else throw caught
+        }
+        if (error !== undefined) {
+          const probeError: QoderProbeError = { kind: error.kind, status: error.status, message: error.message }
+          return {
+            ok: false,
+            status: error.status,
+            retryAfter: null,
+            body: error.message,
+            error: probeError,
+          }
+        }
+        return { ok: true, status: 200, retryAfter: null }
+      },
+    }
+  }
+
+  /** Cheap text length of a delta for probe first-byte accounting. */
+  function cheapProbeLength(delta: QoderChatDelta): number {
+    let length = delta.content.length
+    if (delta.reasoningContent.length > 0) length += delta.reasoningContent.length
+    if (delta.toolCalls !== undefined) length += delta.toolCalls.length
+    return length
+  }
+
+  /** One real probe of one model through one credential. Never throws. */
+  async function probeThrough(region: QoderRegion, credential: { pat: string, accountName: string }, modelId: string, signal?: AbortSignal): Promise<QoderWebProbeResult> {
+    return probeModel({
+      client: stacks[region].probeClient,
+      credential,
+      modelKey: modelId,
+      nowMs: Date.now(),
+      ...(signal === undefined ? {} : { signal }),
+    })
+  }
+
+  /** Cached usage read for one region. */
+  function usageEntryOf(region: QoderRegion): { usage?: { credits: QoderWebCredits, atMs: number }, error?: string } | undefined {
+    const entry = usageCache[region]
+    if (entry === undefined) return undefined
+    return {
+      ...(entry.usage === undefined ? {} : { usage: { credits: creditsOf(entry.usage), atMs: entry.atMs } }),
+      ...(entry.error === undefined ? {} : { error: entry.error }),
+    }
+  }
+
+  const refreshUsage = async (region: QoderRegion): Promise<void> => {
+    const serving = await resolveServing(region)
+    if (!serving) return
+    try {
+      const usage = await stacks[region].upstream.fetchUsage(serving.pat)
+      usageCache[region] = { usage, atMs: Date.now() }
+    } catch (error: unknown) {
+      usageCache[region] = {
+        usage: undefined,
+        atMs: Date.now(),
+        error: isQoderUpstreamError(error) ? error.kind : 'unknown',
+      }
+    }
+  }
+
+  /** The region's catalog projected into the pool target picker's shape. */
+  function poolModelsOf(region: QoderRegion): Array<{ id: string, name: string, creditMultiplier?: number, contextWindow: number }> {
+    return stacks[region].catalog.current().map(m => ({
+      id: m.key,
+      name: m.displayName,
+      ...(m.isFree === true ? { creditMultiplier: 0 } : {}),
+      contextWindow: m.contextWindow,
+    }))
+  }
+
+  // -------------------------------------------------------------------------
+  // 目录 / 注册同步
+  // -------------------------------------------------------------------------
+
+  /** On-demand model read for discovery + refresh. */
+  async function discoverModels(region: QoderRegion, signal?: AbortSignal): Promise<QoderModelInfo[]> {
+    const serving = await resolveServing(region)
+    if (!serving) return []
+    const upstream = await stacks[region].upstream.fetchModels(serving.pat, signal)
+    const parsed = upstream.map(parseUpstreamModel)
+    return applyContextBudgets(parsed, contextBudgetsOf(config, region))
+  }
+
+  const refreshModels = (region: QoderRegion): void => {
+    void (async () => {
+      const serving = await resolveServing(region)
+      if (!serving) {
+        log(`models refresh skipped for ${region}: no PAT configured`)
+        return
+      }
+      try {
+        const upstream = await stacks[region].upstream.fetchModels(serving.pat)
+        const parsed = upstream.map(parseUpstreamModel)
+        const saved = new Set(enabledModelKeysOf(config, region))
+        const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
+        stacks[region].catalog.set(deriveCatalog(withTiers, saved.size > 0 ? saved : initialEnabledKeys(withTiers)))
+        invalidateCatalog()
+        void refreshUsage(region)
+      } catch (error: unknown) {
+        log(`dynamic ${region} model catalog unavailable; serving the static fallback list: ${String((error as Error)?.message ?? error)}`)
+      }
+    })()
+  }
+
   const syncRegionRegistration = (value: Config): void => {
-    for (const region of QODER_REGION_KEYS) {
+    for (const region of QODER_REGIONS) {
       const enabled = regionEnabled(value, region)
       const handle = registration[region].adapter
       if (handle === undefined) continue
       try {
-        // 每个区域有自己的 adapter 注册：per-region replace 即该区域完整路由集。
         handle.replace(enabled ? [QODER_PROVIDERS[region]] : [])
       } catch (error: unknown) {
         log(`region ${region} adapter sync failed: ${String((error as Error)?.message ?? error)}`)
       }
     }
-    // 目录是「一条注册、双条目」：replace 是全量语义，必须一次写入完整启用列表，
-    // 逐区域 replace 会让最后一个区域胜出、把启用的兄弟条目顶掉。
     const dirHandle = registration.cn.directory
     if (dirHandle === undefined) return
     try {
-      dirHandle.replace(QODER_REGION_KEYS
+      dirHandle.replace(QODER_REGIONS
         .filter(region => regionEnabled(value, region))
         .map(region => ({
           provider: QODER_PROVIDERS[region],
@@ -256,73 +576,251 @@ export function apply(ctx: Context, config: Config): void {
   }
 
   const applySelection = (value: Config): void => {
-    for (const region of QODER_REGION_KEYS) {
+    for (const region of QODER_REGIONS) {
       stacks[region].catalog.set(configuredModels(value, region, stacks[region].catalog.current()))
+      stacks[region].catalog.set(applyContextBudgets(stacks[region].catalog.current(), contextBudgetsOf(value, region)))
     }
     invalidateCatalog()
     syncRegionRegistration(value)
-    for (const region of QODER_REGION_KEYS) {
-      void refreshUsage(region)
-    }
+    for (const region of QODER_REGIONS) void refreshUsage(region)
   }
 
-  const refreshModels = (region: QoderRegion): void => {
-    const pat = resolvePat(region, typeof regionStateOf(config, region).pat === 'string' ? (regionStateOf(config, region).pat as string) : undefined)
-    if (!pat) {
-      log(`models refresh skipped for ${region}: no PAT configured`)
-      return
-    }
-    void (async () => {
-      try {
-        const models = await stacks[region].upstream.fetchModels(pat)
-        const state = regionStateOf(config, region)
-        const saved = new Set(Array.isArray(state.enabledModelKeys) ? state.enabledModelKeys as string[] : [])
-        const parsed = models.map(m => ({
-          key: m.key,
-          displayName: m.display_name,
-          priceFactor: m.price_factor ?? 1,
-          contextWindow: pickContext(m),
-          maxOutputTokens: m.max_output_tokens ?? 32_768,
-          supportsImages: m.is_vl,
-          supportsThinking: m.is_reasoning,
-          canDisableThinking: true,
-          isDefault: m.is_default,
-          isFree: m.is_free,
-          isNew: false,
-        } as QoderModelInfo))
-        stacks[region].catalog.set(deriveCatalog(parsed, saved.size > 0 ? saved : initialEnabledKeys(parsed)))
-        invalidateCatalog()
-        void refreshUsage(region)
-      } catch (error: unknown) {
-        log(`dynamic ${region} model catalog unavailable; serving the static fallback list: ${String((error as Error)?.message ?? error)}`)
-      }
-    })()
-  }
-
-  function pickContext(m: { context_config?: Record<string, { token_count: number; is_default?: boolean }> | undefined; max_input_tokens?: number | undefined }): number {
-    const cc = m.context_config
-    if (cc) {
-      const entries = Object.entries(cc)
-      if (entries.length > 0) {
-        const def = entries.find(([, v]) => v.is_default === true)
-        if (def) return def[1].token_count
-        return Math.min(...entries.map(([, v]) => v.token_count))
-      }
-    }
-    return m.max_input_tokens ?? 200_000
-  }
-
-  // 立即应用当前配置（目录 + 注册同步 + 用量预取）。
   applySelection(config)
 
-  // 每区域 shim 就绪后注册 provider；注册失败只记日志，不影响其他区域。
-  void Promise.all(QODER_REGION_KEYS.map(region => stacks[region].shim.ready))
+  // -------------------------------------------------------------------------
+  // web-status deps
+  // -------------------------------------------------------------------------
+
+  const accountDeps = (region: QoderRegion): QoderAccountDeps => {
+    const store = stacks[region].store
+    return {
+      accounts: sources => store.accounts(sources ?? sourcesOf(region)),
+      credentialFor: (accountId, sources) => store.credentialFor(accountId, sources ?? sourcesOf(region)),
+      resolve: (sources, selectedId) => store.resolve(sources ?? sourcesOf(region), selectedId ?? selectedAccountId(config, region)),
+      add: (pat, name) => store.add(pat, name),
+      remove: accountId => store.remove(accountId),
+      rename: (accountId, name) => store.rename(accountId, name),
+    }
+  }
+
+  const accountValidationDeps: QoderAccountValidationDeps = {
+    validateForRegion: async (region, pat) => {
+      const job = await stacks[region].upstream.exchangeJobToken(pat)
+      return { name: job.name || '' }
+    },
+  }
+
+  /** Region-dispatch table for the single pool deps the route gets. */
+  function poolFor(region: QoderRegion): QoderPoolDeps {
+    const store = stacks[region].store
+    return {
+      preferences: reg => poolPreferencesOf(config, reg),
+      catalog: reg => stacks[reg].catalog.current(),
+      poolProbes: reg => stacks[reg].poolRuntime,
+      credentialFor: (reg, accountId) => store.credentialFor(accountId, sourcesOf(reg)),
+      probeOne: (reg, credit, modelId) => probeThrough(reg, credit, modelId),
+      test: async reg => {
+        const prefs = poolPreferencesOf(config, reg)
+        const target = resolveTargetModel(poolModelsOf(reg), prefs.targetModelId)
+        if (target.modelId === undefined) return []
+        const deps: QoderPoolRunnerDeps = {
+          credentialFor: accountId => store.credentialFor(accountId, sourcesOf(reg)),
+          probe: (credit, modelId) => probeThrough(reg, credit, modelId),
+        }
+        const targets = prefs.memberAccountIds.map(accountId => {
+          void accountId
+          return { accountId, accountName: '' }
+        })
+        const rows = await testAllAccounts(targets, target.modelId, deps)
+        const probes: Record<string, QoderPoolProbe> = {}
+        for (const row of rows) {
+          const p = poolProbeFromResult(row.result)
+          if (p) probes[row.accountId] = p
+        }
+        stacks[reg].poolRuntime = { ...stacks[reg].poolRuntime, ...probes }
+        void writePoolProbes(reg, probes)
+        return rows
+      },
+      applyProbes: async (reg, probes) => {
+        stacks[reg].poolRuntime = { ...stacks[reg].poolRuntime, ...probes }
+        void writePoolProbes(reg, probes)
+      },
+      updateMembership: (reg, memberAccountIds, enabled) => {
+        const next = { ...poolPreferencesOf(config, reg), memberAccountIds, ...(enabled === undefined ? {} : { enabled }) }
+        submitRegionSettings(reg, { pool: next })
+      },
+    }
+  }
+
+  function buildPoolDeps(): QoderPoolDeps {
+    return {
+      preferences: region => poolPreferencesOf(config, region),
+      catalog: region => stacks[region].catalog.current(),
+      poolProbes: region => stacks[region].poolRuntime,
+      credentialFor: (region, accountId) => stacks[region].store.credentialFor(accountId, sourcesOf(region)),
+      probeOne: (region, credit, modelId) => probeThrough(region, credit, modelId),
+      test: (region, modelId) => poolFor(region).test(region, modelId),
+      applyProbes: async (region, probes) => poolFor(region).applyProbes(region, probes),
+      updateMembership: (region, memberAccountIds, enabled) => poolFor(region).updateMembership(region, memberAccountIds, enabled),
+    }
+  }
+
+  /** Build the transfer deps once (region-dispatched). */
+  const transferDeps: QoderTransferDeps = {
+    exportAccounts: async region => {
+      const vault = await stacks[region].store.vaultAccounts()
+      return { accounts: vault.map(a => ({ pat: a.pat, accountName: a.accountName, id: a.id })) }
+    },
+    previewImport: async (_region, text) => {
+      const { previewTransferFile } = await import('./transfer.ts')
+      return previewTransferFile(text)
+    },
+    importAccounts: async (region, text, indexes) => {
+      const { mergeTransferRecords } = await import('./transfer.ts')
+      const { changes, imported, skipped } = mergeTransferRecords(region, text, indexes)
+      for (const entry of changes.values()) await stacks[region].store.add(entry.pat, entry.accountName)
+      return { imported, skipped }
+    },
+  }
+
+  // Settings service (0.1.7+ `configure`/`mutate` surface; captured once the
+  // optional `settings` service is actually present).
+  interface SettingsRow { ns: string, value: Record<string, unknown> }
+  interface SettingsShapes {
+    describe(): SettingsRow[]
+    mutate(ns: string, ops: Array<{ op: 'set', path: string[], value: unknown }>, options?: unknown): Promise<void>
+  }
+  let settingsService: SettingsShapes | undefined
+  const settingsNsOf = settingsNs
+  ctx.inject(['settings'], (sctx) => {
+    settingsService = (sctx as unknown as { settings?: SettingsShapes }).settings
+  })
+
+  const pluginRow = (): SettingsRow | undefined => {
+    if (settingsService === undefined) return undefined
+    return settingsService.describe().find(row => String(row.ns).includes('dsh-connect-qoder'))
+  }
+
+  /**
+   * Two-level merge a settings field write, then `mutate` it (workbuddy's
+   * `__save` contract, so a partial payload never deletes sibling regions).
+   */
+  async function mutateField(field: string, incoming: unknown): Promise<void> {
+    const row = pluginRow()
+    if (row === undefined) throw new Error('settings namespace not yet available')
+    const current = unwrapVolatileDeep((row.value?.[field] ?? {}) as unknown) as Record<string, unknown>
+    const patch = (incoming ?? {}) as Record<string, unknown>
+    const merged: Record<string, unknown> = { ...current }
+    for (const [key, slot] of Object.entries(patch)) {
+      const prior = current[key]
+      const isPlain = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === 'object' && !Array.isArray(v)
+      merged[key] = isPlain(prior) && isPlain(slot) ? { ...prior, ...slot } : slot
+    }
+    await settingsService!.mutate(row.ns, [{ op: 'set', path: [field], value: merged }], undefined)
+  }
+
+  const settingsDeps: QoderSettingsDeps = {
+    describe: () => (settingsService === undefined ? [] : settingsService.describe()),
+    set: async (field, value) => {
+      if (field !== 'regions') throw new Error(`unsupported settings field: ${String(field)}`)
+      await mutateField(field, value)
+    },
+  }
+
+  /** Write one region's settings patch (whole `regions` dict replace). */
+  function submitRegionSettings(region: QoderRegion, patch: Record<string, unknown>): void {
+    const regions = (unwrapVolatile(config.regions) ?? {}) as Record<string, unknown>
+    const next = { ...regions, [region]: { ...((regions[region] as Record<string, unknown>) ?? {}), ...patch } }
+    void mutateField('regions', next)
+  }
+
+  /** Fresh per-account credit balances for the composer panel. */
+  async function accountCreditsOf(region: QoderRegion, signal?: AbortSignal): Promise<QoderWebAccountCredit[]> {
+    const store = stacks[region].store
+    const accounts = await store.accounts(sourcesOf(region))
+    const out: QoderWebAccountCredit[] = []
+    for (const account of accounts) {
+      const credit = await store.credentialFor(account.id, sourcesOf(region))
+      const pat = credit?.pat
+      if (!pat) continue
+      let usage: QoderUsage | undefined
+      try {
+        usage = await stacks[region].upstream.fetchUsage(pat, signal)
+      } catch {
+        usage = undefined
+      }
+      out.push({
+        id: account.id,
+        accountName: account.accountName || account.source,
+        selected: account.id === selectedAccountId(config, region) || (account.source !== 'vault' && selectedAccountId(config, region) === undefined),
+        ...usage === undefined ? {} : { credits: creditsOf(usage).total },
+      })
+    }
+    return out
+  }
+
+  /** The serving credential for a probe route (region's selection). */
+  async function probeModelOf(region: QoderRegion, modelId: string, signal?: AbortSignal): Promise<QoderWebProbeResult> {
+    const serving = await resolveServing(region)
+    if (!serving) return { modelId, outcome: 'credential-rejected', message: '未配置凭据' }
+    return probeThrough(region, { pat: serving.pat, accountName: serving.accountName }, modelId, signal)
+  }
+
+  // 宿主存活心跳：卡片用于「存活判定 / 一键不再显示」。
+  void writeHostHeartbeat()
+
+  // 浏览器路由（webServer 可选注入；缺失时卡片读镜像即可）。
+  ctx.inject(['webServer'], (ctxWithWeb) => {
+    registerQoderWebRoutes(ctxWithWeb, {
+      regionEnabled: region => regionEnabled(config, region),
+      regionCreditsShown: region => regionCreditsShown(config, region),
+      regionUsable: (region, usable) => {
+        if (!usable) log(`region ${region} is signed out`)
+      },
+      store: accountDeps,
+      credentialSources: sourcesOf,
+      selectedAccountId: region => selectedAccountId(config, region),
+      catalogs: { cn: stacks.cn.catalog, global: stacks.global.catalog },
+      contextBudgets: region => contextBudgetsOf(config, region),
+      offModelKeys: region => offModelKeysOf(config, region),
+      enabledModelKeys: region => enabledModelKeysOf(config, region),
+      discoverModels,
+      usage: usageEntryOf,
+      probeModel: probeModelOf,
+      accountCredits: accountCreditsOf,
+      pool: buildPoolDeps(),
+      transfer: transferDeps,
+      accountValidation: accountValidationDeps,
+      settings: settingsDeps,
+      logger: log,
+    })
+  })
+
+  // 0.1.7 在每次设置写入后发 `loader/volatile-update`；借此收敛目录/注册/用量。
+  ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
+    .on('loader/volatile-update', () => applySelection(config))
+
+  // 析构：关闭 shims + 清心跳（副作用一次执行）。
+  let disposed = false
+  ctx.effect(() => () => {
+    if (disposed) return
+    disposed = true
+    stopped = true
+    for (const region of QODER_REGIONS) void stacks[region].shim.close()
+    void clearHostHeartbeat()
+  })
+
+  // -------------------------------------------------------------------------
+  // 每区域 shim 就绪后注册 provider
+  // -------------------------------------------------------------------------
+
+  void Promise.all(QODER_REGIONS.map(region => stacks[region].shim.ready))
     .then(async () => {
       if (stopped) return
 
-      const adapters = {} as Record<QoderRegion, QoderAdapter>
       try {
-        for (const region of QODER_REGION_KEYS) {
+        const adapters = {} as Record<QoderRegion, QoderAdapter>
+        for (const region of QODER_REGIONS) {
           adapters[region] = createQoderAdapter({
             shim: stacks[region].shim,
             catalog: stacks[region].catalog,
@@ -330,45 +828,37 @@ export function apply(ctx: Context, config: Config): void {
             displayName: QODER_PROVIDER_DISPLAY_NAMES[region],
             resolveAttachments: () => ctx.get('attachments'),
           })
+          stacks[region].adapter = adapters[region]
         }
         invalidateCatalog = () => {
-          for (const region of QODER_REGION_KEYS) adapters[region].invalidate()
+          for (const region of QODER_REGIONS) adapters[region].invalidate()
         }
 
         const releaseAdapter = {} as Record<QoderRegion, (() => void) | undefined>
         let releaseDirectory: (() => void) | undefined
         try {
-          for (const region of QODER_REGION_KEYS) {
-            // Always register the route first: an empty INITIAL registration is
-            // invalid, while `replace([])` on a live one is legal.
+          for (const region of QODER_REGIONS) {
             releaseAdapter[region] = registration[region].adapter = ctx.llm.registerAdapter([QODER_PROVIDERS[region]], adapters[region].adapter)
           }
-          releaseDirectory = registration.cn.directory = ctx.llm.registerConfigurableProviders([
-            {
-              provider: QODER_PROVIDERS.cn,
-              displayName: QODER_PROVIDER_DISPLAY_NAMES.cn,
+          releaseDirectory = registration.cn.directory = ctx.llm.registerConfigurableProviders(
+            QODER_REGIONS.map(region => ({
+              provider: QODER_PROVIDERS[region],
+              displayName: QODER_PROVIDER_DISPLAY_NAMES[region],
               settingsNs,
               settingsPath: [],
               declared: false,
-            },
-            {
-              provider: QODER_PROVIDERS.global,
-              displayName: QODER_PROVIDER_DISPLAY_NAMES.global,
-              settingsNs,
-              settingsPath: [],
-              declared: false,
-            },
-          ])
+            })),
+          )
         } finally {
-          const missing = QODER_REGION_KEYS.some(region => releaseAdapter[region] === undefined) || releaseDirectory === undefined
+          const missing = QODER_REGIONS.some(region => releaseAdapter[region] === undefined) || releaseDirectory === undefined
           if (missing) {
-            for (const region of QODER_REGION_KEYS) releaseAdapter[region]?.()
+            for (const region of QODER_REGIONS) releaseAdapter[region]?.()
             releaseDirectory?.()
           }
         }
 
         ctx.effect(() => () => {
-          for (const region of QODER_REGION_KEYS) releaseAdapter[region]?.()
+          for (const region of QODER_REGIONS) releaseAdapter[region]?.()
           releaseDirectory?.()
         })
 
@@ -378,37 +868,19 @@ export function apply(ctx: Context, config: Config): void {
           const region = regionOfProvider(request.provider ?? '')
           if (region === undefined) return []
           if (!regionEnabled(config, region)) return []
-          let models: QoderModelInfo[]
           try {
-            const pat = resolvePat(region, typeof regionStateOf(config, region).pat === 'string' ? (regionStateOf(config, region).pat as string) : undefined)
-            if (!pat) return []
-            const upstream = await stacks[region].upstream.fetchModels(pat, signal)
-            models = upstream.map(m => ({
-              key: m.key,
-              displayName: m.display_name,
-              priceFactor: m.price_factor ?? 1,
-              contextWindow: pickContext(m),
-              maxOutputTokens: m.max_output_tokens ?? 32_768,
-              supportsImages: m.is_vl,
-              supportsThinking: m.is_reasoning,
-              canDisableThinking: true,
-              isDefault: m.is_default,
-              isFree: m.is_free,
-              isNew: false,
+            const models = await discoverModels(region, signal)
+            const saved = new Set(enabledModelKeysOf(config, region))
+            return deriveCatalog(models, saved.size > 0 ? saved : initialEnabledKeys(models)).map(model => ({
+              id: model.key,
+              name: modelDisplayName(model),
+              contextWindow: model.contextWindow,
+              maxTokens: model.maxOutputTokens,
+              inputModalities: model.supportsImages ? ['text', 'image'] : ['text'],
             }))
-          } catch (error: unknown) {
-            log(`model discovery for ${region} failed: ${String((error as Error)?.message ?? error)}`)
+          } catch {
             return []
           }
-          const state = regionStateOf(config, region)
-          const saved = new Set(Array.isArray(state.enabledModelKeys) ? state.enabledModelKeys as string[] : [])
-          return deriveCatalog(models, saved.size > 0 ? saved : initialEnabledKeys(models)).map(model => ({
-            id: model.key,
-            name: modelDisplayName(model),
-            contextWindow: model.contextWindow,
-            maxTokens: model.maxOutputTokens,
-            inputModalities: model.supportsImages ? ['text', 'image'] : ['text'],
-          }))
         })
       } catch (error: unknown) {
         ctx.logger.error('dsh-connect-qoder: provider registration failed', error)
@@ -416,44 +888,28 @@ export function apply(ctx: Context, config: Config): void {
       }
 
       // 每区域异步刷新目录（失败静默，fallback 目录继续服务）。
-      for (const region of QODER_REGION_KEYS) {
-        refreshModels(region)
-      }
+      for (const region of QODER_REGIONS) refreshModels(region)
     })
     .catch((error: unknown) => {
       ctx.logger.error('dsh-connect-qoder: loopback endpoint failed to start; providers not registered', error)
     })
 
-  // 浏览器路由（webServer 可选注入；缺失时卡片读镜像即可）。
-  ctx.inject(['webServer'], (ctxWithWeb) => {
-    registerQoderStatusRoute(ctxWithWeb, {
-      regionEnabled: region => regionEnabled(config, region),
-      hasCredential: region => regionHasCredential(config, region),
-      catalogs: {
-        cn: stacks.cn.catalog,
-        global: stacks.global.catalog,
-      },
-      probes: {
-        cn: probes.cn,
-        global: probes.global,
-      },
-      usage: region => usageCache[region],
-      refreshModels,
-      logger: log,
-    })
-  })
-
-  // 0.1.7 在每次设置写入后发 `loader/volatile-update`；借此收敛目录/注册/用量。
-  ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
-    .on('loader/volatile-update', () => {
-      applySelection(config)
-    })
-
-  // 析构：关闭 shims（副作用一次执行）。
-  ctx.effect(() => () => {
-    stopped = true
-    for (const region of QODER_REGION_KEYS) {
-      void stacks[region].shim.close()
+  /** One batch result → a persisted pool probe. */
+  function poolProbeFromResult(result: QoderWebProbeResult): QoderPoolProbe | undefined {
+    return {
+      outcome: result.outcome,
+      atMs: Date.now(),
+      source: 'test-batch',
+      ...(result.retryAtMs === undefined ? {} : { retryAtMs: result.retryAtMs }),
+      ...(result.message === undefined ? {} : { message: result.message }),
     }
-  })
+  }
+}
+
+const FAIL_OVER_OUTCOME: Record<string, QoderWebProbeOutcome> = {
+  auth: 'credential-rejected',
+  'rate-limited': 'rate-limited',
+  'quota-exhausted': 'out-of-credit',
+  network: 'unavailable',
+  transient: 'unavailable',
 }
