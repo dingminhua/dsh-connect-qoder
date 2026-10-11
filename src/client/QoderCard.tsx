@@ -226,7 +226,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const [activeRegion, setActiveRegion] = useState<QoderWebRegion>(() => 'cn')
   const [usages, setUsages] = useState<Partial<Record<QoderWebRegion, QoderWebUsage | undefined>>>({})
   const [busyRegions, setBusyRegions] = useState<ReadonlySet<QoderWebRegion>>(new Set())
-  const [probes, setProbes] = useState<Record<string, QoderWebProbeResult | undefined>>({})
+  const [probes, setProbes] = useState<Partial<Record<QoderWebRegion, Record<string, QoderWebProbeResult | undefined>>>>({})
   const [probeBusy, setProbeBusy] = useState<ReadonlySet<string>>(new Set())
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -365,15 +365,18 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   }
 
   const runProbe = async (modelKey: string): Promise<void> => {
+    // 捕获发起时的区域：结果按区域分别存放，切换 tab 或刷新目录都不会把另一个
+    // 区域的测量结果覆盖掉（workbuddy 的 probes 同样按区域键控）。
+    const probeRegion = activeRegion
     setProbeBusy(prev => new Set(prev).add(modelKey))
     try {
-      const response = await fetch(`${withQoderRegion(QODER_PROBE_PATH, activeRegion)}&model=${encodeURIComponent(modelKey)}`, {
+      const response = await fetch(`${withQoderRegion(QODER_PROBE_PATH, probeRegion)}&model=${encodeURIComponent(modelKey)}`, {
         headers: { accept: 'application/json' },
         credentials: 'same-origin',
       })
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       const result = await response.json() as QoderWebProbeResult
-      if (mounted.current) setProbes(prev => ({ ...prev, [modelKey]: result }))
+      if (mounted.current) setProbes(prev => ({ ...prev, [probeRegion]: { ...prev[probeRegion], [modelKey]: result } }))
     } catch (error) {
       if (mounted.current) {
         const httpStatus = Number.parseFloat(String((error as Error)?.message ?? '').replace(/\D+/g, '')) || undefined
@@ -383,7 +386,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
           message: String((error as Error)?.message ?? error),
         }
         if (httpStatus !== undefined) failed.status = httpStatus
-        setProbes(prev => ({ ...prev, [modelKey]: failed }))
+        setProbes(prev => ({ ...prev, [probeRegion]: { ...prev[probeRegion], [modelKey]: failed } }))
       }
     } finally {
       if (mounted.current) setProbeBusy(prev => new Set([...prev].filter(k => k !== modelKey)))
@@ -795,10 +798,10 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                   <div className="dsm-qoder-model-meta" style={{ color: 'var(--dsw-alias-label-tertiary,#999)' }}>
                     {probeBusy.has(model.key)
                       ? t('row.probing')
-                      : probes[model.key] === undefined
+                      : probes[activeRegion]?.[model.key] === undefined
                         ? t('row.probeHint')
                         : (() => {
-                            const p = probes[model.key] as QoderWebProbeResult
+                            const p = probes[activeRegion]?.[model.key] as QoderWebProbeResult
                             const view = probeResultView(p, t)
                             const reason = inlineProbeReason(p.outcome, p.message)
                             return (
