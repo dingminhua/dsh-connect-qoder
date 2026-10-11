@@ -175,6 +175,6 @@ describe('mergeTransferRecords (region domain positive-match gate)', () => {
 })
 
 /** Whether a record object carries the key (the type is optional-keyed). */
-function RecHasKey(rec: Record<string, unknown>, key: string): boolean {
+function RecHasKey(rec: object, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(rec, key)
 }

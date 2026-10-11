@@ -232,17 +232,34 @@ describe('probeSucceeded', () => {
 })
 
 describe('redactUpstreamText', () => {
+  it('fully removes a JWT-shaped token (the secret, if not the exact placeholder string)', () => {
+    const jwt = 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig'
+    const redacted = redactUpstreamText(`error token=${jwt} ends`)
+    // 真正的安全属性：JWT 的字符体 `eyJ…sig` 全部删除。
+    expect(redacted).not.toContain('sig')
+    expect(redacted).not.toContain('eyJ')
+    // 至少留下一个脱敏标记。
+    expect(redacted).toContain('[redacted]')
+  })
+
+  it('strips a `key=secret` value while keeping the key name', () => {
+    const redacted = redactUpstreamText('access_token=pt-abc123abc123bc refresh_token=supersecretvalue')
+    expect(redacted).toContain('access_token=[redacted]')
+    expect(redacted).not.toContain('pt-abc123abc123bc')
+    expect(redacted).not.toContain('supersecretvalue')
+  })
+
+  it('strips a bare `pt-` credential entirely', () => {
+    const redacted = redactUpstreamText('refused for pt-abc123abc123bc user')
+    expect(redacted).toContain('[redacted credential]')
+    expect(redacted).not.toContain('pt-abc123abc123bc')
+  })
+
   it('bounds upstream copy to 300 chars', () => {
     const long = 'x'.repeat(5_000)
     expect(redactUpstreamText(long).length).toBeLessThanOrEqual(300)
     expect(redactUpstreamText('').length).toBeLessThanOrEqual(300)
   })
-
-  // redactUpstreamText 的脱敏并不可靠（见报告：`src/probe.ts:233-235`）：
-  // 第二段 `.replace(/(\b(?:code|token|refresh_token|access_token|pt-)[^\s, ]+)…$1[redacted]/)`
-  // 把捕获组 `$1`（含秘密本身）原样保留、只在尾部追加 `[redacted]`，且会对第一段
-  // 已替换出的 `[redacted token]` 里的 `token` 再套一层 `[…]`。这里**不打**「内容被
-  // 移除」的断言（那会固化一条泄密路径），只钉住最稳健的边界。
 })
 
 describe('probeModel', () => {

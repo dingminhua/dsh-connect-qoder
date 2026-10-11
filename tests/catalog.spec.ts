@@ -8,6 +8,8 @@ import {
   QoderCatalog,
   QODER_FALLBACK_MODELS,
   pickDefaultContextWindow,
+  contextTiersOf,
+  applyContextBudgets,
 } from '../src/catalog.ts'
 import type { QoderUpstreamModel } from '../src/upstream.ts'
 import { resolvePat, patFromEnv, QODER_PAT_ENV_VARS } from '../src/credentials.ts'
@@ -122,5 +124,42 @@ describe('credentials', () => {
     expect(patFromEnv('cn', { [QODER_PAT_ENV_VARS.cn]: 'cn-pt' })).toBe('cn-pt')
     // CN and Global use different env var names
     expect(patFromEnv('cn', { [QODER_PAT_ENV_VARS.global]: 'global-pt' })).toBeUndefined()
+  })
+})
+describe('contextTiers + applyContextBudgets', () => {
+  it('contextTiersOf extracts the ascending tier table, or undefined when absent', () => {
+    expect(contextTiersOf(rawModel({
+      context_config: { '200K': { token_count: 200_000, is_default: true }, '800K': { token_count: 800_000 } },
+    }))).toEqual([200_000, 800_000])
+    expect(contextTiersOf(rawModel())).toBeUndefined()
+  })
+
+  it('applies a stored budget only when it is one of the model\'s declared tiers', () => {
+    const tiered = parseUpstreamModel(rawModel({
+      context_config: {
+        '200K': { token_count: 200_000, is_default: true },
+        '800K': { token_count: 800_000 },
+      },
+    }))
+    const applied = applyContextBudgets([tiered], { [tiered.key]: 800_000 })
+    expect(applied[0]?.contextWindow).toBe(800_000)
+    // 不在档位表里的预算该模型没有 → 保持原生，绝不悄悄换。
+    const kept = applyContextBudgets([tiered], { dmodel: 500_000 })
+    expect(kept[0]?.contextWindow).toBe(200_000)
+  })
+
+  it('is an identity when the model has no tiers or the budget is absent', () => {
+    const plain = parseUpstreamModel(rawModel())
+    expect(applyContextBudgets([plain], { dmodel: 500_000 })[0]).toBe(plain)
+    expect(applyContextBudgets([plain], {})[0]).toBe(plain)
+  })
+
+  it('returns a NEW model object only when the window actually changes, never mutating inputs', () => {
+    const tiered = parseUpstreamModel(rawModel({
+      context_config: { '200K': { token_count: 200_000, is_default: true }, '800K': { token_count: 800_000 } },
+    }))
+    const before = tiered.contextWindow
+    applyContextBudgets([tiered], { dmodel: 800_000 })
+    expect(tiered.contextWindow).toBe(before) // 原对象未变
   })
 })
