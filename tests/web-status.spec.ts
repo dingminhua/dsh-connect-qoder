@@ -492,6 +492,42 @@ describe('buildWebUsage', () => {
     expect(usage.pool?.targetModelSource).toBe('preferred')
   })
 
+  it('marks as `current` the account actually serving, not the first row or the target model', async () => {
+    // 回归：`current` 曾由「测试目标模型 id」与「列表第 0 行」推导，于是在没有显式
+    // 选择时会宣称第一个账号正在计费——而真实在计费的是 resolve() 给出的那个。
+    // 这里让 resolve 指向第二行（env），断言 current 落在它身上、第一行为 false。
+    const store: QoderAccountDeps = {
+      ...baseStore(),
+      accounts: async () => [
+        { id: 'pat-settings', accountName: '', source: 'settings' },
+        { id: 'pat-env', accountName: 'Env', source: 'env' },
+      ],
+      resolve: async () => ({ id: 'pat-env', pat: 'pt-env', accountName: 'Env', source: 'env' }),
+    }
+    const d = deps({
+      store: () => store,
+      credentialSources: () => ({ settingsPat: 'pt-settings', envPat: 'pt-env' }),
+      pool: poolDeps({ preferences: () => ({ enabled: false, targetModelId: '', memberAccountIds: ['pat-env'] }) }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect((usage.pool?.accounts ?? []).map(r => [r.accountId, r.current])).toEqual([
+      ['pat-settings', false],
+      ['pat-env', true],
+    ])
+  })
+
+  it('marks nothing as `current` when no credential resolves', async () => {
+    // signed-out 时不出现 pool 段，这本身就是「没有任何账号正在使用」的表达。
+    const store: QoderAccountDeps = { ...baseStore(), resolve: async () => undefined }
+    const d = deps({
+      store: () => store,
+      pool: poolDeps({ preferences: () => ({ enabled: false, targetModelId: '', memberAccountIds: [] }) }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    expect(usage.status).toBe('signed-out')
+  })
+
   it('reports signed-out with selectionLost when the saved id matches no credential but accounts exist', async () => {
     const store: QoderAccountDeps = {
       ...baseStore(),

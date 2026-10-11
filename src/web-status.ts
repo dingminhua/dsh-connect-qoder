@@ -552,7 +552,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
 
   let pool: QoderWebPool | undefined
   if (deps.pool !== undefined) {
-    pool = await buildPoolView(deps, region, accounts, catalog)
+    pool = await buildPoolView(deps, region, accounts, catalog, serving.id)
   }
 
   return {
@@ -583,6 +583,8 @@ async function buildPoolView(
   region: QoderRegion,
   accounts: readonly QoderAccountEntryLike[],
   catalog: readonly QoderModelInfo[],
+  /** The account actually billing traffic, from the region's resolved serving credential. */
+  servingAccountId: string | undefined,
 ): Promise<QoderWebPool> {
   const pool = deps.pool!
   const prefs = pool.preferences(region)
@@ -600,16 +602,21 @@ async function buildPoolView(
 
   // Membership is explicit; effective membership is what the pool can actually
   // resolve a credential for.
+  //
+  // `current` answers "who is BILLING traffic right now" — a DIFFERENT question
+  // from "who the ranking says should serve" or "which model is the test
+  // target". It must come from the region's resolved serving credential
+  // (`servingAccountId`), never from the target model id or a list position:
+  // guessing it would make the card assert a switch that was never applied.
   const effectiveIds: string[] = []
   const rows: QoderWebPoolAccount[] = []
-  for (const [index, account] of accounts.entries()) {
+  for (const account of accounts) {
     const member = memberSet.has(account.id)
     const probe = probes[account.id]
     const excludedBy = exclusionOf(probe, now)
-    const currentId = targetId
-    const isCurrent = target.modelId !== undefined && account.id === currentId
+    const isCurrent = servingAccountId !== undefined && account.id === servingAccountId
     if (member) {
-      const cred = member ? await pool.credentialFor(region, account.id) : undefined
+      const cred = await pool.credentialFor(region, account.id)
       if (cred !== undefined) effectiveIds.push(account.id)
     }
     rows.push({
@@ -625,8 +632,7 @@ async function buildPoolView(
         },
       }),
       ...(excludedBy === undefined ? {} : { excludedBy }),
-      ...(index === 0 && deps.selectedAccountId(region) === undefined ? { current: true } : { current: isCurrent }),
-      ...(isCurrent ? { current: true } : {}),
+      current: isCurrent,
       member,
     })
   }

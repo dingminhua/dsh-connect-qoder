@@ -119,6 +119,13 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     probeInputTokens: pool?.probeInputTokens ?? 0,
     memberAccountIds: pool?.memberAccountIds ?? [],
   }
+
+  /**
+   * 正在计费的那个账号，或 undefined（池里没有 `current` 行时）。
+   *
+   * 这个事实由宿主给出（取自该区域解析出的服务凭据），卡片只渲染、不推断。
+   */
+  const currentAccount = pool?.accounts.find(account => account.current === true)
   const active: PoolPreferences = draftPool !== null && draftRegion === region
     ? draftPool
     : saved
@@ -253,6 +260,13 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
       <div className="dsm-qoder-pool-head">
         <h3 className="dsm-qoder-pool-title">{t('row.poolTitle')}</h3>
+        {/* 「当前使用」芯片：由宿主给出的 `current` 事实驱动（正在计费的那个账号），
+            不是从排序或列表位置猜出来的——否则卡片会宣称一次并未发生的切换。 */}
+        {currentAccount === undefined ? null : (
+          <span className="dsm-qoder-pool-current-badge" title={t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}>
+            {t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
+          </span>
+        )}
       </div>
       <p className="dsm-qoder-pool-note">{t('row.poolRegionNote')}</p>
 
