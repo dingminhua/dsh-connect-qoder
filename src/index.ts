@@ -30,6 +30,7 @@ import type { QoderModelInfo } from './catalog.ts'
 import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
+import { imageDefaultFor } from './native-modality.ts'
 import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
 import { createQoderAdapter, type QoderAdapter, QODER_PROVIDERS, QODER_PROVIDER_DISPLAY_NAMES, regionOfProvider } from './adapter.ts'
 import { probeModel, probeUserMessage, type QoderProbeClient, type QoderProbeError } from './probe.ts'
@@ -136,6 +137,14 @@ const regionConfig = z.object({
   showCreditsInMainUi: z.boolean().default(true),
   /** 用户勾选的模型 key 集合。 */
   enabledModelKeys: z.array(z.string()).default([]),
+  /**
+   * 用户**显式**开启图片输入的模型 key 集合。
+   *
+   * 图像能力只来自这里，绝不从上游的 `is_vl` 平台标记推断（见
+   * src/native-modality.ts：平台标记几乎对每个模型都是 true，含纯文本模型）。
+   * 与 lastCatalog 分开存储，使勾选状态不随目录重写而耦合丢失。
+   */
+  imageModelKeys: z.array(z.string()).default([]),
   /** 用户关闭的模型 key 集合（独立于硬性关闭）。 */
   offModelKeys: z.array(z.string()).default([]),
   /** 每个模型的显式上下文预算（必须是模型声明的 tier，否则用原生值）。 */
@@ -207,6 +216,36 @@ function offModelKeysOf(config: { regions?: Record<string, unknown> | null }, re
   return Array.isArray(state.offModelKeys) ? (state.offModelKeys as string[]) : []
 }
 
+/** 某区域保存的 imageModelKeys（用户显式开启图片输入的模型）。 */
+function imageModelKeysOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): readonly string[] {
+  const state = regionStateOf(config, region)
+  return Array.isArray(state.imageModelKeys) ? (state.imageModelKeys as string[]) : []
+}
+
+/**
+ * 把用户的**显式**图片 opt-in 盖印到模型列表上——这是 `supportsImages`
+ * 在运行时的**唯一**来源，上游的 `is_vl` 平台标记一律不采信。
+ *
+ * 与 workbuddy 的 `withImageSelection` 同构：所有运行时目录路径（启动种子、
+ * 刷新、保存）都经过它，保证同一模型在三条路径上得到一致的图像能力答案。
+ * 用户从未保存过（集合为空）时，用 `imageDefaultFor` 的厂商表结论作种子，
+ * 使首次打开就能显示正确默认，而不必先保存一次。
+ */
+function withImageSelection(
+  models: QoderModelInfo[],
+  images: ReadonlySet<string>,
+  seeded: boolean,
+): QoderModelInfo[] {
+  return models.map(model => ({
+    ...model,
+    supportsImages: images.has(model.key)
+      ? true
+      : seeded
+        ? false
+        : imageDefaultFor({ id: model.key, ...(model.supportsImages === undefined ? {} : { supportsImages: model.supportsImages }) }),
+  }))
+}
+
 /**
  * 把用户保存的「可关闭思考」选择盖印到运行时目录上。
  *
@@ -225,6 +264,23 @@ function stampOffSelection(
     ? saved
     : new Set(defaultOffModelIds(models.map(offCapabilityOf)))
   return withEffectiveOff(models, selection)
+}
+
+/**
+ * 把用户的两项显式选择（图片输入、可关闭思考）盖印到运行时目录上。
+ *
+ * 两者机制相同：上游声明不可全信，用户的选择是唯一权威；未保存过时用厂商表/
+ * 内置规则作种子。合在一处便于所有运行时目录路径（启动、刷新、保存）一次盖齐，
+ * 避免漏盖导致「某条路径上模型能力与另一条不一致」。
+ */
+function stampRuntimeCatalog(
+  config: { regions?: Record<string, unknown> | null },
+  region: QoderRegion,
+  models: QoderModelInfo[],
+): QoderModelInfo[] {
+  const images = new Set(imageModelKeysOf(config, region))
+  const withImages = withImageSelection(models, images, images.size > 0)
+  return stampOffSelection(config, region, withImages)
 }
 
 /** 某区域保存的 enabledModelKeys。 */
@@ -559,7 +615,7 @@ export function apply(ctx: Context, config: Config): void {
         const parsed = upstream.map(parseUpstreamModel)
         const saved = new Set(enabledModelKeysOf(config, region))
         const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
-        const stamped = stampOffSelection(config, region, withTiers)
+        const stamped = stampRuntimeCatalog(config, region, withTiers)
         stacks[region].catalog.set(deriveCatalog(stamped, saved.size > 0 ? saved : initialEnabledKeys(stamped)))
         invalidateCatalog()
         void refreshUsage(region)
@@ -601,7 +657,7 @@ export function apply(ctx: Context, config: Config): void {
     for (const region of QODER_REGIONS) {
       stacks[region].catalog.set(configuredModels(value, region, stacks[region].catalog.current()))
       stacks[region].catalog.set(applyContextBudgets(stacks[region].catalog.current(), contextBudgetsOf(value, region)))
-      stacks[region].catalog.set(stampOffSelection(value, region, stacks[region].catalog.current()))
+      stacks[region].catalog.set(stampRuntimeCatalog(value, region, stacks[region].catalog.current()))
     }
     invalidateCatalog()
     syncRegionRegistration(value)
@@ -806,6 +862,7 @@ export function apply(ctx: Context, config: Config): void {
       catalogs: { cn: stacks.cn.catalog, global: stacks.global.catalog },
       contextBudgets: region => contextBudgetsOf(config, region),
       offModelKeys: region => offModelKeysOf(config, region),
+      imageModelKeys: region => imageModelKeysOf(config, region),
       enabledModelKeys: region => enabledModelKeysOf(config, region),
       discoverModels,
       usage: usageEntryOf,

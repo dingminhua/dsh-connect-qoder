@@ -693,6 +693,13 @@ export type QoderWebUsage =
      * it is read.
      */
     offModelKeys: readonly string[]
+    /**
+     * Model keys the user explicitly enabled image input for — the ONLY source
+     * of image capability, never the upstream's platform `is_vl` flag (see
+     * `native-modality.ts`). Stored independently of `lastCatalog` so a
+     * directory rewrite cannot silently change a model's image answer.
+     */
+    imageModelKeys: readonly string[]
     credits?: QoderWebCredits
     creditsError?: string
     /**

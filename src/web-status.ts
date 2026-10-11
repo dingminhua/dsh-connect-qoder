@@ -139,6 +139,8 @@ export interface QoderWebRouteDeps {
   /** Persisted context budgets by model key, one region. */
   contextBudgets(region: QoderRegion): Record<string, number>
   offModelKeys(region: QoderRegion): readonly string[]
+  /** Model keys the user explicitly enabled image input for (independent set). */
+  imageModelKeys(region: QoderRegion): readonly string[]
   enabledModelKeys(region: QoderRegion): readonly string[]
   discoverModels?(region: QoderRegion, signal?: AbortSignal): Promise<QoderModelInfo[]>
   /** A cached usage read for one region. */
@@ -566,6 +568,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     models,
     enabledModelKeys: models.filter(m => enabledKeys.has(m.key)).map(m => m.key),
     offModelKeys,
+    imageModelKeys: deps.imageModelKeys(region).filter(key => catalog.some(m => m.key === key)),
     ...(usageEntry?.usage?.credits === undefined ? {} : { credits: usageEntry.usage.credits }),
     ...(usageEntry?.error !== undefined ? { creditsError: redactQoderText(usageEntry.error) } : {}),
     ...(credentialRejected && recovery ? { credentialRejected: true, recovery } : {}),

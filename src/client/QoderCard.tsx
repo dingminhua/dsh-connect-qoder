@@ -296,15 +296,19 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const cartesianModels = usage?.status === 'signed-in' ? usage.models : []
   const enabledModelKeys = usage?.status === 'signed-in' ? usage.enabledModelKeys : []
   const offModelKeys = usage?.status === 'signed-in' ? usage.offModelKeys : []
+  const imageModelKeys = usage?.status === 'signed-in' ? usage.imageModelKeys : []
   const savedBudgets = usage?.status === 'signed-in' ? (usage.contextBudgets ?? {}) : {}
 
   const draft: QoderDraft = drafts[activeRegion] ?? {
     enabledModelKeys: new Set(enabledModelKeys),
     offModelKeys: new Set(offModelKeys),
-    // 图片开关的默认值来自**已核对的原生模态表**，不是平台的 `is_vl` 标记：
-    // 后者在本插件的目录里几乎对每个模型都是 true（含纯文本模型），拿它当
-    // 能力答案会在纯文本模型上默认开出图片输入。见 src/native-modality.ts。
-    supportsImages: new Set(cartesianModels.filter(m => imageDefaultFor({ id: m.key, ...(m.supportsImages === undefined ? {} : { supportsImages: m.supportsImages }) })).map(m => m.key)),
+    // 图片勾选以**宿主保存的独立集合**为准（与运行时同一份事实）。用户从未
+    // 保存过（集合为空）时，才回落到厂商核对表 `imageDefaultFor` 的默认值——
+    // 绝不采信平台的 `is_vl` 标记：它几乎对每个模型都是 true（含纯文本模型），
+    // 拿它当能力答案会在纯文本模型上默认开出图片输入。见 src/native-modality.ts。
+    supportsImages: imageModelKeys.length > 0
+      ? new Set(imageModelKeys)
+      : new Set(cartesianModels.filter(m => imageDefaultFor({ id: m.key, ...(m.supportsImages === undefined ? {} : { supportsImages: m.supportsImages }) })).map(m => m.key)),
     contextBudgets: { ...savedBudgets },
   }
 
@@ -918,6 +922,9 @@ function buildModelsPayload(draft: QoderDraft, models: readonly QoderWebModel[])
   return {
     lastCatalog,
     enabledModelKeys: [...draft.enabledModelKeys],
+    // 图片勾选以**独立集合**持久化（workbuddy 的 `imageModelIds` 语义）：它不随
+    // lastCatalog 一起被重写，运行时也只从它派生图像能力，不从上游 `is_vl`。
+    imageModelKeys: [...draft.supportsImages],
     offModelKeys: [...draft.offModelKeys],
     contextBudgets: draft.contextBudgets,
   }
