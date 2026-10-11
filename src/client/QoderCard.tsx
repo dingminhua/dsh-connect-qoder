@@ -58,6 +58,7 @@ import { AccountPool } from './AccountPool.tsx'
 import { AddAccount } from './AddAccount.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
 import { inlineProbeReason } from './probe-reason.ts'
+import { remainingText } from './remaining.ts'
 import { QODER_PAT_ENV_VARS } from '../credentials.ts'
 import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
@@ -128,25 +129,63 @@ function dotStyle(status: QoderWebUsage['status']): Record<string, string> {
   return { background: color }
 }
 
-function probeOutcomeLabel(t: Translate, outcome: QoderWebProbeOutcome): string {
-  switch (outcome) {
-    case 'ok': return t('row.probeOk')
-    case 'rate-limited': return t('row.probeRateLimitedUnknown')
-    case 'out-of-credit': return t('row.probeOutOfCreditUnknown')
-    case 'credential-rejected': return t('row.probeCredentialRejected')
-    case 'policy-rejected': return t('row.probePolicyRejected')
-    case 'not-found': return t('row.probeNotFound')
-    case 'unavailable': return t('row.probeUnavailable')
-    case 'failed': return t('row.probeFailed')
-  }
+/**
+ * 「何时恢复」的相对说法后缀（` · 约 1 小时后`）。
+ *
+ * 绝对时刻回答「几点」，相对时长回答「等多久」——后者才是用户真正要问的，
+ * 且两者都由上游给出的**同一个**时刻推导，永远不会互相矛盾。上游若没给时刻
+ * （`retryAtMs === undefined`），这里返回空串，绝不凭空造一个倒计时。
+ */
+function retrySuffix(t: Translate, untilMs: number | undefined, nowMs: number): string {
+  if (untilMs === undefined) return ''
+  const remaining = remainingText(t, untilMs, nowMs)
+  return remaining === '' ? '' : ` · ${remaining}`
 }
 
-function probeResultTone(outcome: QoderWebProbeOutcome): 'ok' | 'warn' | 'bad' {
-  switch (outcome) {
-    case 'ok': return 'ok'
+/**
+ * 一条探针结果在模型行里显示的文字与色调。
+ *
+ * 与 workbuddy 的 `probeResultView` 同构：`ok` 显示真实耗时（秒），限流/额度
+ * 不足显示上游**明确给出的**恢复时刻（并附相对时长），没有给出时刻就明说
+ * 「上游没给时间」，而不是编一个。未取到 `status` 的失败只说「失败」。
+ */
+function probeResultView(
+  result: QoderWebProbeResult,
+  t: Translate,
+  nowMs: number = Date.now(),
+): { text: string, tone: 'ok' | 'warn' | 'bad' } {
+  switch (result.outcome) {
+    case 'ok': {
+      const elapsed = result.elapsedMs === undefined ? undefined : `${String(result.elapsedMs / 1000)}s`
+      return { text: elapsed === undefined ? t('row.probeOk') : t('row.probeOkMs', { ms: elapsed }), tone: 'ok' }
+    }
     case 'rate-limited':
-    case 'out-of-credit': return 'warn'
-    default: return 'bad'
+      return {
+        text: result.retryAtMs === undefined
+          ? t('row.probeRateLimitedUnknown')
+          : t('row.probeRateLimitedAt', { at: formatDate(result.retryAtMs) })
+            + retrySuffix(t, result.retryAtMs, nowMs),
+        tone: 'warn',
+      }
+    case 'out-of-credit':
+      return {
+        text: result.retryAtMs === undefined
+          ? t('row.probeOutOfCreditUnknown')
+          : t('row.probeOutOfCreditAt', { at: formatDate(result.retryAtMs) })
+            + retrySuffix(t, result.retryAtMs, nowMs),
+        tone: 'bad',
+      }
+    case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }
+    case 'policy-rejected': return { text: t('row.probePolicyRejected'), tone: 'bad' }
+    case 'not-found': return { text: t('row.probeNotFound'), tone: 'bad' }
+    case 'unavailable': return { text: t('row.probeUnavailable'), tone: 'bad' }
+    default:
+      return {
+        text: result.status === undefined
+          ? t('row.probeFailed')
+          : t('row.probeFailedStatus', { status: String(result.status) }),
+        tone: 'bad',
+      }
   }
 }
 
@@ -727,11 +766,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                         ? t('row.probeHint')
                         : (() => {
                             const p = probes[model.key] as QoderWebProbeResult
-                            const label = probeOutcomeLabel(t, p.outcome)
+                            const view = probeResultView(p, t)
                             const reason = inlineProbeReason(p.outcome, p.message)
                             return (
                               <span>
-                                <span className={`dsm-qoder-model-probe-result dsm-qoder-model-probe-result-${probeResultTone(p.outcome)}`}>{label}</span>
+                                <span className={`dsm-qoder-model-probe-result dsm-qoder-model-probe-result-${view.tone}`}>{view.text}</span>
                                 {reason === undefined ? null : <span className="dsm-qoder-hint" style={{ marginLeft: 6 }} title={p.message}>{reason}</span>}
                               </span>
                             )
