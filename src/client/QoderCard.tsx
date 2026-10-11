@@ -232,6 +232,15 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [siblingBusy, setSiblingBusy] = useState(false)
+  /**
+   * 等待二次确认的「删除账号」目标 id。
+   *
+   * 删除是**硬删** vault 条目：vault 是这一个账号的唯一存储位置，删掉就再也
+   * 找不回来（workbuddy 的删除是「暂时隐藏」，可 rescan 找回，所以它不需要确认；
+   * 本插件没有第二来源可按，因此必须有一次确认）。这里用两步内联确认而不是
+   * `window.confirm`：不阻塞、可被测试，且在禁用态下也能正确复位。
+   */
+  const [confirmRemoveId, setConfirmRemoveId] = useState<string | undefined>(undefined)
   const [drafts, setDrafts] = useState<Record<string, QoderDraft | undefined>>({})
   const [revision, setRevision] = useState(0)
   const mounted = useRef(true)
@@ -460,7 +469,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   }
 
   const signIn = usage?.status === 'signed-in' ? usage : undefined
-
   return (
     <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
       <button
@@ -669,17 +677,38 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             {t('row.accountsRescan')}
           </button>
           {accounts.filter(a => a.source === 'vault').map(a => (
-            <button
-              key={a.id}
-              type="button"
-              className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
-              title={t('row.accountRemoveHint')}
-              aria-label={t('row.accountRemoveAria', { accountName: a.accountName || t('row.accountUnnamed') })}
-              disabled={siblingBusy}
-              onClick={() => { void removeVaultAccount(a.id) }}
-            >
-              {t('row.accountRemoveHint')} · {a.accountName || t('row.accountUnnamed')}
-            </button>
+            confirmRemoveId === a.id ? (
+              <span key={a.id} className="dsm-qoder-account-confirm">
+                <span className="dsm-qoder-account-confirm-text">{t('row.accountRemoveConfirm', { accountName: a.accountName || t('row.accountUnnamed') })}</span>
+                <button
+                  type="button"
+                  className="dsm-btn dsm-btn-primary dsm-qoder-pool-small-btn"
+                  disabled={siblingBusy}
+                  onClick={() => { setConfirmRemoveId(undefined); void removeVaultAccount(a.id) }}
+                >
+                  {t('row.accountRemoveConfirmYes')}
+                </button>
+                <button
+                  type="button"
+                  className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                  onClick={() => setConfirmRemoveId(undefined)}
+                >
+                  {t('row.accountRemoveConfirmNo')}
+                </button>
+              </span>
+            ) : (
+              <button
+                key={a.id}
+                type="button"
+                className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                title={t('row.accountRemoveHint')}
+                aria-label={t('row.accountRemoveAria', { accountName: a.accountName || t('row.accountUnnamed') })}
+                disabled={siblingBusy}
+                onClick={() => setConfirmRemoveId(a.id)}
+              >
+                {t('row.accountRemoveHint')} · {a.accountName || t('row.accountUnnamed')}
+              </button>
+            )
           ))}
         </div>
 

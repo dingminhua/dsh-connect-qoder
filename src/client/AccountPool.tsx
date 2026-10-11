@@ -530,6 +530,13 @@ function RenderSettings(props: {
         <div className="dsm-qoder-pool-set-ctl">
           <select className="dsm-qoder-pool-select" value={active.targetModelId} disabled={!canEditPool} onChange={(e) => onEdit(prev => ({ ...prev, targetModelId: e.target.value }))}>
             <option value="">{t('row.poolTargetAutoOption')}</option>
+            {/* 已保存但已不在目录里的 id 需要它**自己**的一个 option：否则这个受控
+                select 找不到匹配项，浏览器会退回显示第一项（「自动」），而存的值仍是
+                旧 id——显示与取值就此分叉，下一次保存又把旧 id 写回去。设为 disabled
+                使其不可能被重新选中，同时让用户看见到底存的是什么。 */}
+            {active.targetModelId !== '' && !(catalog ?? []).includes(active.targetModelId)
+              ? <option value={active.targetModelId} disabled>{t('row.poolTargetStaleOption', { model: active.targetModelId })}</option>
+              : null}
             {(catalog ?? []).map(id => <option key={id} value={id}>{id}</option>)}
           </select>
         </div>

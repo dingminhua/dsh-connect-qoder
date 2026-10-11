@@ -231,7 +231,12 @@ const PROBE_MESSAGE_LIMIT = 300
 export function redactUpstreamText(text: string): string {
   return text
     .replace(/\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/gu, '[redacted token]')
-    .replace(/(\b(?:code|token|refresh_token|access_token|pt-)[^\s, ]+)/giu, '$1[redacted]')
+    // `key=secret` 形式：保留键名，抹掉值。
+    .replace(/(\b(?:code|token|refresh_token|access_token)=)[^\s&,]+/giu, '$1[redacted]')
+    // 裸 token 形态：Qoder 的 PAT 以 `pt-` 开头。整段替换掉——**只**替换匹配
+    // 本身，绝不把匹配再拼回结果里（早期实现写的是 `'$1[redacted]'`，把密钥
+    // 原样保留了下来，等于没脱敏）。长度下限 6 避免误伤普通词里的 "pt-"。
+    .replace(/\bpt-[A-Za-z0-9_-]{6,}\b/giu, '[redacted credential]')
     .slice(0, PROBE_MESSAGE_LIMIT)
 }
 
