@@ -40,8 +40,9 @@
 - **按实测排序与故障转移** —— 「测一测」批量对账号池每个成员发真实请求，结果落 `$DSH_HOME/.qoder-pool.<region>.json`；聊天流在首字节前按 `rankPool`（可用性 → 额度从高到低 → 到期最近 → id）自动换账号，失败回写 `live-request` 探测。Qoder **没有每日签到**，故账号池不出现签到列。
 - **账号转移（导入 / 导出）** —— 按区域把 vault 账号导出为传输文件，预览后按索引导入；跨区域域名（`qoder.com.cn` / `qoder.sh`）正向匹配，不匹配的记录计入 `skipped`。
 - **上下文预算** —— 从上游 `context_config` 解析模型声明的档位，按档位选择上下文预算，仅在已声明档位内生效（否则回落原生值）。
+- **诚实的模型能力** —— 上游的 `is_vl` 是**平台**的图片输入声明而非模型原生能力（内置目录里几乎全是 `true`，连纯文本模型也是）。图片输入按**精确 model id** 的人工核对表只对文档确认多模态的模型预勾选，未核实的一律不勾，并在开关 tooltip 里说明「为什么没勾」；「关闭思考」同样只对上游显式声明、且不在已知拒绝集里的模型提供。宁可少给一个选项，也不要让用户按下去就失败。
 - **composer 积分读数** —— 会话输入区（`conversation.input.left`）按区域显示 `QD CN` / `QD AI` 与当前账号余额，受每区域 `showCreditsInMainUi`（默认开，opt-out）控制；每账号明细走 `account-credits` 路由。
-- **命令行诊断** —— `dsh-connect-qoder doctor|status|logout [--json] [--region cn|global]`：`doctor` 报 PAT 来源、cosy 指纹派生、pi-ai 代际、宿主心跳存活与 vault 账号计数；`status` 报凭据来源、上游可达性与当前剩余积分；`logout` 清除指定区域的 vault 账号与账号池测量副本。无需浏览器即可确认宿主状态。
+- **命令行诊断与现场验证** —— `dsh-connect-qoder doctor|status|logout [--json] [--region cn|global]`：`doctor` 报 PAT 来源、cosy 指纹派生、pi-ai 代际、宿主心跳存活与 vault 账号计数；`status` 报凭据来源、上游可达性与当前剩余积分；`logout` 清除指定区域的 vault 账号与账号池测量副本。另有 `pnpm run probe:cosy`（不依赖宿主直连 cosy 链路验证）与 `pnpm run probe:vault`（只读 dump vault / 账号池测量，PAT 只显示掩码）。
 
 ## 工作原理
 
