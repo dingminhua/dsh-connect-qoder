@@ -237,9 +237,13 @@ describe('QoderCard render', () => {
     }
   })
 
-  it('上下文档位选择器的标签就是「上下文」，不重复成长句', async () => {
-    // 标签此前是「DSH 上下文预算」，还被同时用作 title——标签与悬停提示写
-    // 同一句话是纯噪音，而且这一行本身已经明说是在选窗口大小。
+  it('上下文档位选择器只留下拉，且档位不重复', async () => {
+    // 两点都在用户实拍里暴露过：
+    //  1. 标签「上下文」也被去掉——它挨着模型自己的上下文信息，下拉里的
+    //     200K / 400K / 1M 已经说明在选什么。
+    //  2. **档位重复**：此前额外前置了一个「原生窗口」选项，而上游的
+    //     contextTiers 本身就以原生窗口开头（实测 [200000, 400000,
+    //     1000000]），于是 200K 出现两次。
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/plugins/dsh-connect-qoder/usage')) {
@@ -250,7 +254,8 @@ describe('QoderCard render', () => {
           status: 200,
           json: async () => ({
             ...doc,
-            models: [modelOf({ contextTiers: [262_144, 524_288, 1_000_000] })],
+            // 原生窗口在档位里（上游实际形态），用来重现重复。
+            models: [modelOf({ contextWindow: 262_144, contextTiers: [262_144, 524_288, 1_000_000] })],
             enabledModelKeys: ['qwen3-coder'],
           }),
         } as Response
@@ -261,16 +266,15 @@ describe('QoderCard render', () => {
     try {
       const picker = container.querySelector('.dsm-qoder-context-budget')
       expect(picker).not.toBeNull()
-      expect(picker!.textContent).toContain('row.contextBudget')
-      // 悬停提示不再重复标签：没有 title 属性。
-      expect(picker!.getAttribute('title')).toBeNull()
-      // 原生窗口单独列第一项，后面是上游声明的档位（含与原生值相同的那个，
-      // 两处都会出现——第一项是「回落原生值」的显式表达）。档位文本由
-      // formatCapacity 产生：整百万缩写为 1M，其余按千分位。
+      // 没有可见标签了（无障碍名仍保留，读屏用户不能失去这一行的含义）。
+      expect(picker!.textContent).not.toContain('row.contextBudget')
+      expect(picker!.querySelector('select')?.getAttribute('aria-label')).toBe('row.contextBudget')
+
       const options = Array.from(picker!.querySelectorAll('option')).map(o => o.textContent)
-      expect(options[0]).toBe('262,144')
-      expect(options).toContain('524,288')
-      expect(options).toContain('1M')
+      // 档位数 = 上游声明的档位数，一个不多。
+      expect(options).toEqual(['262,144', '524,288', '1M'])
+      // 重复项是这次回归的正题：同值只能出现一次。
+      expect(new Set(options).size).toBe(options.length)
     } finally {
       await unmount()
     }

@@ -917,19 +917,21 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     const tiers = model.contextTiers ?? []
     if (tiers.length === 0) return <span />
     const current = draft.contextBudgets[model.key] ?? model.contextWindow
+    // 选项**只**来自上游声明的档位。此前额外前置了一个「原生窗口」选项，
+    // 而上游的 contextTiers 本身就以原生窗口开头（实测 `[200000, 400000,
+    // 1000000]`），于是 200K 出现两次——用户一眼就看出来了。
+    // 无标签：这一列就挨着模型的上下文信息，下拉里的 200K / 400K / 1M
+    // 本身已经说明它在选什么（只留下拉，与旁边的思考强度选择器对齐）。
     return (
-      // 标签只说「上下文」：这一行是给模型选上下文窗口，不带 title（标签与
-      // 悬停提示写同一句话是纯噪音）。
-      <div className="dsm-qoder-context-budget">
+      <div className="dsm-qoder-context-budget" title={t('row.contextBudget')}>
         <label>
-          {t('row.contextBudget')}{' '}
           <select
             className="dsm-qoder-pool-num"
+            aria-label={t('row.contextBudget')}
             disabled={!canWrite(scope) || siblingBusy}
             value={String(current)}
             onChange={(e) => setContextBudget(model.key, Number(e.target.value))}
           >
-            <option value={String(model.contextWindow)}>{formatCapacity(model.contextWindow)}</option>
             {tiers.map(tier => <option key={String(tier)} value={String(tier)}>{formatCapacity(tier)}</option>)}
           </select>
         </label>
