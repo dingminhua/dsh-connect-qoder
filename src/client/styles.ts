@@ -53,7 +53,7 @@ export const QODER_CARD_CSS = `
  *   - 中：gap 16px → 10px。
  * 下侧 4px 保持：说明行与账号池之间还隔着账号池自己的 padding-top 与边框。
  */
-.dsm-qoder-usage{display:flex;flex-direction:column;gap:10px;margin:0;padding:10px 0 4px}
+.dsm-qoder-usage{display:flex;flex-direction:column;gap:10px;margin:0;padding:12px 0 2px}
 .dsm-qoder-tabs{display:flex;gap:6px;padding:4px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
 .dsm-qoder-tab{appearance:none;font:inherit;cursor:pointer;flex:1;border:0;border-radius:7px;padding:7px 10px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:500;line-height:18px;background:transparent;transition:color .15s,background .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsm-qoder-tab:hover:not(:disabled):not(.dsm-qoder-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
@@ -80,7 +80,15 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-account-confirm{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
 .dsm-qoder-account-confirm-text{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-tab-off-notice{color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px;margin:0 0 4px;padding:8px 10px;background:var(--dsw-alias-bg-layer-3,#2a2c33);border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px}
-.dsm-qoder-usage-hint{padding-left:19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
+/*
+ * 那段说明行（「每个 tab 是一个独立供应商…」）。
+ *
+ * 它此前**只有** padding-left，上下间距全靠外层容器的 gap 与账号池的 padding——
+ * 用户圈出的两处空白正是它的上下。给 line-height 18px 配 6px 上下边距，让这段
+ * 与 tab 栏、与账号池标题都保持一个读得舒服但不过分的距离。
+ * 上一轮我误把账号池自己的 padding-top 当成其中一处改小了，已恢复。
+ */
+.dsm-qoder-usage-hint{padding:2px 0 2px 19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-qoder-account-error{color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
 .dsm-qoder-usage-select-wrap{position:relative}
 .dsm-qoder-usage-select{appearance:none;width:100%;font:inherit;padding:10px 34px 10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-3,#2a2c33);cursor:pointer;transition:border-color .15s,box-shadow .15s}
@@ -182,7 +190,7 @@ export const QODER_CARD_CSS = `
 /* ---- Account pool ---- */
 /* 区块分隔线之上只留 8px：上方的「在对话框显示积分」勾选框只有一行，
    16px 会让这截空档看着像丢了内容（用户实拍：「红色的部分向上靠拢一些」）。 */
-.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:6px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:8px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-qoder-pool-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 /* 积分开关的壳：紧挨标题（workbuddy 的 pool-head-extra 同规）。 */
 .dsm-qoder-pool-head-extra{display:inline-flex;align-items:center}

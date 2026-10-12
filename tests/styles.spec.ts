@@ -39,16 +39,22 @@ describe('QODER_CARD_CSS', () => {
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-inline-select option')).toContain('background')
   })
 
-  it('tab 栏与说明行的两个间隔都收紧了（用户实拍「两个间隔都小点」）', () => {
-    // 用户圈出的两处：tab 栏 → 说明行 → 账号池分隔线。
-    // 原来是各 16px（与 workbuddy 一致）；收紧到 10px/6px。
+  it('说明行（tab 提示语）上下的空白都收紧（用户圈出的那两处）', () => {
+    // 用户圈的是**那句说明文案上下的两处空白**：
+    //   tab 栏 → 说明行，以及 说明行 → 账号池分隔线。
+    // 「账号池自己的上下间距」不在此列（上一轮我误改成了它）。
     const usage = ruleOf(QODER_CARD_CSS, 'dsm-qoder-usage') ?? ''
-    // 上：与上方分隔线的间距（padding-top）
-    expect(usage).toMatch(/padding:10px 0 4px/)
-    // 中：tab 栏与说明行之间（gap）
+    const hint = ruleOf(QODER_CARD_CSS, 'dsm-qoder-usage-hint') ?? ''
+    const pool = ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool') ?? ''
+
+    // 分隔线 → tab 栏
+    expect(usage).toMatch(/padding:12px 0 2px/)
+    // tab 栏 → 说明行（容器 gap 负责）
     expect(usage).toMatch(/gap:10px/)
-    // 下：账号池自己的 padding-top（说明行与账号池标题之间）
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool')).toMatch(/padding:6px 0 4px/)
+    // 说明行自己的上下内边距（它此前只有 padding-left）
+    expect(hint).toMatch(/padding:2px 0 2px 19px/)
+    // 账号池**自己的**间距保持 8px —— 它不属于用户圈的那两处。
+    expect(pool).toMatch(/padding:8px 0 4px/)
   })
 
   it('积分开关与标题同行（workbuddy 的 pool-head-extra 同规）', () => {
