@@ -24,11 +24,14 @@ import type { ReactNode } from 'react'
 import {
   QODER_POOL_ACCOUNT_PARAM,
   QODER_POOL_PATH,
+  QODER_GITHUB_URL,
   withQoderRegionAndAction,
   withQoderRouteAction,
 } from '../status-paths.ts'
 import type {
   QoderWebPool,
+  QoderWebPoolAccount,
+  QoderWebPoolModel,
   QoderWebPoolTestRow,
   QoderWebProbeOutcome,
   QoderWebProbeResult,
@@ -38,7 +41,7 @@ import { exclusionText } from './exclusion-text.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
 import { inlineProbeReason } from './probe-reason.ts'
-import { probeLabelOf } from './probe-label.ts'
+import { probeLabelOf, formatProbeMoment } from './probe-label.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
 import { remainingText } from './remaining.ts'
@@ -54,6 +57,7 @@ import {
   effectiveMemberIds,
   ghostMemberIds,
   poolFailureText,
+  usableMemberIds,
 } from './pool-state.ts'
 import { isFileContentionWriteError, writePoolPreferences } from './account-selection.ts'
 import type { QoderAccountScope } from './account-selection.ts'
@@ -64,6 +68,16 @@ interface PoolLogEntry {
   text: string
   tone: 'ok' | 'warn' | 'error' | 'info'
 }
+
+/** 活动日志条数上限（超出裁最旧）。 */
+const LOG_LIMIT = 50
+
+/**
+ * 跨 remount 的活动日志。折叠卡片/切换 tab 会 unmount 本组件，组件 state 会
+ * 丢空；日志属于「刚刚发生了什么」的事实记录，丢了会让用户以为操作没发生。
+ * （workbuddy 的 logStore 同款方案。）
+ */
+const logStore = new Map<QoderWebRegion, readonly PoolLogEntry[]>()
 
 /** The preferences the card edits as a draft. */
 export interface PoolPreferences {
@@ -83,6 +97,20 @@ export interface AccountPoolProps {
   settingsScope?: QoderAccountScope | undefined
   /** Whether the SAME card's other save (the model list) is in flight. */
   siblingBusy?: boolean | undefined
+  /**
+   * Reports THIS pool's own save in flight, so the card can disable the model
+   * save / region switch / credits switch while it runs (workbuddy's
+   * `onBusyChange` pattern): pool and models write into ONE region slot, and a
+   * stale-snapshot save from either side would roll back the other's write.
+   */
+  onBusyChange?: ((busy: boolean) => void) | undefined
+  /**
+   * The account tools (add a PAT / export-import), rendered in a dashed box at
+   * the TOP of the settings block — after the heading, before the hint — so
+   * "which accounts does this region have" is answered in one place. The card
+   * owns these (they need its refresh + region), so they arrive as a node.
+   */
+  accountTools?: ReactNode | undefined
   /** Whether this region may be edited (not while the provider is off). */
   canWrite: boolean
   /** Force the card to re-read its usage snapshot after a Host-side action. */
@@ -90,7 +118,7 @@ export interface AccountPoolProps {
 }
 
 export function AccountPool(props: AccountPoolProps): ReactNode {
-  const { t, region, pool, settingsScope, siblingBusy, canWrite, onChanged } = props
+  const { t, region, pool, settingsScope, siblingBusy, canWrite, onChanged, onBusyChange, accountTools } = props
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -98,7 +126,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const [actionError, setActionError] = useState<string | undefined>(undefined)
   const [batchBusy, setBatchBusy] = useState(false)
   const [removingId, setRemovingId] = useState<string | undefined>(undefined)
-  const [log, setLog] = useState<readonly PoolLogEntry[]>([])
+  // 日志种子来自模块级 logStore：折叠卡片/切换 tab 导致的 unmount 不再清空
+  // 历史（workbuddy 同规）。两个区域各持一份，切 tab 是换历史而不是混历史。
+  const [log, setLog] = useState<readonly PoolLogEntry[]>(() => logStore.get(region) ?? [])
+  useEffect(() => {
+    setLog(logStore.get(region) ?? [])
+  }, [region])
   const [draftRegion, setDraftRegion] = useState<string | undefined>(undefined)
   const [draftPool, setDraftPool] = useState<PoolPreferences | null>(null)
   const mounted = useRef(true)
@@ -113,9 +146,19 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     return () => window.clearInterval(timer)
   }, [])
 
+  // 上报本池保存的 in-flight 窗口（卸载时务必归零）。workbuddy 同款的
+  // useEffect 上报模式。
+  useEffect(() => {
+    onBusyChange?.(saving)
+    return () => { onBusyChange?.(false) }
+  }, [onBusyChange, saving])
+
   const saved: PoolPreferences = {
     enabled: pool?.enabled ?? false,
-    targetModelId: pool?.targetModelId ?? '',
+    // 陈旧目标回退：保存的 id 已掉出目录时 `targetModelId` 为空而
+    // `staleTargetModelId` 存着原值——select 必须显示那个原值（以一个禁用的
+    // 「已失效」option 呈现），而不是退回「自动」让用户以为从没选过。
+    targetModelId: pool?.targetModelId || pool?.staleTargetModelId || '',
     probeInputTokens: pool?.probeInputTokens ?? 0,
     memberAccountIds: pool?.memberAccountIds ?? [],
   }
@@ -140,6 +183,18 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     })
   const ghost = ghostMemberIds(active.memberAccountIds, listed)
   const canEditPool = settingsScope !== undefined && canWrite && !siblingBusy
+  // 现在就能服务的成员（workbuddy 的 usable）：有效成员 ∩ 未被排除。
+  const usable = pool === undefined ? [] : usableMemberIds(pool.accounts, effective, active.memberAccountIds)
+  // 目标模型来源一句话：「当前用的是谁、是不是你选的」先于「自动怎么工作」的
+  // 静态说明出现（workbuddy 的 targetProvenance 同规）。
+  const targetProvenance = pool === undefined ? null
+    : pool.targetModelSource === 'preferred'
+      ? t('row.poolTargetCurrentPreferred', { model: pool.targetModelId ?? '' })
+      : pool.targetModelSource === 'free'
+        ? t('row.poolTargetCurrentFree', { model: pool.targetModelId ?? '' })
+        : pool.targetModelSource === 'stale'
+          ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' })
+          : pool.targetModelSource === 'none' ? t('row.poolTargetNone') : null
 
   const editDraft = useCallback((update: (prev: PoolPreferences) => PoolPreferences) => {
     setDraftPool(update(draftBaseFor<PoolPreferences>(draftPool, draftRegion, region, saved)))
@@ -179,8 +234,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   }
 
   const appendLog = useCallback((entry: PoolLogEntry) => {
-    setLog(entries => [entry, ...entries])
-  }, [])
+    setLog(entries => {
+      const next = [entry, ...entries].slice(0, LOG_LIMIT)
+      logStore.set(region, next)
+      return next
+    })
+  }, [region])
 
   const runTestBatch = async (): Promise<void> => {
     setActionError(undefined)
@@ -253,8 +312,8 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   return (
     <section className="dsm-qoder-pool">
       <BusyOverlay
-        visible={batchBusy}
-        message={t('row.poolTesting')}
+        visible={batchBusy || saving || removingId !== undefined}
+        message={batchBusy ? t('row.poolTesting') : t('row.poolSaving')}
         hint={t('row.poolBusyHint')}
       />
 
@@ -268,7 +327,6 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
           </span>
         )}
       </div>
-      <p className="dsm-qoder-pool-note">{t('row.poolRegionNote')}</p>
 
       <div className="dsm-qoder-pool-actions">
         <div className="dsm-qoder-pool-actions-group">
@@ -276,15 +334,153 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             type="button"
             className="dsm-btn dsm-btn-outline"
             disabled={!canEditPool || effective.length === 0 || batchBusy || targetMisses}
+            title={pool?.targetModelSource === 'none'
+              ? t('row.poolTargetNone')
+              : pool?.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined}
             onClick={() => { void runTestBatch() }}
           >
             {batchBusy ? t('row.poolTesting') : t('row.poolTestAll')}
           </button>
-          <span className="dsm-qoder-pool-hint">
-            {t('row.poolSelectedCount', { count: effective.length, total: pool?.accounts.length ?? 0 })}
-          </span>
+          {/* 批量测试期间说明「正在逐个处理」：宿主只在批量结束时一次性返回，
+              没有逐行进度可报（workbuddy 同规）。 */}
+          {batchBusy ? <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span> : null}
         </div>
       </div>
+
+      {/* 池开关关掉时说明它的语义：手动测试仍可用，只是不再自动选号。 */}
+      {pool?.enabled === false
+        ? h('p', { className: 'dsm-qoder-pool-note' }, t('row.poolEnabledHint'))
+        : null}
+      {/* 开着却没有可用成员时直说：失败会被直接报出来而不是被重试。 */}
+      {pool?.enabled === true && usable.length === 0
+        ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
+            `${t('row.poolNoCandidate')} ${t('row.poolNoCandidateHint')}`)
+        : null}
+
+      {/* 成员选择就在这张表里完成：复选框即成员资格（workbuddy 的单表同构）。
+          表头带全选/清空，默认全不选——什么都不勾绝不等于「全部」。 */}
+      <div className="dsm-qoder-pool-members">
+        <div className="dsm-qoder-pool-members-head">
+          <div>
+            <h4 className="dsm-qoder-pool-members-title">{t('row.poolMembersTitle')}</h4>
+            <p className="dsm-qoder-pool-note">{t('row.poolMembersHint')}</p>
+          </div>
+          <div className="dsm-qoder-pool-members-actions">
+            <span className="dsm-qoder-pool-hint">
+              {t('row.poolSelectedCount', { count: effective.length, total: pool?.accounts.length ?? 0 })}
+            </span>
+            <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={pool?.accounts.length === 0 || !canEditPool} onClick={() => selectAll(true)}>{t('row.poolSelectAll')}</button>
+            <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={effective.length === 0 || !canEditPool} onClick={() => selectAll(false)}>{t('row.poolSelectNone')}</button>
+          </div>
+        </div>
+        {/* Pool table — no check-in column (checkinSupported is always false). */}
+        <div className="dsm-qoder-pool-table">
+          <div className="dsm-qoder-pool-row dsm-qoder-pool-row-head">
+            <span>{t('row.poolColumnAccount')}</span>
+            <span>{t('row.poolColumnCredits')}</span>
+            <span>{t('row.poolColumnProbe')}</span>
+            <span />
+          </div>
+          {(pool?.accounts ?? []).map(account => {
+            const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
+            const excluded = exclusionText(t, account.excludedBy)
+            const inPool = active.memberAccountIds.includes(account.accountId)
+            return (
+              <div
+                key={account.accountId}
+                className={`dsm-qoder-pool-row${account.current ? ' dsm-qoder-pool-row-current' : ''}`}
+              >
+                <span className="dsm-qoder-pool-account">
+                  <label className="dsm-qoder-pool-check">
+                    <input
+                      type="checkbox"
+                      checked={inPool}
+                      disabled={!canEditPool}
+                      aria-label={t('row.poolSelectAria', { accountName: name })}
+                      onChange={(e) => toggleMember(account.accountId, e.target.checked)}
+                    />
+                  </label>
+                  {/* 状态点：排除=红/琥珀、未测=灰、测过=绿/琥珀（workbuddy 同规）。 */}
+                  <span className="dsm-qoder-usage-dot" style={{ background: stateColor(account) }} />
+                  <span className="dsm-qoder-pool-account-name">
+                    <b>{name}</b>
+                    {/* 谁正在计费，用文字说出来：行底色只有 7% 透明度，
+                        「到底哪一行」不能只靠颜色回答。 */}
+                    {account.current ? <span className="dsm-qoder-pool-current-tag">{t('row.poolCurrentBadge')}</span> : null}
+                    {/* 成员资格每行写明：未勾选账号的空积分/探针列，否则与
+                        「勾了但还没数据」无法区分。 */}
+                    <span className={inPool ? 'dsm-qoder-pool-member' : 'dsm-qoder-pool-not-member'}>
+                      {inPool ? t('row.poolMember') : t('row.poolNotMember')}
+                    </span>
+                    {excluded === undefined
+                      ? account.probe === undefined ? null : <span>{t('row.poolTestedAt', { at: formatProbeMoment(account.probe.atMs) })}</span>
+                      : <span className="dsm-qoder-pool-excluded">{excluded}</span>}
+                  </span>
+                </span>
+                <span className="dsm-qoder-pool-credits">
+                  {account.credits === undefined
+                    ? <span className="dsm-qoder-pool-unknown">{'—'}</span>
+                    : <b>{String(account.credits)}</b>}
+                  {account.expiringSoon !== undefined && account.expiringSoon > 0
+                    ? <span className="dsm-qoder-pool-soon">{t('row.poolCreditSoon', { count: String(account.expiringSoon) })}</span>
+                    : account.nearestExpiryMs === undefined ? null
+                      : <span className="dsm-qoder-pool-soon-plain">{t('row.poolCreditNearest', { at: formatProbeMoment(account.nearestExpiryMs) })}</span>}
+                </span>
+                <span className="dsm-qoder-pool-probe" {...(account.probe?.message === undefined ? {} : { title: account.probe.message })}>
+                  {/* 主行 = 结果 · 原因（workbuddy 的 probeLine 同规）：原因写进主行
+                      而不是另做药丸——它回答的正是「为什么是现在这个结果」，与结果
+                      同句读才顺；全文仍在行 title 里。 */}
+                  <span className="dsm-qoder-pool-probe-main">
+                    {[
+                      probeLabelOf(t, account.probe, nowMs),
+                      account.probe === undefined ? undefined : inlineProbeReason(account.probe.outcome, account.probe.message),
+                    ]
+                      .filter(part => part !== undefined && part !== '')
+                      .join(' · ')}
+                  </span>
+                  {account.probe === undefined ? null : (
+                    <span className="dsm-qoder-pool-probe-prov">
+                      <span className={probeSourceClass(account.probe.source)}>
+                        {probeSourceText(t, account.probe.source) ?? t('row.poolProbeSourceUnknown')}
+                      </span>
+                      <span className="dsm-qoder-pool-prov-sep">·</span>
+                      <span className="dsm-qoder-pool-prov-age">{probeAgeText(t, account.probe.atMs, nowMs)}</span>
+                    </span>
+                  )}
+                </span>
+                <span className="dsm-qoder-pool-row-actions">
+                  <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch() }}>
+                    {t('row.poolRowTest')}
+                  </button>
+                  {account.member ? (
+                    <button
+                      type="button"
+                      className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                      title={t('row.poolRowRemoveHint')}
+                      aria-label={t('row.poolRowRemoveAria', { accountName: name })}
+                      disabled={!canEditPool || removingId !== undefined}
+                      onClick={() => { void runRowRemove(account.accountId) }}
+                    >
+                      {removingId === account.accountId ? t('row.poolRowRemoving') : t('row.poolRowRemove')}
+                    </button>
+                  ) : null}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+
+      {effective.length === 0
+        ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
+            `${t('row.poolNoneSelected')} ${t('row.poolNoneSelectedHint')}`)
+        : null}
+      {ghost.length === 0 ? null
+        : h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
+            t('row.poolGhostMembers', { count: ghost.length }))}
+      {dirty && !sameIds(active.memberAccountIds, saved.memberAccountIds)
+        ? h('p', { className: 'dsm-qoder-pool-dirty' }, t('row.poolUnsavedMembers'))
+        : null}
 
       {pool?.targetModelSource === 'none'
         ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
@@ -310,146 +506,31 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       {actionError === undefined ? null
         : h('p', { className: 'dsm-qoder-pool-error', role: 'alert' }, actionError)}
 
-      {/* Pool table — no check-in column (checkinSupported is always false). */}
-      <div className="dsm-qoder-pool-table">
-        <div className="dsm-qoder-pool-row dsm-qoder-pool-row-head">
-          <span>{t('row.poolColumnAccount')}</span>
-          <span>{t('row.poolColumnCredits')}</span>
-          <span>{t('row.poolColumnProbe')}</span>
-          <span />
-        </div>
-        {(pool?.accounts ?? []).map(account => (
-          <div
-            key={account.accountId}
-            className={`dsm-qoder-pool-row${account.current ? ' dsm-qoder-pool-row-current' : ''}`}
-          >
-            <span className="dsm-qoder-pool-account">
-              <span className="dsm-qoder-pool-account-name">
-                <b>{account.accountName === '' ? t('row.accountUnnamed') : account.accountName}</b>
-                {exclusionText(t, account.excludedBy) === undefined ? null
-                  : <span className="dsm-qoder-pool-excluded">{exclusionText(t, account.excludedBy)}</span>}
-              </span>
-            </span>
-            <span className="dsm-qoder-pool-credits">
-              {account.credits === undefined
-                ? <span className="dsm-qoder-pool-unknown">{'—'}</span>
-                : <b>{String(account.credits)}</b>}
-              {account.nearestExpiryMs === undefined ? null
-                : <span className="dsm-qoder-pool-soon-plain">{t('row.poolCreditNearest', { at: formatClock(account.nearestExpiryMs) })}</span>}
-            </span>
-            <span className="dsm-qoder-pool-probe">
-              <span className="dsm-qoder-pool-probe-main">{probeLabelOf(t, account.probe, nowMs)}</span>
-              {account.probe === undefined ? null : (
-                <span className="dsm-qoder-pool-probe-prov">
-                  {inlineProbeReason(account.probe.outcome, account.probe.message) === undefined ? null : (
-                    <>
-                      <span className="dsm-qoder-pool-prov-tag dsm-qoder-pool-prov-live" title={account.probe.message}>
-                        {inlineProbeReason(account.probe.outcome, account.probe.message) as string}
-                      </span>
-                      <span className="dsm-qoder-pool-prov-sep">·</span>
-                    </>
-                  )}
-                  <span className="dsm-qoder-pool-prov-tag">{probeSourceText(t, account.probe.source) ?? t('row.poolProbeSourceUnknown')}</span>
-                  <span className="dsm-qoder-pool-prov-sep">·</span>
-                  <span className="dsm-qoder-pool-prov-age">{probeAgeText(t, account.probe.atMs, nowMs)}</span>
-                </span>
-              )}
-            </span>
-            <span className="dsm-qoder-pool-row-actions">
-              <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch() }}>
-                {t('row.poolRowTest')}
-              </button>
-              {account.member ? (
-                <button
-                  type="button"
-                  className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
-                  title={t('row.poolRowRemoveHint')}
-                  aria-label={t('row.poolRowRemoveAria', { accountName: account.accountName || t('row.accountUnnamed') })}
-                  disabled={!canEditPool || removingId !== undefined}
-                  onClick={() => { void runRowRemove(account.accountId) }}
-                >
-                  {removingId === account.accountId ? t('row.poolRowRemoving') : t('row.poolRowRemove')}
-                </button>
-              ) : null}
-            </span>
-          </div>
-        ))}
-      </div>
+      {/* Preferences（外壳与保存行由 RenderSettings 自己渲染，与 workbuddy 同构） */}
+      <RenderSettings
+        t={t}
+        active={active}
+        dirty={dirty}
+        saving={saving}
+        canEditPool={canEditPool}
+        saveError={saveError}
+        catalog={pool?.catalog}
+        targetProvenance={targetProvenance}
+        accountTools={accountTools}
+        onEdit={editDraft}
+        onSave={() => { void savePool() }}
+        onDiscard={() => { setDraftPool(saved); setDraftRegion(region); setDirty(false); setSaveError(undefined) }}
+      />
 
-      {effective.length === 0
-        ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
-            `${t('row.poolNoneSelected')} ${t('row.poolNoneSelectedHint')}`)
-        : null}
-      {ghost.length === 0 ? null
-        : h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
-            t('row.poolGhostMembers', { count: ghost.length }))}
-      {dirty && !sameIds(active.memberAccountIds, saved.memberAccountIds)
-        ? h('p', { className: 'dsm-qoder-pool-dirty' }, t('row.poolUnsavedMembers'))
-        : null}
-
-      <div className="dsm-qoder-pool-settings-wrap">
-        {/* Members selection */}
-        <div className="dsm-qoder-pool-members">
-          <div className="dsm-qoder-pool-members-head">
-            <div>
-              <h4 className="dsm-qoder-pool-members-title">{t('row.poolMembersTitle')}</h4>
-              <p className="dsm-qoder-pool-note">{t('row.poolMembersHint')}</p>
-            </div>
-            <div className="dsm-qoder-pool-members-actions">
-              <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={pool?.accounts.length === 0 || !canEditPool} onClick={() => selectAll(true)}>{t('row.poolSelectAll')}</button>
-              <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={effective.length === 0 || !canEditPool} onClick={() => selectAll(false)}>{t('row.poolSelectNone')}</button>
-            </div>
-          </div>
-          <div className="dsm-qoder-pool-table">
-            {(pool?.accounts ?? []).map(account => {
-              const inPool = active.memberAccountIds.includes(account.accountId)
-              return (
-                <div key={account.accountId} className="dsm-qoder-pool-row">
-                  <span className="dsm-qoder-pool-account">
-                    <label className="dsm-qoder-pool-check">
-                      <input
-                        type="checkbox"
-                        checked={inPool}
-                        disabled={!canEditPool}
-                        aria-label={t('row.poolSelectAria', { accountName: account.accountName || t('row.accountUnnamed') })}
-                        onChange={(e) => toggleMember(account.accountId, e.target.checked)}
-                      />
-                    </label>
-                    <span className="dsm-qoder-pool-account-name">
-                      <b>{account.accountName === '' ? t('row.accountUnnamed') : account.accountName}</b>
-                      <span className={inPool ? 'dsm-qoder-pool-member' : 'dsm-qoder-pool-not-member'}>
-                        {inPool ? t('row.poolMember') : t('row.poolNotMember')}
-                      </span>
-                    </span>
-                  </span>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-
-        {/* Preferences */}
-        <div className="dsm-qoder-pool-settings">
-          <RenderSettings
-            t={t}
-            active={active}
-            dirty={dirty}
-            saving={saving}
-            canEditPool={canEditPool}
-            saveError={saveError}
-            catalog={pool?.catalog?.map(model => model.id)}
-            onEdit={editDraft}
-            onSave={() => { void savePool() }}
-            onDiscard={() => { setDraftPool(saved); setDraftRegion(region); setDirty(false); setSaveError(undefined) }}
-          />
-        </div>
-      </div>
+      {/* 区域独立性说明放在尾部（workbuddy 同规）：它是脚注性质的信息，
+          不该插在操作区之前。 */}
+      <p className="dsm-qoder-pool-note">{t('row.poolRegionNote')}</p>
 
       {/* Activity log */}
       <div className="dsm-qoder-pool-log">
         <div className="dsm-qoder-pool-log-head">
           <span>{t('row.poolLogTitle')}</span>
-          <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-log-clear" onClick={() => setLog([])}>{t('row.poolLogClear')}</button>
+          <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-log-clear" onClick={() => { logStore.set(region, []); setLog([]) }}>{t('row.poolLogClear')}</button>
         </div>
         {log.length === 0
           ? <div className="dsm-qoder-pool-log-empty">{t('row.poolLogEmpty')}</div>
@@ -473,14 +554,34 @@ function RenderSettings(props: {
   saving: boolean
   canEditPool: boolean
   saveError?: string | undefined
-  catalog?: readonly string[] | undefined
+  /**
+   * The region's pickable models, as objects rather than ids: the option label
+   * carries the display name and the credit multiplier, so a manual choice is
+   * both recognisable and priced before it is made.
+   */
+  catalog?: readonly QoderWebPoolModel[] | undefined
+  /** 目标模型的来源一句话（「当前：xx（你指定）」），null 表示无话可说。 */
+  targetProvenance: string | null
+  /** 账号工具（添加 PAT / 导出导入），虚线框放在标题之下、说明行之上。 */
+  accountTools?: ReactNode | undefined
   onEdit: (update: (prev: PoolPreferences) => PoolPreferences) => void
   onSave: () => void
   onDiscard: () => void
 }): ReactNode {
-  const { t, active, dirty, saving, canEditPool, saveError, catalog, onEdit, onSave, onDiscard } = props
+  const { t, active, dirty, saving, canEditPool, saveError, catalog, targetProvenance, accountTools, onEdit, onSave, onDiscard } = props
   return (
-    <>
+    <div className="dsm-qoder-pool-settings-wrap">
+      {/* 设置区自己的小标题 + 脏标记（workbuddy 同构）：下面几行是草稿，
+          与上方立即生效的表格区分开。 */}
+      <div className="dsm-qoder-pool-head">
+        <h3 className="dsm-qoder-pool-title">{t('row.poolSettingsTitle')}</h3>
+        {dirty ? <span className="dsm-qoder-pool-dirty">{t('row.poolDirty')}</span> : null}
+      </div>
+      {/* 账号工具在说明行之前（workbuddy 同构）：它们立即生效，而说明行提到的
+          是「下面这些偏好要点保存」，顺序颠倒会让读者以为工具也要保存。 */}
+      {accountTools === undefined ? null : <div className="dsm-qoder-pool-tools">{accountTools}</div>}
+      <p className="dsm-qoder-pool-note">{t('row.poolSettingsHint')}</p>
+      <div className="dsm-qoder-pool-settings">
       <div className="dsm-qoder-pool-set">
         <div className="dsm-qoder-pool-set-copy">
           <b>{t('row.poolEnabled')}</b>
@@ -501,7 +602,9 @@ function RenderSettings(props: {
       <div className="dsm-qoder-pool-set">
         <div className="dsm-qoder-pool-set-copy">
           <b>{t('row.poolTargetLabel')}</b>
-          <span>{t('row.poolTargetHint')}</span>
+          {/* 来源先行：先回答「当前是谁、是不是我选的」，再解释自动怎么工作
+              （workbuddy 同规）。 */}
+          <span>{targetProvenance === null ? null : `${targetProvenance} `}{t('row.poolTargetHint')}</span>
         </div>
         <div className="dsm-qoder-pool-set-ctl">
           <select className="dsm-qoder-pool-select" value={active.targetModelId} disabled={!canEditPool} onChange={(e) => onEdit(prev => ({ ...prev, targetModelId: e.target.value }))}>
@@ -510,10 +613,19 @@ function RenderSettings(props: {
                 select 找不到匹配项，浏览器会退回显示第一项（「自动」），而存的值仍是
                 旧 id——显示与取值就此分叉，下一次保存又把旧 id 写回去。设为 disabled
                 使其不可能被重新选中，同时让用户看见到底存的是什么。 */}
-            {active.targetModelId !== '' && !(catalog ?? []).includes(active.targetModelId)
+            {active.targetModelId !== '' && !(catalog ?? []).some(m => m.id === active.targetModelId)
               ? <option value={active.targetModelId} disabled>{t('row.poolTargetStaleOption', { model: active.targetModelId })}</option>
               : null}
-            {(catalog ?? []).map(id => <option key={id} value={id}>{id}</option>)}
+            {/* 显示名 + 倍率，与 workbuddy 同构（`名字 (x0.79)`）：选项文本此前
+                直接渲染模型 id（`qmodel_latest`），既不是用户认得的名字，也让
+                「这次测试花不花积分」无从判断——而那正是选目标的全部意义。 */}
+            {(catalog ?? []).map(model => (
+              <option key={model.id} value={model.id}>
+                {model.creditMultiplier === undefined
+                  ? model.name
+                  : `${model.name} (x${model.creditMultiplier.toFixed(2)})`}
+              </option>
+            ))}
           </select>
         </div>
       </div>
@@ -532,18 +644,29 @@ function RenderSettings(props: {
         </div>
       </div>
       <div className="dsm-qoder-pool-save-bar">
+        {/* 仓库链接在保存行左端（workbuddy 同构）：与模型保存行同一个位置，
+            不给它单独一行。 */}
+        <a
+          className="dsm-qoder-usage-cheer"
+          href={QODER_GITHUB_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          {t('row.cheer')}
+          <span className="dsm-qoder-usage-cheer-star" aria-hidden="true">★</span>
+        </a>
         <div className="dsm-qoder-pool-save-buttons">
-          {dirty ? <span className="dsm-qoder-pool-dirty">{t('row.poolDirty')}</span> : null}
           {saveError === undefined ? null : <span className="dsm-qoder-pool-pending">{saveError}</span>}
-          {dirty ? (
-            <button type="button" className="dsm-btn dsm-btn-outline" disabled={!canEditPool || saving} onClick={onDiscard}>{t('row.poolDiscard')}</button>
-          ) : null}
+          {/* 「放弃修改」恒在（未改动时禁用），与模型保存行一致——条件渲染会让
+              这一行在改动/还原之间左右跳动。 */}
+          <button type="button" className="dsm-btn dsm-btn-outline" disabled={!canEditPool || saving || !dirty} onClick={onDiscard}>{t('row.poolDiscard')}</button>
           <button type="button" className="dsm-btn dsm-btn-primary" disabled={!canEditPool || saving || !dirty} onClick={onSave}>
             {saving ? t('row.poolSaving') : t('row.poolSaved')}
           </button>
         </div>
       </div>
-    </>
+      </div>
+    </div>
   )
 }
 
@@ -561,4 +684,33 @@ function sameIds(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) return false
   const set = new Set(b)
   return a.every(id => set.has(id))
+}
+
+/**
+ * 溯源药丸的样式类（workbuddy 的 probeLabel 同规）：来源未知用带描边的
+ * 「未知」态——它必须与「测试写入」的默认态看得出区别，否则一条旧记录
+ * 看起来就像刚测过。
+ */
+function probeSourceClass(source: 'test-batch' | 'live-request' | undefined): string {
+  if (source === undefined) return 'dsm-qoder-pool-prov-tag dsm-qoder-pool-prov-unknown'
+  return source === 'live-request'
+    ? 'dsm-qoder-pool-prov-tag dsm-qoder-pool-prov-live'
+    : 'dsm-qoder-pool-prov-tag'
+}
+
+/**
+ * 成员行状态点的颜色（workbuddy 的 stateColor 同规）：被排除的看性质——
+ * 限流/不可用是自己会好的等待态（琥珀），凭据被拒等需要用户动手（红）；
+ * 未测灰、测过按结果绿/琥珀。
+ */
+function stateColor(account: QoderWebPoolAccount): string {
+  if (account.excludedBy !== undefined) {
+    return account.excludedBy === 'rate-limited' || account.excludedBy === 'unavailable'
+      ? 'var(--dsw-alias-state-warn-primary, #f59e0b)'
+      : 'var(--dsw-alias-state-error-primary, #ef4444)'
+  }
+  if (account.probe === undefined) return 'var(--dsw-alias-label-dimmed, #9aa0a6)'
+  return account.probe.outcome === 'ok'
+    ? 'var(--dsw-alias-state-success-primary, #22a06b)'
+    : 'var(--dsw-alias-state-warn-primary, #f59e0b)'
 }

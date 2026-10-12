@@ -16,7 +16,7 @@
 
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import { QODER_ACCOUNTS_PATH, withQoderRouteAction } from '../status-paths.ts'
+import { QODER_ACCOUNTS_PATH, QODER_PAT_DOC_URL, withQoderRouteAction } from '../status-paths.ts'
 import type { QoderWebRegion } from '../status-paths.ts'
 import type { Translate } from './locales.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
@@ -112,16 +112,19 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
       : ''
 
   return (
-    <div>
-      <div className="dsm-qoder-bar">
+    <section className="dsm-qoder-bar" aria-label={t('row.addAccountStart')}>
         <p className="dsm-qoder-bar-label">{t('row.addAccountStart')}</p>
-        <p className="dsm-qoder-bar-status dsm-qoder-bar-hint">{t('row.accountsHint')}</p>
+        {/* 状态行只在有状态时出现（workbuddy 的 bar-status 同规）。此前这里常驻
+            一行「本区域生效的账号，从设置中的 PAT……」——那讲的是账号行的话题，
+            不是「添加 PAT」，常驻还把这一行撑成三行高。 */}
+        {finishText === '' ? null : (
+          <p className={`dsm-qoder-bar-status ${phase.kind === 'done' ? 'dsm-qoder-bar-ok' : 'dsm-qoder-bar-error'}`}>{finishText}</p>
+        )}
         <div className="dsm-qoder-bar-actions">
           <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { setPat(''); setName(''); setTouched(false); setPhase({ kind: 'idle' }); setDialogOpen(true) }}>
             {t('row.addAccountStart')}
           </button>
         </div>
-      </div>
 
       {dialogOpen ? (
         <div className="dsm-qoder-transfer-dialog" role="dialog" aria-label={t('row.addAccountTitle')}>
@@ -143,6 +146,11 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
             onChange={(event) => { setName(event.target.value) }}
           />
           <p>{t('row.addAccountTouchedOnce')}</p>
+          {/* PAT 指南入口放在这里而不是页脚：用户正在找「PAT 从哪来」的时刻，
+              正是这一行有用的时刻。页脚那条常驻提示已按用户要求删除。 */}
+          <p className="dsm-qoder-addpat-doc">
+            <a href={QODER_PAT_DOC_URL} target="_blank" rel="noopener noreferrer">{t('row.docsHint')}</a>
+          </p>
           <div className="dsm-qoder-transfer-dialog-actions">
             <button type="button" className="dsm-btn dsm-btn-outline" onClick={closeDialog}>{t('row.addAccountDialogClose')}</button>
             <button
@@ -165,6 +173,6 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
         hint={t('row.veilHintList')}
         visible={phase.kind === 'syncing'}
       />
-    </div>
+    </section>
   )
 }

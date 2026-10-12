@@ -167,7 +167,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   // a test renders without one.
   const t: Translate = props.t ?? ((key: string) => key)
   // Re-fetch the region's usage on the 60 s cadence, plus on demand.
-  const [open, setOpen] = useState(view === 'summary')
+  const [open, setOpen] = useState(view === 'page')
   const [activeRegion, setActiveRegion] = useState<QoderWebRegion>(() => 'cn')
   const [usages, setUsages] = useState<Partial<Record<QoderWebRegion, QoderWebUsage | undefined>>>({})
   const [busyRegions, setBusyRegions] = useState<ReadonlySet<QoderWebRegion>>(new Set())
@@ -175,6 +175,10 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const [probeBusy, setProbeBusy] = useState<ReadonlySet<string>>(new Set())
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  // 账号池保存的 in-flight 信号（workbuddy 的 poolBusy 同规）：池与模型列表写
+  // 同一个 region slot，两边必须互斥——池保存期间模型保存/区域开关/积分开关
+  // 一律禁用，反之由 siblingBusy 覆盖。
+  const [poolBusy, setPoolBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [siblingBusy, setSiblingBusy] = useState(false)
   /**
@@ -424,6 +428,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         className="dsm-plugin-card-header"
         onClick={() => { setOpen(!open) }}
         aria-expanded={open}
+        aria-label={`${t(open ? 'row.collapse' : 'row.expand')}: ${t('row.title')}`}
       >
         <img className="dsm-plugin-card-icon" src={QODER_PLUGIN_ICON} alt="" width="32" height="32" />
         <span className="dsm-plugin-card-head">
@@ -436,27 +441,30 @@ export function QoderCard(props: QoderCardProps): ReactElement {
       {open ? (
         <div className="dsm-plugin-card-body">
           {/* Tab bar: one tab = one provider (qoder / qoder-global). */}
-          <div className="dsm-qoder-tabs">
+          <div className="dsm-qoder-tabs" role="tablist" aria-label={t('row.title')}>
             {QODER_REGIONS.map(region => {
               const on = region === activeRegion
               const regionStatus = usages[region]?.status ?? 'signed-out'
+              const regionOnState = regionOnOf(usages[region])
               return (
-                <div key={region} className={`dsm-qoder-tab${hasStatusDot(usages[region]) ? ' dsm-qoder-tab-dot' : ''}${on ? ' dsm-qoder-tab-active' : ''}`}>
+                <div key={region} className="dsm-qoder-tab-cell">
                   <button
                     type="button"
-                    className="dsm-qoder-tab-cell"
+                    role="tab"
+                    aria-selected={on}
+                    className={`dsm-qoder-tab${on ? ' dsm-qoder-tab-active' : ''}${regionOnState ? '' : ' dsm-qoder-tab-off'}`}
                     onClick={() => { setActiveRegion(region as 'cn' | 'global'); setSaveError(undefined) }}
                   >
                     {usages[region] === undefined
                       ? null
-                      : <span aria-hidden="true" className="dsm-qoder-tab-dot" style={dotStyle(usages[region]?.status ?? 'signed-out')} />}
+                      : <span aria-hidden="true" className="dsm-qoder-tab-dot" style={dotStyle(regionStatus)} />}
                     {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
                   </button>
                   <label className="dsm-qoder-tab-switch" title={t('row.tabSwitchHint')}>
                     <input
                       type="checkbox"
-                      checked={regionOnOf(usages[region])}
-                      disabled={!canWrite(scope) || siblingBusy}
+                      checked={regionOnState}
+                      disabled={!canWrite(scope) || siblingBusy || poolBusy}
                       aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
                       onChange={(event) => { toggleRegion(region, event.target.checked) }}
                     />
@@ -479,7 +487,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               <input
                 type="checkbox"
                 checked={regionOn ? creditsShownOf(usage) : false}
-                disabled={!regionOn || !canWrite(scope) || siblingBusy}
+                disabled={!regionOn || !canWrite(scope) || siblingBusy || poolBusy}
                 onChange={(event) => { toggleCreditsShown(event.target.checked) }}
               />
               {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
@@ -497,19 +505,17 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             ? <p className="dsm-qoder-hint">{t('row.selectionLostHint')}</p>
             : null}
 
-          {regionOn ? (
+          {regionOn && usage?.status !== 'error' ? (
             <>
-              {/* Account selection + add-/remove-PAT + transfer */}
+              {/* 顺序对齐 workbuddy：账号行 → 账号池管理 → 模型列表。
+                  账号池是「谁在服务、花多少」的决定区，排在模型列表之前；
+                  原先排在模型列表之后，用户要先翻过整张模型表才够到它。
+                  error 分支不渲染这些空壳——与 workbuddy 同规，只留错误行。 */}
               {renderAccounts(signIn)}
-              {renderModels()}
               {renderPool()}
+              {renderModels()}
             </>
           ) : null}
-
-          <footer className="dsm-qoder-foot">
-            <a href={QODER_GITHUB_URL} target="_blank" rel="noreferrer">{t('row.gitHub')}</a>
-            <span style={{ marginLeft: 'auto' }}>{t('row.docsHint')}</span>
-          </footer>
         </div>
       ) : null}
     </li>
@@ -570,11 +576,19 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
   function renderRejected(usage: Extract<QoderWebUsage, { status: 'signed-in' }>): ReactElement | null {
     const recovery = usage.recovery
+    // 与 workbuddy 同构：usage-error 容器 + strong/p，三态说明互斥
+    // （可切换→切换说明 / 无号可切→重新添加 / 有号但都失败→自行选择），
+    // 切换动作是独立按钮，busy 时显示扫描文案。
     return (
-      <div className="dsm-qoder-rejected">
-        <b>{t('row.credentialRejectedTitle')}</b>
-        <span>{t('row.credentialRejectedIntro', { accountName: usage.accountName })}</span>
-        {recovery?.usableAccount !== undefined ? (
+      <section className="dsm-qoder-usage-error" role="alert">
+        <strong>{t('row.credentialRejectedTitle')}</strong>
+        <p>{t('row.credentialRejectedIntro', { accountName: usage.accountName })}</p>
+        {recovery?.usableAccount !== undefined
+          ? <p>{t('row.credentialRejectedSwitch', { accountName: recovery.usableAccount.accountName })}</p>
+          : recovery?.reloginRequired === true
+            ? <p>{t('row.credentialRejectedRelogin')}</p>
+            : <p>{t('row.credentialRejectedChoose')}</p>}
+        {recovery?.usableAccount === undefined ? null : (
           <button
             type="button"
             className="dsm-btn dsm-btn-outline"
@@ -587,50 +601,78 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               })
             }}
           >
-            {t('row.credentialRejectedSwitch', { accountName: recovery.usableAccount.accountName })}
+            {siblingBusy
+              ? t('row.accountsScanning')
+              : t('row.credentialRejectedSwitchAction', { accountName: recovery.usableAccount.accountName })}
           </button>
-        ) : null}
-        {recovery?.reloginRequired === true ? <span>{t('row.credentialRejectedRelogin')}</span> : null}
-      </div>
+        )}
+      </section>
     )
   }
 
   function renderAccounts(usage: Extract<QoderWebUsage, { status: 'signed-in' }> | undefined): ReactElement {
     const accounts = usage?.accounts ?? []
+    // 同名账号必须还能分辨：同一个邮箱重新签发 PAT 会得到**两条**记录（id 由
+    // PAT 推导，是不同的），两条都叫 REDACTED@example.invalid。只显示名字的话，
+    // 「移除哪一个」这个问题的答案是「看不出」。重名时补 id 尾号，并标出正在
+    // 计费的那条（用户实拍的就是这种两条同名、一条过期的情况）。
+    const nameCounts = new Map<string, number>()
+    for (const account of accounts) {
+      const key = account.accountName === '' ? '' : account.accountName
+      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1)
+    }
+    const accountLabel = (account: { id: string, accountName: string, selected: boolean }): string => {
+      const base = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
+      const name = (nameCounts.get(account.accountName === '' ? '' : account.accountName) ?? 0) > 1
+        // id 形如 pat-5d76517ac7699f87；取末 4 位足够区分同一次会话里的两条。
+        ? `${base} · ${account.id.slice(-4)}`
+        : base
+      return account.selected ? `${name}（${t('row.poolCurrentBadge')}）` : name
+    }
+    // 账号选择器只在**真有选择余地**时出现：一个账号时「自动」就等于它，
+    // 切不出任何结果；零个账号时整行只剩一句看不懂的来源说明（本轮用户实拍
+    // 的就是这一种）。workbuddy 没有这个控件，它把「当前用哪个」交给账号池
+    // 表格的「当前使用」标记——本插件在账号池不可用时仍需手动指定账号，
+    // 所以保留控件，但只在多个候选时露出来。
     return (
       <div className="dsm-qoder-usage">
-        <div className="dsm-qoder-usage-select-wrap">
-          <select
-            className="dsm-qoder-usage-select"
-            value={usage?.accountId ?? ''}
-            disabled={!canWrite(scope) || siblingBusy}
-            aria-label={t('row.accountSelectAria')}
-            onChange={(event) => {
-              if (scope === undefined) return
-              setSiblingBusy(true)
-              void writeAccountSlot(scope, activeRegion, event.target.value).finally(() => {
-                if (mounted.current) { setSiblingBusy(false); void refresh(activeRegion, true) }
-              })
-            }}
-          >
-            <option value="">{t('row.accountSelectAuto')}</option>
-            {accounts.map(account => (
-              <option key={account.id} value={account.id}>{account.accountName === '' ? t('row.accountUnnamed') : account.accountName}</option>
-            ))}
-          </select>
-        </div>
+        {accounts.length > 1 ? (
+          <div className="dsm-qoder-usage-select-wrap">
+            <select
+              className="dsm-qoder-usage-select"
+              value={usage?.accountId ?? ''}
+              disabled={!canWrite(scope) || siblingBusy}
+              aria-label={t('row.accountSelectAria')}
+              onChange={(event) => {
+                if (scope === undefined) return
+                setSiblingBusy(true)
+                void writeAccountSlot(scope, activeRegion, event.target.value).finally(() => {
+                  if (mounted.current) { setSiblingBusy(false); void refresh(activeRegion, true) }
+                })
+              }}
+            >
+              <option value="">{t('row.accountSelectAuto')}</option>
+              {/* 与删除按钮共用同一套标签：重名带 id 尾号、在用带「使用中」。
+                  两处各写一套的话，用户在下拉里选中一个、到按钮上又认不出
+                  是哪一个。 */}
+              {accounts.map(account => (
+                <option key={account.id} value={account.id}>{accountLabel(account)}</option>
+              ))}
+            </select>
+          </div>
+        ) : null}
 
         <div className="dsm-qoder-usage-account-actions">
-          <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={siblingBusy} onClick={() => { void rescanAccounts() }}>
+          <button type="button" className="dsm-btn dsm-btn-outline" disabled={siblingBusy} onClick={() => { void rescanAccounts() }}>
             {t('row.accountsRescan')}
           </button>
           {accounts.filter(a => a.source === 'vault').map(a => (
             confirmRemoveId === a.id ? (
               <span key={a.id} className="dsm-qoder-account-confirm">
-                <span className="dsm-qoder-account-confirm-text">{t('row.accountRemoveConfirm', { accountName: a.accountName || t('row.accountUnnamed') })}</span>
+                <span className="dsm-qoder-account-confirm-text">{t('row.accountRemoveConfirm', { accountName: accountLabel(a) })}</span>
                 <button
                   type="button"
-                  className="dsm-btn dsm-btn-primary dsm-qoder-pool-small-btn"
+                  className="dsm-btn dsm-btn-primary"
                   disabled={siblingBusy}
                   onClick={() => { setConfirmRemoveId(undefined); void removeVaultAccount(a.id) }}
                 >
@@ -638,7 +680,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                 </button>
                 <button
                   type="button"
-                  className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                  className="dsm-btn dsm-btn-outline"
                   onClick={() => setConfirmRemoveId(undefined)}
                 >
                   {t('row.accountRemoveConfirmNo')}
@@ -648,37 +690,44 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               <button
                 key={a.id}
                 type="button"
-                className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                className="dsm-btn dsm-btn-outline"
                 title={t('row.accountRemoveHint')}
-                aria-label={t('row.accountRemoveAria', { accountName: a.accountName || t('row.accountUnnamed') })}
+                aria-label={t('row.accountRemoveAria', { accountName: accountLabel(a) })}
                 disabled={siblingBusy}
                 onClick={() => setConfirmRemoveId(a.id)}
               >
-                {t('row.accountRemoveHint')} · {a.accountName || t('row.accountUnnamed')}
+                {/* 按钮文字必须是短标签：这里原来渲染 `accountRemoveHint`——
+                    那是一整句说明（「把这个账号的 PAT 从插件保险库移除。设置中
+                    的 PAT……」），按钮因此撑成一大块，两个同名账号的按钮挤在一
+                    起完全读不出是干什么的。整句说明留在 `title` 上继续可达。 */}
+                {t('row.accountRemoveShort')} · {accountLabel(a)}
               </button>
             )
           ))}
         </div>
-
-        <AddAccount t={t} region={activeRegion} onAdded={() => refresh(activeRegion, true)} />
-        <AccountTransfer t={t} region={activeRegion} accounts={accounts.map(a => ({ id: a.id, accountName: a.accountName }))} onChanged={() => refresh(activeRegion, true)} />
       </div>
     )
   }
 
   function renderModels(): ReactElement {
     const modelList = signIn?.models ?? []
-    const summary = `${t('row.modelsSummary', { enabled: String(draft.enabledModelKeys.size), total: String(modelList.length) })}${dirty ? ` · ${t('row.modelsDirty')}` : ''}`
     return (
-      <section className="dsm-qoder-models">
+      <section className="dsm-qoder-models" aria-label={t('row.modelsTitle')}>
+        {/* 头部结构对齐 workbuddy：标题行（h3 + dirty 徽章）在上、计数摘要在下，
+            刷新按钮在右；摘要不内联在标题旁，dirty 不追加进摘要文本。 */}
         <div className="dsm-qoder-models-head">
-          <div className="dsm-qoder-models-title-row">
-            <h3 className="dsm-qoder-models-title">{t('row.modelsTitle')}</h3>
-            <span className="dsm-qoder-models-summary">{summary}</span>
+          <div>
+            <div className="dsm-qoder-models-title-row">
+              <h3 className="dsm-qoder-models-title">
+                {t('row.modelsTitle')}
+                {dirty ? <span className="dsm-qoder-models-dirty">{t('row.modelsDirty')}</span> : null}
+              </h3>
+            </div>
+            <p className="dsm-qoder-models-summary">{t('row.modelsSummary', { count: String(draft.enabledModelKeys.size) })}</p>
           </div>
           <div className="dsm-qoder-models-head-actions">
-            <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-model-probe" disabled={siblingBusy} onClick={() => { void refreshModels() }}>
-              {t('row.modelsRefresh')}
+            <button type="button" className="dsm-btn dsm-btn-outline" disabled={siblingBusy} onClick={() => { void refreshModels() }}>
+              {siblingBusy ? t('row.modelsRefreshing') : t('row.modelsRefresh')}
             </button>
           </div>
         </div>
@@ -698,86 +747,119 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                       onChange={(e) => toggleModel(model.key, e.target.checked)}
                     />
                     <span className="dsm-qoder-model-copy">
-                      <span className="dsm-qoder-model-name">
-                        {t('row.usageTotal')}
-                        <span className="dsm-qoder-model-id">{model.key}</span>
-                        {typeof model.creditMultiplier === 'number' ? <span className="dsm-qoder-model-name-rate">{t('row.modelRate', { rate: String(model.creditMultiplier) })}</span> : null}
+                      <span className="dsm-qoder-model-name" title={model.key}>
+                        {model.name}
+                        {typeof model.creditMultiplier === 'number'
+                          ? <span className="dsm-qoder-model-name-rate">({model.creditMultiplier.toFixed(2)}x)</span>
+                          : null}
                       </span>
                     </span>
                   </label>
-                  {model.supportsImages !== undefined ? (
-                    <label className="dsm-qoder-model-image" title={imageCheckboxHint(model.key, t)}>
-                      <input
-                        type="checkbox"
-                        checked={draft.supportsImages.has(model.key)}
-                        onChange={(e) => toggleImageLight(model.key, e.target.checked)}
-                      />
-                      {t('row.modelImage')}
-                    </label>
-                  ) : null}
-                  {model.canDisableThinking === true ? (
-                    <label className="dsm-qoder-model-off" title={t('row.modelOff')}>
-                      <input
-                        type="checkbox"
-                        disabled={!model.supportsThinking}
-                        checked={draft.offModelKeys.has(model.key)}
-                        onChange={(e) => toggleOff(model.key, e.target.checked)}
-                      />
-                      {t('row.modelOff')}
-                    </label>
-                  ) : null}
+                  {/* image/off 两个复选框与 workbuddy 同规：恒渲染、是否可用只看
+                      写权限——不按上游字段有无隐藏（隐藏会让能力未知的模型行缺控件，
+                      行与行控件数量不一，视觉抖动）。 */}
+                  <label className="dsm-qoder-model-image" title={imageCheckboxHint(model.key, t)}>
+                    <input
+                      type="checkbox"
+                      checked={draft.supportsImages.has(model.key)}
+                      disabled={!canWrite(scope) || siblingBusy}
+                      onChange={(e) => toggleImageLight(model.key, e.target.checked)}
+                    />
+                    <span>{t('row.modelImage')}</span>
+                  </label>
+                  <label className="dsm-qoder-model-off" title={t('row.modelOffHint')}>
+                    <input
+                      type="checkbox"
+                      disabled={!canWrite(scope) || siblingBusy}
+                      checked={draft.offModelKeys.has(model.key)}
+                      onChange={(e) => toggleOff(model.key, e.target.checked)}
+                    />
+                    <span>{t('row.modelOff')}</span>
+                  </label>
+                  {renderContextPicker(model)}
+                  <div className="dsm-qoder-model-actions-buttons">
+                    {/* 测试按钮：与 workbuddy 同位（头部行右端）。提示只作 title
+                        悬停——不再在未测试时把整段说明文字铺在每个模型行里。
+                        不写设置，所以只门槛登录状态，不门槛 canWrite/saving。 */}
+                    <button
+                      type="button"
+                      className="dsm-btn dsm-btn-outline dsm-qoder-model-probe"
+                      disabled={probeBusy.has(model.key) || signIn === undefined}
+                      title={t('row.probeHint')}
+                      onClick={() => { void runProbe(model.key) }}
+                    >
+                      {probeBusy.has(model.key) ? t('row.probing') : t('row.probe')}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="dsm-qoder-model-details">
                   <div className="dsm-qoder-model-meta">
                     <span>{t('row.modelContext', { context: formatCapacity(model.contextWindow) })}</span>
                     <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens) })}</span>
-                    {model.supportsThinking === true ? <span className="dsm-qoder-model-meta-tag">{t('row.modelReasoning', { efforts: '' }).replace(': ', '')}</span> : null}
-                    {model.isFree === true ? <span className="dsm-qoder-model-meta-tag">{t('row.usageTotal')}</span> : null}
+                    {/* 思考强度档位（workbuddy 的 modelReasoning 同位、同形）：
+                        上游 thinking_config.enabled.efforts 的键，已按强度升序。
+                        默认档括注，用户才知道不改设置时用哪一档。没有档位的模型
+                        （auto、kmodel_latest 等）不渲染这一项——空标签会让人以为
+                        该模型支持思考却没有强度可选。 */}
+                    {model.thinkingEfforts === undefined
+                      ? null
+                      : <span>
+                          {t('row.modelReasoning', {
+                            efforts: model.thinkingEfforts.map(effort =>
+                              effort === model.defaultThinkingEffort
+                                ? t('row.modelReasoningDefault', { effort })
+                                : effort).join(' / '),
+                          })}
+                        </span>}
+                    {model.isFree === true ? <span className="dsm-qoder-model-meta-tag">{t('row.modelFree')}</span> : null}
                   </div>
-                  {renderContextPicker(model)}
                 </div>
 
-                {/* Probe */}
-                <div className="dsm-qoder-model-details">
-                  <div className="dsm-qoder-model-meta" style={{ color: 'var(--dsw-alias-label-tertiary,#999)' }}>
-                    {probeBusy.has(model.key)
-                      ? t('row.probing')
-                      : probes[activeRegion]?.[model.key] === undefined
-                        ? t('row.probeHint')
-                        : (() => {
-                            const p = probes[activeRegion]?.[model.key] as QoderWebProbeResult
-                            const view = probeResultView(p, t)
-                            const reason = inlineProbeReason(p.outcome, p.message)
-                            return (
-                              <span>
-                                <span className={`dsm-qoder-model-probe-result dsm-qoder-model-probe-result-${view.tone}`}>{view.text}</span>
-                                {reason === undefined ? null : <span className="dsm-qoder-hint" style={{ marginLeft: 6 }} title={p.message}>{reason}</span>}
-                              </span>
-                            )
-                          })()}
-                  </div>
-                  <button
-                    type="button"
-                    className="dsm-btn dsm-btn-outline dsm-qoder-model-probe"
-                    disabled={probeBusy.has(model.key) || signIn === undefined}
-                    onClick={() => { void runProbe(model.key) }}
-                  >
-                    {probeBusy.has(model.key) ? t('row.probing') : t('row.probe')}
-                  </button>
-                </div>
+                {/* 探测结果只在有结果时出现——与 workbuddy 的 `result === undefined
+                    → return null` 同规；未测试的行不渲染任何探测文字。 */}
+                {(() => {
+                  const p = probes[activeRegion]?.[model.key]
+                  if (p === undefined) return null
+                  const view = probeResultView(p, t)
+                  const reason = inlineProbeReason(p.outcome, p.message)
+                  return (
+                    <p
+                      className={`dsm-qoder-model-probe-result dsm-qoder-model-probe-result-${view.tone}`}
+                      role="status"
+                      {...p.message === undefined ? {} : { title: p.message }}
+                    >
+                      {view.text}
+                      {reason === undefined ? null : ' · ' + reason}
+                    </p>
+                  )
+                })()}
               </div>
             ))}
           </div>
         )}
 
+        {/* 能力声明边界——workbuddy 列表尾部同款注记；locale 键早已存在但
+            此前从未渲染。 */}
+        <p className="dsm-qoder-model-capability-note">{t('row.modelCapabilityPending')}</p>
+
         <div className="dsm-qoder-model-actions">
-          <div className="dsm-qoder-model-save-error">{saveError ?? ''}</div>
+          <a
+            className="dsm-qoder-usage-cheer"
+            href={QODER_GITHUB_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            {t('row.cheer')}
+            <span className="dsm-qoder-usage-cheer-star" aria-hidden="true">★</span>
+          </a>
+          {saveError === undefined ? null
+            : <span className="dsm-qoder-model-save-error">{t('row.saveError', { message: saveError })}</span>}
           <div className="dsm-qoder-model-actions-buttons">
-            {dirty ? (
-              <button type="button" className="dsm-btn dsm-btn-outline" disabled={!canWrite(scope) || saving} onClick={discardModels}>{t('row.discard')}</button>
-            ) : null}
-            <button type="button" className="dsm-btn dsm-btn-primary" disabled={!canWrite(scope) || saving || !dirty} onClick={() => { void saveModels() }}>
+            <button type="button" className="dsm-btn dsm-btn-outline" disabled={!dirty || !canWrite(scope) || saving || poolBusy} onClick={discardModels}>
+              {t('row.discard')}
+            </button>
+            <button type="button" className="dsm-btn dsm-btn-primary" disabled={!canWrite(scope) || saving || !dirty || poolBusy || draft.enabledModelKeys.size === 0} onClick={() => { void saveModels() }}>
               {saving ? t('row.saving') : t('row.save')}
             </button>
           </div>
@@ -810,6 +892,20 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
   function renderPool(): ReactElement {
     if (signIn?.pool === undefined) return <span />
+    // 账号工具（添加 PAT / 导出导入）交给账号池设置区渲染：workbuddy 把它们
+    // 放在「账号池设置」标题下、说明行之前的虚线框里（`pool-tools`），而不是
+    // 塞在账号行末尾。两者回答的是同一个问题——「这个区域有哪些账号」。
+    const accountTools = (
+      <>
+        <AddAccount t={t} region={activeRegion} onAdded={() => refresh(activeRegion, true)} />
+        <AccountTransfer
+          t={t}
+          region={activeRegion}
+          accounts={(signIn?.accounts ?? []).map(a => ({ id: a.id, accountName: a.accountName }))}
+          onChanged={() => refresh(activeRegion, true)}
+        />
+      </>
+    )
     return (
       <AccountPool
         t={t}
@@ -818,6 +914,8 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         settingsScope={scope}
         siblingBusy={siblingBusy}
         canWrite={canWrite(scope)}
+        onBusyChange={setPoolBusy}
+        accountTools={accountTools}
         onChanged={() => refresh(activeRegion, true)}
       />
     )
@@ -856,11 +954,6 @@ function regionEnabledOfUsage(usage: QoderWebUsage | undefined): boolean {
 
 function regionOnOf(usage: QoderWebUsage | undefined): boolean {
   return regionEnabledOfUsage(usage)
-}
-
-/** Whether a usage doc is signed-in / error enough to carry a status dot. */
-function hasStatusDot(usage: QoderWebUsage | undefined): boolean {
-  return usage !== undefined
 }
 
 function creditsShownOf(usage: QoderWebUsage | undefined): boolean {

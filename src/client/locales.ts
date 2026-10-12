@@ -47,6 +47,7 @@ export const en = {
   'row.accountUnnamed': 'Unnamed account',
   'row.accountRemoveAria': 'Remove the vault entry of {accountName}',
   'row.accountRemoveHint': 'Remove this account\'s PAT from the plugin vault. The settings or environment PAT and the Qoder site\'s own login are left untouched.',
+  'row.accountRemoveShort': 'Remove',
   'row.accountRemoveConfirm': 'Delete {accountName}\'s vault entry permanently? This cannot be undone.',
   'row.accountRemoveConfirmYes': 'Delete permanently',
   'row.accountRemoveConfirmNo': 'Keep',
@@ -60,6 +61,7 @@ export const en = {
   'row.credentialRejectedTitle': 'Qoder refused this account\'s PAT',
   'row.credentialRejectedIntro': 'The PAT for "{accountName}" is no longer accepted by Qoder, so credits and testing are unavailable here. Re-adding the same PAT will not help — what actually applies:',
   'row.credentialRejectedSwitch': 'Another account in this region answered the upstream: "{accountName}". Switching to it fixes this — add its PAT if you do not already have it.',
+  'row.credentialRejectedSwitchAction': 'Switch to "{accountName}"',
   'row.credentialRejectedRelogin': 'No other account exists to switch to. Add a valid PAT for this region.',
   'row.credentialRejectedChoose': 'Other accounts exist but none of them answered the upstream just now. Try switching to one above; if none works, add a fresh PAT.',
 
@@ -88,7 +90,7 @@ export const en = {
   'row.addAccountPlaceholder': 'Paste a Qoder PAT (pt-…) here',
   'row.addAccountNameHint': 'Optional display name (a validated token yields one automatically)',
   'row.addAccountValidating': 'Validating…',
-  'row.addAccountDone': 'Added “{accountName}”. Pick it above to use it.',
+  'row.addAccountDone': 'Added “{accountName}”. It now serves this region.',
   'row.addAccountError': 'Could not add this PAT: {message}',
   'row.addAccountInvalid': 'This does not look like a PAT (expected pt-…).',
   'row.addAccountTouchedOnce': 'Validate the token against the region gateway; the account appears above when it is accepted.',
@@ -117,7 +119,7 @@ export const en = {
 
   // ---- Models ----
   'row.modelsTitle': 'Models',
-  'row.modelsSummary': '{enabled} of {total} enabled',
+  'row.modelsSummary': '{count} enabled',
   'row.modelsDirty': 'unsaved changes',
   'row.modelsRefresh': 'Refresh from Qoder',
   'row.modelsRefreshing': 'Refreshing models…',
@@ -129,8 +131,10 @@ export const en = {
   'row.modelContext': 'Maximum context {context}',
   'row.contextBudget': 'DSH context budget',
   'row.modelOutput': 'Output {output}',
-  'row.modelRate': '{rate}x credits',
+  'row.modelReasoning': 'Reasoning: {efforts}',
+  'row.modelReasoningDefault': '{effort} (default)',
   'row.modelMultimodal': 'Multimodal',
+  'row.modelFree': 'Free',
   'row.modelImage': 'Image',
   'row.modelImageText': 'This model is documented as text-only — it does not accept image input',
   'row.modelImageUnverified': 'Native multimodal support is not verified for this model; leave it off unless you know it accepts images',
@@ -138,7 +142,6 @@ export const en = {
   'row.modelOffHint': 'Offer the "off" thinking level for this model',
   'row.modelFallback': 'Built-in catalog (upstream unreachable)',
   'row.modelNoProbe': 'Test',
-  'row.modelReasoning': 'Reasoning: {efforts}',
   'row.modelUnknown': 'Unknown',
   'row.modelCapabilityPending': 'Only capabilities advertised by Qoder are shown.',
   'row.probe': 'Test',
@@ -158,7 +161,6 @@ export const en = {
   'row.probeFailedStatus': '✗ Test failed (HTTP {status})',
   'row.probeError': 'Could not run the test: {message}',
   'row.cheer': 'Star on GitHub',
-  'row.gitHub': 'Source repository',
   'row.docsHint': 'How to create a PAT?',
 
   // ---- Account pool ----
@@ -321,6 +323,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.accountUnnamed': '未命名账号',
   'row.accountRemoveAria': '删除 {accountName} 的保险库条目',
   'row.accountRemoveHint': '把这个账号的 PAT 从插件保险库移除。设置中的 PAT、环境变量 PAT 与 Qoder 官网本身的登录不受影响。',
+  'row.accountRemoveShort': '移除',
   'row.accountRemoveConfirm': '永久删除 {accountName} 的保险库条目？此操作不可撤销。',
   'row.accountRemoveConfirmYes': '永久删除',
   'row.accountRemoveConfirmNo': '保留',
@@ -334,6 +337,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.credentialRejectedTitle': 'Qoder 拒绝了这个账号的 PAT',
   'row.credentialRejectedIntro': '「{accountName}」的 PAT 已不被 Qoder 接受，因此这里的积分与测试都不可用。重新添加同一个 PAT 没有意义——当前实际适用的是：',
   'row.credentialRejectedSwitch': '本区域另一个账号「{accountName}」刚刚实测可用，切换到它即可恢复；若你还没有它的 PAT，请先添加。',
+  'row.credentialRejectedSwitchAction': '切换到「{accountName}」',
   'row.credentialRejectedRelogin': '本区域没有其他可切换的账号。请为本区域添加一个有效的 PAT。',
   'row.credentialRejectedChoose': '本区域还有其他账号，但刚才都没能通过上游校验。可以在上方切换一个试试；如果都不行，请添加一个全新的 PAT。',
 
@@ -362,7 +366,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.addAccountPlaceholder': '在此粘贴一个 Qoder PAT（pt-…）',
   'row.addAccountNameHint': '可选显示名（验证通过的 token 会自动取一个）',
   'row.addAccountValidating': '正在验证…',
-  'row.addAccountDone': '已添加「{accountName}」。在上方选中它即可使用。',
+  'row.addAccountDone': '已添加「{accountName}」，它现在为这个区域服务。',
   'row.addAccountError': '无法添加此 PAT：{message}',
   'row.addAccountInvalid': '这不是 PAT 的格式（期望 pt-…）。',
   'row.addAccountTouchedOnce': '会用区域网关验证该 token，通过后账号会出现在上方。',
@@ -391,7 +395,7 @@ export const zh: Record<QoderSettingsKey, string> = {
 
   // ---- 模型 ----
   'row.modelsTitle': '模型',
-  'row.modelsSummary': '已启用 {enabled} / {total} 个',
+  'row.modelsSummary': '已启用 {count} 个',
   'row.modelsDirty': '有未保存的修改',
   'row.modelsRefresh': '从 Qoder 刷新',
   'row.modelsRefreshing': '正在刷新模型…',
@@ -403,8 +407,10 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.modelContext': '最大上下文 {context}',
   'row.contextBudget': 'DSH 上下文预算',
   'row.modelOutput': '最大输出 {output}',
-  'row.modelRate': '积分 {rate}x',
+  'row.modelReasoning': '推理强度：{efforts}',
+  'row.modelReasoningDefault': '{effort}（默认）',
   'row.modelMultimodal': '多模态',
+  'row.modelFree': '免费',
   'row.modelImage': '图片',
   'row.modelImageText': '厂商文档标注该模型为纯文本，不接收图片输入',
   'row.modelImageUnverified': '该模型的原生多模态能力未经核实；除非你确定它能读图，否则请保持关闭',
@@ -412,7 +418,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.modelOffHint': '为这个模型提供「关闭思考」档位',
   'row.modelFallback': '内置目录（上游暂不可达）',
   'row.modelNoProbe': '测试',
-  'row.modelReasoning': '推理强度：{efforts}',
   'row.modelUnknown': '未知',
   'row.modelCapabilityPending': '仅展示 Qoder 接口明确公布的模型能力。',
   'row.probe': '测试',
@@ -432,7 +437,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.probeFailedStatus': '✗ 测试失败（HTTP {status}）',
   'row.probeError': '无法执行测试：{message}',
   'row.cheer': '鼓励一下',
-  'row.gitHub': '源码仓库',
   'row.docsHint': '如何创建 PAT？',
 
   // ---- 账号池 ----

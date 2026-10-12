@@ -172,18 +172,27 @@ export function AccountTransfer({ t, region, accounts, onChanged }: AccountTrans
   }
 
   return (
-    <section>
-      <div className="dsm-qoder-bar">
-        <p className="dsm-qoder-bar-label">{t('row.transferTitle')}</p>
-        <p className="dsm-qoder-bar-status dsm-qoder-bar-hint">{t('row.transferHint')}</p>
-        <div className="dsm-qoder-bar-actions">
-          <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { closeDialog(); setDialog('export'); setPhase({ kind: 'idle' }) }}>
-            {t('row.transferExport')}
-          </button>
-          <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { closeDialog(); setDialog('import'); setPhase({ kind: 'idle' }) }}>
-            {t('row.transferImport')}
-          </button>
-        </div>
+    <section className="dsm-qoder-bar" aria-label={t('row.transferTitle')}>
+      <BusyOverlay
+        message={phase.kind === 'refreshing' || phase.kind === 'importing' ? t('row.transferImporting') : t('row.transferExporting')}
+        hint={t('row.veilHintList')}
+        visible={phase.kind === 'importing' || phase.kind === 'refreshing'}
+      />
+      <p className="dsm-qoder-bar-label">{t('row.transferTitle')}</p>
+      {/* 状态行只在有结果时出现（workbuddy 同规）：常驻的「导出为 JSON 文件……」
+          把这一行撑成三行高，而它讲的是弹窗里的操作，应当在弹窗里说。 */}
+      {phase.kind === 'done'
+        ? <p className="dsm-qoder-bar-status dsm-qoder-bar-ok">{phase.message}</p>
+        : phase.kind === 'error'
+          ? <p className="dsm-qoder-bar-status dsm-qoder-bar-error">{phase.message}</p>
+          : null}
+      <div className="dsm-qoder-bar-actions">
+        <button type="button" className="dsm-btn dsm-btn-outline" disabled={accounts.length === 0} onClick={() => { closeDialog(); setDialog('export'); setPhase({ kind: 'idle' }) }}>
+          {t('row.transferExport')}
+        </button>
+        <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { closeDialog(); setDialog('import'); setPhase({ kind: 'idle' }) }}>
+          {t('row.transferImport')}
+        </button>
       </div>
 
       {dialog === 'export' ? (
@@ -283,12 +292,6 @@ export function AccountTransfer({ t, region, accounts, onChanged }: AccountTrans
           {phase.kind === 'error' ? <p className="dsm-qoder-bar-error" role="alert">{phase.message}</p> : null}
         </div>
       ) : null}
-
-      <BusyOverlay
-        message={phase.kind === 'refreshing' || phase.kind === 'importing' ? t('row.transferImporting') : t('row.transferExporting')}
-        hint={t('row.veilHintList')}
-        visible={phase.kind === 'importing' || phase.kind === 'refreshing'}
-      />
     </section>
   )
 }
