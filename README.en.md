@@ -94,13 +94,14 @@ Install the repository directory as a bundle into the current DSH profile (Harne
 
 Create a PAT (`pt-…`) in your Qoder account settings. Two ways to provide it — **the settings card wins over the environment variable**:
 
-| Region | Setting | Environment variable |
-| --- | --- | --- |
-| CN (qoder.com.cn) | Card "CN" tab → PAT | `QODERCN_PERSONAL_ACCESS_TOKEN` |
-| Global (qoder.sh) | Card "Global" tab → PAT | `QODER_PERSONAL_ACCESS_TOKEN` |
+| Region | Where to issue it | Setting | Environment variable |
+| --- | --- | --- | --- |
+| CN (qoder.com.cn) | Console → Settings → API Tokens | Card "CN" tab → Add PAT | `QODERCN_PERSONAL_ACCESS_TOKEN` |
+| Global (qoder.sh) | Console → Settings → Personal Access Tokens | Card "Global" tab → Add PAT | `QODER_PERSONAL_ACCESS_TOKEN` |
 
 - The PAT is stored only in the local plugin configuration (`regions.<region>.pat`); it is never uploaded and never enters any network request.
 - A region without a PAT lists no models; the `doctor` command points out which region is missing one.
+- **Step-by-step walkthrough in [`docs/PAT.md`](docs/PAT.md)** (issuing, verification, precedence, troubleshooting).
 
 ### Region enable/disable
 
@@ -145,7 +146,7 @@ dsh-connect-qoder doctor --json         # machine-readable output
 ## Security notes
 
 - The PAT is stored only in the local plugin configuration (or an environment variable) and **never enters any network request**; external calls always use cosy session tokens (jobToken) plus machine-fingerprint headers.
-- The local shim is a random-port loopback service with an in-process secret, verifying Host / Content-Type.
+- The local shim is a random-port loopback service with an in-process secret, verifying Host / Origin / Content-Type, with a 64 MB request-body cap.
 - The plugin only reads PATs you explicitly provide; it **never reads or modifies** Qoder desktop sign-in/credential files.
 - Diagnostic output (`doctor` / `status` and card probes) is redacted and never prints token-like strings.
 

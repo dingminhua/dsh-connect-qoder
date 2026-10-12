@@ -39,7 +39,7 @@
   "files": [
     "lib",
     "icons",
-    "docs/assets",
+    "docs",
     "screenshots.json",
     "cordis.patch.yml",
     "README.md",

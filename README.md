@@ -95,13 +95,14 @@ pnpm run check        # typecheck + test + build 全绿后再安装
 
 在 Qoder 账户设置里创建 PAT（`pt-…` 开头）。两种提供方式，**设置卡片优先于环境变量**：
 
-| 区域 | 设置项 | 环境变量 |
-| --- | --- | --- |
-| 国内版（qoder.com.cn） | 卡片「国内版」tab → PAT | `QODERCN_PERSONAL_ACCESS_TOKEN` |
-| 国际版（qoder.sh） | 卡片「国际版」tab → PAT | `QODER_PERSONAL_ACCESS_TOKEN` |
+| 区域 | 发证入口 | 设置项 | 环境变量 |
+| --- | --- | --- | --- |
+| 国内版（qoder.com.cn） | 控制台 → 设置 → API 令牌 | 卡片「国内版」tab → 添加 PAT | `QODERCN_PERSONAL_ACCESS_TOKEN` |
+| 国际版（qoder.sh） | 控制台 → Settings → Personal Access Tokens | 卡片「国际版」tab → 添加 PAT | `QODER_PERSONAL_ACCESS_TOKEN` |
 
 - PAT 只保存到本地插件配置（`regions.<region>.pat`），从不上传、不进入任何网络请求。
 - 未配置 PAT 的区域不列出任何模型；`doctor` 命令会指出哪个区域缺 PAT。
+- **逐步操作说明见 [`docs/PAT.md`](docs/PAT.md)**（含创建流程、验证机制、优先级与常见问题）。
 
 ### 区域启停
 
@@ -146,7 +147,7 @@ dsh-connect-qoder doctor --json         # 机器可读输出
 ## 安全说明
 
 - PAT 只写入本地插件配置（或环境变量），**从不进入任何网络请求**；对外请求一律使用 cosy 会话令牌（jobToken）+ 机器指纹头。
-- 本地 shim 用随机端口的 loopback 服务 + 进程内 secret 鉴权，并校验 Host / Content-Type。
+- 本地 shim 用随机端口的 loopback 服务 + 进程内 secret 鉴权，并校验 Host / Origin / Content-Type，请求体有 64MB 上限。
 - 本插件只读你显式提供的 PAT；**不读取、不修改** Qoder 桌面端的本地登录/凭据文件。
 - 诊断输出（`doctor` / `status` 与卡片探测）均脱敏，不打印任何令牌样式的字符串。
 

@@ -145,4 +145,4 @@ workbuddy 用独立的 `imageModelIds`；本项目早期把图片勾选**耦合�
 - cosy 协议行为参照：[`qoder2api`](https://github.com/Zhengyuuuui/qoder2api) / `QCCG`（其声明为 GPL-3.0）。
   本项目**未复制其源码**，按其文档与运行行为独立实现为 TypeScript。
   合规细节见 [`THIRD_PARTY_NOTICES.md`](../THIRD_PARTY_NOTICES.md)。
-- 商标：Qoder 名称与图标是厂商商标，此处仅用于标识本插件所连接的服务。
+- 商标：Qoder 名称是厂商商标，此处仅用于标识本插件所连接的服务；插件图标沿用 LaoDing 插件家族通用的 LD 品牌标（与 dsh-connect-trae / dsh-connect-workbuddy 字节一致），不使用厂商商标图形。

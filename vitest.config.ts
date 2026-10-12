@@ -32,7 +32,12 @@ const isolatedEnv = {
 export default defineConfig({
   test: {
     setupFiles: ['./tests/setup-per-file-home.ts'],
-    include: ['tests/**/*.spec.ts'],
+    // `.tsx` entries are component tests that mount the real QoderCard under
+    // jsdom (see tests/card-render.spec.tsx). They opt into the DOM via a
+    // `@vitest-environment jsdom` docblock so every other file stays on the
+    // plain node environment — jsdom is a dev-only dependency and must never
+    // leak a `window` into tests that assert host-side behaviour.
+    include: ['tests/**/*.spec.ts', 'tests/**/*.spec.tsx'],
     environment: 'node',
     env: isolatedEnv,
     // Windows runner 冷启动 PowerShell 很慢（host-heartbeat 的
