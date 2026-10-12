@@ -88,7 +88,18 @@ export const QODER_CARD_CSS = `
  * 与 tab 栏、与账号池标题都保持一个读得舒服但不过分的距离。
  * 上一轮我误把账号池自己的 padding-top 当成其中一处改小了，已恢复。
  */
-.dsm-qoder-usage-hint{padding:2px 0 2px 19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
+/*
+ * 那句说明行（「每个 tab 是一个独立供应商…」）。
+ *
+ * 它是 <p>，而**浏览器默认给 p 加 margin:1em 0（16px 上下）**。本文件里其他每
+ * 一个 <p> 都写了 margin:0，唯独这条漏了 —— 于是它上下各顶出 16px 浏览器默认
+ * 边距，再叠加容器的 gap 与 padding，看起来怎么调容器都「没有改善」：
+ * 用户实拍「还是没有改善」，说的正是这个。
+ * workbuddy 的同名规则也有同样的遗漏，所以那边同样偏松。
+ *
+ * 显式 margin:0 之后，上下间距才真正由这里与容器的 padding 控制。
+ */
+.dsm-qoder-usage-hint{margin:0;padding:6px 0 6px 19px;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-qoder-account-error{color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
 .dsm-qoder-usage-select-wrap{position:relative}
 .dsm-qoder-usage-select{appearance:none;width:100%;font:inherit;padding:10px 34px 10px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-3,#2a2c33);cursor:pointer;transition:border-color .15s,box-shadow .15s}
@@ -306,7 +317,10 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-bar a:hover{text-decoration:underline}
 .dsm-qoder-bar-ok{color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-qoder-bar-error{color:var(--dsw-alias-state-error-primary,#ef4444)}
-.dsm-qoder-hint{color:var(--dsw-alias-label-tertiary,#999)}
+/* 同 .dsm-qoder-usage-hint：<p> 的浏览器默认上下边距（1em = 16px）必须显式
+   归零，否则行与行之间凭空多出两段空白。本文件里每一条渲染成 <p> 的规则都
+   要写 margin:0 —— 这条此前漏了。 */
+.dsm-qoder-hint{margin:0;color:var(--dsw-alias-label-tertiary,#999)}
 /* The Add-PAT / transfer dialog is deliberately a block: it holds either the
    PAT paste field or a scrollable account list, which cannot live in a one-row
    bar. */

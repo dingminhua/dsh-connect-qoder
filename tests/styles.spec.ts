@@ -11,7 +11,10 @@ import { QODER_CARD_CSS } from '../src/client/styles.ts'
 
 /** 取出一条类规则的声明体（第一条匹配；找不到返回 undefined）。 */
 function ruleOf(css: string, className: string): string | undefined {
-  const match = css.match(new RegExp(`\\.${className}\\{([^}]*)\\}`))
+  // 类名里的点必须转义，否则 `.dsm-qoder-hint` 会被当成「任意字符 + qoder-hint」
+  // 的模式去匹配，命中别的规则或干脆匹配不到。
+  const escaped = className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const match = css.match(new RegExp(`\\.${escaped}\\{([^}]*)\\}`))
   return match?.[1]
 }
 
@@ -39,6 +42,23 @@ describe('QODER_CARD_CSS', () => {
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-inline-select option')).toContain('background')
   })
 
+  it('每条渲染成 <p> 的规则都显式归零浏览器默认边距', () => {
+    // 浏览器给 <p> 加 margin:1em 0（16px 上下）。凡是渲染成 <p> 的类，规则里
+    // 必须写 margin，否则它上下凭空多出两段空白 —— 而且**调容器的 gap/padding
+    // 完全看不出来**（用户实拍「还是没有改善」，根因就在这里）。
+    // 这条测试是从「症状」反推出来的：前两次修间距都只改了容器，而真正的
+    // 16px 来自浏览器默认样式。
+    const pClasses = [
+      'usage-hint', 'hint', 'usage-text', 'usage-error', 'tab-off-notice',
+      'models-title', 'models-summary', 'model-capability-note', 'pool-note', 'pool-title',
+    ]
+    for (const name of pClasses) {
+      const rule = ruleOf(QODER_CARD_CSS, `dsm-qoder-${name}`)
+      expect(rule, `.dsm-qoder-${name} 规则应当存在`).toBeDefined()
+      expect(rule, `.dsm-qoder-${name} 必须显式写 margin（<p> 默认 1em 0）`).toMatch(/margin:/)
+    }
+  })
+
   it('说明行（tab 提示语）上下的空白都收紧（用户圈出的那两处）', () => {
     // 用户圈的是**那句说明文案上下的两处空白**：
     //   tab 栏 → 说明行，以及 说明行 → 账号池分隔线。
@@ -52,7 +72,8 @@ describe('QODER_CARD_CSS', () => {
     // tab 栏 → 说明行（容器 gap 负责）
     expect(usage).toMatch(/gap:10px/)
     // 说明行自己的上下内边距（它此前只有 padding-left）
-    expect(hint).toMatch(/padding:2px 0 2px 19px/)
+    expect(hint).toMatch(/margin:0/)
+    expect(hint).toMatch(/padding:6px 0 6px 19px/)
     // 账号池**自己的**间距保持 8px —— 它不属于用户圈的那两处。
     expect(pool).toMatch(/padding:8px 0 4px/)
   })
