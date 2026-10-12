@@ -418,6 +418,25 @@ describe('QoderCard render', () => {
     }
   })
 
+  it('正文首块自带顶部间距：tab 栏不顶着上面那条分隔线', async () => {
+    // 用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」。
+    // `.dsm-plugin-card-body` 只有 padding:0 0 8px（上内边距为 0），所以正文的
+    // 首个元素必须自带顶部间距。workbuddy 的 tab 栏被 `.dsm-workbuddy-usage`
+    // （padding:16px 0 4px）托住，qoder 此前把这层容器拆掉了 → 直接贴线。
+    const { container, unmount } = await mountCard()
+    try {
+      const body = container.querySelector('.dsm-plugin-card-body')
+      expect(body).not.toBeNull()
+      const first = body!.firstElementChild as HTMLElement | null
+      // 首个元素是那层提供顶部间距的容器，tab 栏在它里面。
+      expect(first?.classList.contains('dsm-qoder-usage')).toBe(true)
+      expect(body!.querySelector('.dsm-qoder-tabs')?.parentElement?.classList.contains('dsm-qoder-usage'))
+        .toBe(true)
+    } finally {
+      await unmount()
+    }
+  })
+
   it('卡片正文不再重复额度明细（下方账号池已按账号逐行显示）', async () => {
     // 用户实拍：红框那行「附加额度 · 92 / 100」与账号池表格的「积分」列说的是
     // 同一组数字（连到期时间都一样），而池里是逐账号显示、粒度更细。

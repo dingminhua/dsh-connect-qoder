@@ -397,55 +397,65 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
       {open ? (
         <div className="dsm-plugin-card-body">
-          {/* Tab bar: one tab = one provider (qoder / qoder-global). */}
-          <div className="dsm-qoder-tabs" role="tablist" aria-label={t('row.title')}>
-            {QODER_REGIONS.map(region => {
-              const on = region === activeRegion
-              const regionStatus = usages[region]?.status ?? 'signed-out'
-              const regionOnState = regionOnOf(usages[region])
-              return (
-                <div key={region} className="dsm-qoder-tab-cell">
-                  <button
-                    type="button"
-                    role="tab"
-                    aria-selected={on}
-                    className={`dsm-qoder-tab${on ? ' dsm-qoder-tab-active' : ''}${regionOnState ? '' : ' dsm-qoder-tab-off'}`}
-                    onClick={() => { setActiveRegion(region as 'cn' | 'global'); setSaveError(undefined) }}
-                  >
-                    {usages[region] === undefined
-                      ? null
-                      : <span aria-hidden="true" className="dsm-qoder-tab-dot" style={dotStyle(regionStatus)} />}
-                    {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
-                  </button>
-                  <label className="dsm-qoder-tab-switch" title={t('row.tabSwitchHint')}>
-                    <input
-                      type="checkbox"
-                      checked={regionOnState}
-                      disabled={!canWrite(scope) || siblingBusy || poolBusy}
-                      aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
-                      onChange={(event) => { toggleRegion(region, event.target.checked) }}
-                    />
-                  </label>
-                </div>
-              )
-            })}
-          </div>
-          <p className="dsm-qoder-usage-hint">{t('row.tabHint')}</p>
-          {!regionOn
-            ? <p className="dsm-qoder-tab-off-notice">{t('row.tabOffNotice')}</p>
-            : null}
+          {/* 卡片正文的第一块套一层容器，因为 `.dsm-plugin-card-body` 只有
+              `padding:0 0 8px`（**上内边距为 0**）：正文的首个元素必须自带顶部
+              间距，否则会直接贴住上面那条分隔线——用户实拍「国际版 国内版
+              不要顶着上面这条线」。
+              workbuddy 的 tab 栏正是这样被 `.dsm-workbuddy-usage`
+              （padding:16px 0 4px）托住的；这里用同一条规则 `.dsm-qoder-usage`
+              恢复同样的呼吸空间（规则本来就在，是此前删掉积分块时把这层
+              容器一并拆掉了）。 */}
+          <div className="dsm-qoder-usage">
+            {/* Tab bar: one tab = one provider (qoder / qoder-global). */}
+            <div className="dsm-qoder-tabs" role="tablist" aria-label={t('row.title')}>
+              {QODER_REGIONS.map(region => {
+                const on = region === activeRegion
+                const regionStatus = usages[region]?.status ?? 'signed-out'
+                const regionOnState = regionOnOf(usages[region])
+                return (
+                  <div key={region} className="dsm-qoder-tab-cell">
+                    <button
+                      type="button"
+                      role="tab"
+                      aria-selected={on}
+                      className={`dsm-qoder-tab${on ? ' dsm-qoder-tab-active' : ''}${regionOnState ? '' : ' dsm-qoder-tab-off'}`}
+                      onClick={() => { setActiveRegion(region as 'cn' | 'global'); setSaveError(undefined) }}
+                    >
+                      {usages[region] === undefined
+                        ? null
+                        : <span aria-hidden="true" className="dsm-qoder-tab-dot" style={dotStyle(regionStatus)} />}
+                      {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
+                    </button>
+                    <label className="dsm-qoder-tab-switch" title={t('row.tabSwitchHint')}>
+                      <input
+                        type="checkbox"
+                        checked={regionOnState}
+                        disabled={!canWrite(scope) || siblingBusy || poolBusy}
+                        aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
+                        onChange={(event) => { toggleRegion(region, event.target.checked) }}
+                      />
+                    </label>
+                  </div>
+                )
+              })}
+            </div>
+            <p className="dsm-qoder-usage-hint">{t('row.tabHint')}</p>
+            {!regionOn
+              ? <p className="dsm-qoder-tab-off-notice">{t('row.tabOffNotice')}</p>
+              : null}
 
-          {/* 额度**读不到**时才说话：池行只能显示一个「—」，说不出为什么，而
-              `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档里，
-              池行拿不到。成功时这一块什么都不渲染——明细在账号池表格里。
-              「在对话框显示积分」开关本身已移到账号池标题行（见 renderPool）。 */}
-          {signIn === undefined || signIn.credits !== undefined ? null : (
-            <p className="dsm-qoder-usage-text">
-              {signIn.creditsError === undefined
-                ? t('row.usageUnavailable')
-                : t('row.creditsError', { message: signIn.creditsError })}
-            </p>
-          )}
+            {/* 额度**读不到**时才说话：池行只能显示一个「—」，说不出为什么，而
+                `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档里，
+                池行拿不到。成功时这一块什么都不渲染——明细在账号池表格里。
+                「在对话框显示积分」开关本身已移到账号池标题行（见 renderPool）。 */}
+            {signIn === undefined || signIn.credits !== undefined ? null : (
+              <p className="dsm-qoder-usage-text">
+                {signIn.creditsError === undefined
+                  ? t('row.usageUnavailable')
+                  : t('row.creditsError', { message: signIn.creditsError })}
+              </p>
+            )}
+          </div>
 
           {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
           {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}
