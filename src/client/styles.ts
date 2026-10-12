@@ -311,6 +311,14 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:0}
 .dsm-qoder-bar-label{flex:none;margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-bar-status{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/*
+ * 「PAT 从哪来」的就地说明（「添加 PAT」标签与按钮之间）。
+ *
+ * flex:1 1 auto + min-width:0 让它吃掉标签与按钮之间的余量并参与换行：
+ * 窄卡片上整行会折到按钮上方，而不是把按钮挤出可视区（.dsm-qoder-bar
+ * 本身是 flex-wrap:wrap）。次级色，不与标签抢注意力。
+ */
+.dsm-qoder-bar-hint{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#9aa0a8)}
 .dsm-qoder-bar-hint{color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-bar-actions{display:flex;gap:8px;flex:none;margin-left:auto}
 .dsm-qoder-bar a{color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}

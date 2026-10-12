@@ -81,6 +81,12 @@ export const en = {
   'row.addAccountStart': 'Add PAT',
   'row.addAccountPlaceholder': 'Paste a Qoder PAT (pt-…) here',
   'row.addAccountNameHint': 'Optional display name (a validated token yields one automatically)',
+  /**
+   * 「PAT 从哪来」的就地说明。放在「添加 PAT」这一行上，而不是只靠对话框里
+   * 那个文档链接 —— 用户看到这个入口的瞬间，最想知道的正是「去哪弄一个令牌」。
+   * 域名逐区域不同（国内 qoder.com.cn / 国际 qoder.com），所以写成参数。
+   */
+  'row.addAccountPatHint': 'Sign in at {domain} → Service integrations → New token (the other region uses a different domain)',
   'row.addAccountValidating': 'Validating…',
   'row.addAccountDone': 'Added “{accountName}”. It now serves this region.',
   'row.addAccountError': 'Could not add this PAT: {message}',
@@ -354,6 +360,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.addAccountStart': '添加 PAT',
   'row.addAccountPlaceholder': '在此粘贴一个 Qoder PAT（pt-…）',
   'row.addAccountNameHint': '可选显示名（验证通过的 token 会自动取一个）',
+  'row.addAccountPatHint': '登录网页 {domain} → 服务集成 → 新建令牌（另一个区域域名不同）',
   'row.addAccountValidating': '正在验证…',
   'row.addAccountDone': '已添加「{accountName}」，它现在为这个区域服务。',
   'row.addAccountError': '无法添加此 PAT：{message}',

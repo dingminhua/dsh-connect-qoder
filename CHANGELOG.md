@@ -17,6 +17,13 @@
 - **tab 栏不再顶着上面的分隔线**（用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」）：`.dsm-plugin-card-body` 这条家族共享规则只有 `padding:0 0 8px`——**上内边距为 0**，所以正文的**首个元素必须自带顶部间距**。workbuddy 的 tab 栏正是被 `.dsm-workbuddy-usage`（`padding:16px 0 4px`）托住的；qoder 这边在上一轮删掉积分块时，把那层容器一并拆掉了，于是 tab 栏直接贴在分隔线上。现在用同一条规则 `.dsm-qoder-usage`（本就存在）恢复同样的 16px 呼吸空间——不是新加特例，是恢复与同族插件一致的结构。
 - **「在对话框显示积分」开关移到账号池标题行**（用户要求：「放到账号池这个标题旁边吧，节约点空间」）：它此前在卡片正文里独占一行，约 30px 高却只有一个勾选框。现在渲染在 `pool-head` 右端、排在「当前使用」芯片**之前**（可操作的控件在状态之前）。卡片仍然持有写权限与区域，所以由卡片构造这个节点、经 `creditsSwitch` prop 交给账号池安置（与 `accountTools` 同规）；原来那个只为它存在的 `.dsm-qoder-credits-row` 外壳随之删除。语义也更顺：它决定「积分怎么显示」，而积分明细正是下面那张表的内容。
 - **「在对话框显示积分」那行上移**（用户实拍：「红色的部分向上靠拢一些」）：额度明细移除后，那一行仍套着为明细列表准备的 `.dsm-qoder-usage`（`padding:16px 0 4px` + `gap:16px`），连同 `.dsm-qoder-credits-switch` 自己的 `margin:8px 0 2px` 与账号池区块的 `padding-top:16px`，三处叠加出约 19px 的空档。现在：这一行换成自己的外壳 `.dsm-qoder-credits-row`（`padding:12px 0 2px`）、开关的 margin 归零（间距由外壳统一负责）、账号池的 `padding-top` 收到 8px。分隔线之上只剩约 11px。
+- **「添加 PAT」那一行补上就地说明**（用户要求：「添加 PAT 后添加文本（登录网页 qoder.com / qoder.com.cn → 服务集成 → 新建令牌），国际国内域名不同」）：
+  - 文案放在**入口这一行**（标签与按钮之间），而不是只留在对话框里的文档链接 —— 用户看到这个入口的瞬间，最想知道的就是「去哪弄一个令牌」。
+  - 域名逐区域不同，由 `region` 决定：国内 `qoder.com.cn`、国际 `qoder.com`。
+  - 新增 `QODER_CONSOLE_DOMAIN` 常量，与已有的 `knownQoderRegionOfDomain`（域名反查区域）**放在一起维护** —— 同一组事实的两种读法，分开放就很容易漂移而不被发现。
+  - 注意国际版用的是**控制台域名 `qoder.com`**，不是网关用的 `qoder.sh`：用户在浏览器里看到的是前者。
+  - `.dsm-qoder-bar-hint` 用 `flex:1 1 auto` + `min-width:0`：吃掉标签与按钮之间的余量，窄卡片上折行到按钮上方，而不是把按钮挤出可视区。
+  - 新增 4 条渲染测试（两种区域的域名、同一行的顺序、域名表本身），防止两处域名漂移。
 - **修掉 400 `developer is not one of [...]`：必须显式关闭 pi-ai 的 developer 角色**（用户实拍上游 400）。
   - pi-ai 的 openai-completions API 这样决定系统提示词的角色：
     ```js

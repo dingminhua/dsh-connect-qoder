@@ -16,7 +16,7 @@
 
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import { QODER_ACCOUNTS_PATH, QODER_PAT_DOC_URL, withQoderRouteAction } from '../status-paths.ts'
+import { QODER_ACCOUNTS_PATH, QODER_CONSOLE_DOMAIN, QODER_PAT_DOC_URL, withQoderRouteAction } from '../status-paths.ts'
 import type { QoderWebRegion } from '../status-paths.ts'
 import type { Translate } from './locales.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
@@ -114,6 +114,12 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
   return (
     <section className="dsm-qoder-bar" aria-label={t('row.addAccountStart')}>
         <p className="dsm-qoder-bar-label">{t('row.addAccountStart')}</p>
+        {/* 「PAT 从哪来」的就地说明：用户看到这个入口的瞬间最想知道的就是它，
+            所以写在入口这一行，而不是只留在对话框里的文档链接。
+            域名逐区域不同（国内 qoder.com.cn / 国际 qoder.com），由 region 决定。 */}
+        <p className="dsm-qoder-bar-hint">
+          {t('row.addAccountPatHint', { domain: QODER_CONSOLE_DOMAIN[region] })}
+        </p>
         {/* 状态行只在有状态时出现（workbuddy 的 bar-status 同规）。此前这里常驻
             一行「本区域生效的账号，从设置中的 PAT……」——那讲的是账号行的话题，
             不是「添加 PAT」，常驻还把这一行撑成三行高。 */}

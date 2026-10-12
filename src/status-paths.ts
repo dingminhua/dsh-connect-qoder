@@ -256,6 +256,22 @@ export function knownQoderRegionOfDomain(domain: string): QoderWebRegion | undef
   return undefined
 }
 
+/**
+ * 该区域的**控制台域名**，用于「PAT 去哪弄」这句说明。
+ *
+ * 与 {@link knownQoderRegionOfDomain} 是同一组事实的两种读法（那边由域名反查
+ * 区域，这边由区域正查域名），所以放在一起维护 —— 两处域名漂移过一次就很难
+ * 被发现。
+ *
+ * 注意国内版是 `qoder.com.cn`（控制台在 `https://qoder.com.cn` → 设置 →
+ * API 令牌），**不是** `api.qoder.com.cn`（那个返回 503）。国际版是 `qoder.com`
+ * （不是网关用的 `qoder.sh`）—— 用户在浏览器里看到的是前者。
+ */
+export const QODER_CONSOLE_DOMAIN: Readonly<Record<QoderWebRegion, string>> = {
+  cn: 'qoder.com.cn',
+  global: 'qoder.com',
+}
+
 // ---------------------------------------------------------------------------
 // 探针体量（见 host 侧 `probe.ts`；这里不重复声明，避免两处菜单漂移）
 // ---------------------------------------------------------------------------
