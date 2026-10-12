@@ -4,12 +4,12 @@
 
 ## 当前状态
 
-- **正式提交**：尚未提交（发布 0.3.0 后提 PR `data/plugins/dingminhua__dsh-connect-qoder.yml`）
+- **正式提交**：0.3.0 已发布到 npm，可以提 PR `data/plugins/dingminhua__dsh-connect-qoder.yml`
 - **npm 包名**：`@dmh2002/dsh-connect-qoder`。**注意**：无作用域的 `dsh-connect-qoder` 已被他人占用（发布者 `gghskl`，仓库 `hdhgsysh/dsh-connect-qoder`，实为 `eghrhegpe` 那份「读本机登录」的实现，已在注册表内）。本项目是**另一条技术路线**（用户自备 PAT + cosy 网关），因此发布在作用域名下；仓库名与插件在 DSH 内的标识（settings 命名空间、`/plugins/dsh-connect-qoder/…` 路由、CLI 程序名）**不变**。
 - **前置要求**（依据 [contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)）：
   - [x] 仓库 `package.json` 声明 `dsh.bundle` manifest（`dsh.bundle.patch: ./cordis.patch.yml`）
-  - [x] 已发布到 npm（映射由 registry 从包的 `repository` 字段自动采集，**条目里不要手写 `npm:` 键，会被校验拒绝**）
-  - [ ] 仓库打 `dsh-plugin` topic（GitHub → Settings → Topics）
+  - [x] 已发布到 npm（`@dmh2002/dsh-connect-qoder@0.3.0`，映射由 registry 从包的 `repository` 字段自动采集，**条目里不要手写 `npm:` 键，会被校验拒绝**）
+  - [x] 仓库打了 `dsh-plugin` topic（另按本作者同族仓库约定补了 `dsh-plugin-market` / `dsh-plugins`，以及 `deepseek-harness` / `qoder` / `model`）
   - [x] 仓库创建满 1 天（2026-10-11 创建。现行规则**没有**提交数门槛——历史长短反映开发习惯而非质量，见 contributing 的说明）
 - **截图**：声明在**本项目自己仓库**根目录的 [`screenshots.json`](../screenshots.json)（四张实机图：设置卡片 / 模型管理 / composer 积分 / 模型选择器）
 
