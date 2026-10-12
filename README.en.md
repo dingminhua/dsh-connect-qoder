@@ -4,7 +4,7 @@
 
 <h1 align="center">dsh-connect-qoder</h1>
 
-<p align="center"><b>Connect Qoder (Lingma international / CN) models to DeepSeek Harness, with an account pool, daily check-in, credit readouts and model management.</b></p>
+<p align="center"><b>Connect Qoder (Lingma CN / international) models to DeepSeek Harness, with an account pool, daily check-in, credit readouts and model management.</b></p>
 
 <p align="center">
   <a href="README.md">中文</a> ·
@@ -81,7 +81,7 @@ dsh plugin --profile web add @dmh2002/dsh-connect-qoder       # Web
 
 Then **restart that profile's DSH process** (the host half of a bundle loads at startup). You can also search for `dsh-connect-qoder` in DSH's "Plugin market / Bundles" and install it in one click.
 
-> The npm package name carries the `@dmh2002/` scope, but the plugin's **identity inside DSH does not**: the settings namespace, the `/plugins/dsh-connect-qoder/…` routes and the CLI program name all stay `dsh-connect-qoder`. Anyone upgrading from 0.2.0 keeps their saved configuration — no need to re-enter PATs.
+> The npm package name carries the `@dmh2002/` scope. The plugin's **configuration identity inside DSH does not** — the settings namespace, the `/plugins/dsh-connect-qoder/…` routes and the CLI program name all stay `dsh-connect-qoder`, so anyone upgrading from 0.2.0 keeps their saved configuration with no need to re-enter PATs. But the **browser bundle's module id and the settings card's slot keys are both keyed by the scoped package name** (`plugins.bundle.config` takes the bare package name, `plugins.row.config` takes `<package name>#<row id>`, and the row id stays unscoped); these are injected from `package.json` at build time, so a rename cannot leave them behind.
 
 ### From source (development)
 

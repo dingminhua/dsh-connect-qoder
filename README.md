@@ -4,7 +4,7 @@
 
 <h1 align="center">dsh-connect-qoder</h1>
 
-<p align="center"><b>把 Qoder（通义灵码国际 / 国内）的模型接入 DeepSeek Harness，并提供账号池、每日签到、积分读数与模型管理。</b></p>
+<p align="center"><b>把 Qoder（通义灵码国内版 / 国际版）的模型接入 DeepSeek Harness，并提供账号池、每日签到、积分读数与模型管理。</b></p>
 
 <p align="center">
   <a href="README.en.md">English</a> ·
@@ -81,7 +81,7 @@ dsh plugin --profile web add @dmh2002/dsh-connect-qoder       # Web
 
 装完**重启该 profile 的 DSH 进程**（bundle 的 host 半边在启动时加载）。也可以在 DSH 的「插件市场 / Bundles」里搜 `dsh-connect-qoder` 一键安装。
 
-> npm 包名带 `@dmh2002/` 作用域，但插件在 DSH 内的**标识不带作用域**：设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与命令行程序名都仍是 `dsh-connect-qoder`。所以 0.2.0 之前装过的用户升级后配置照旧生效，不用重填 PAT。
+> npm 包名带 `@dmh2002/` 作用域。插件在 DSH 内的**配置标识不带作用域**——设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与命令行程序名都仍是 `dsh-connect-qoder`，所以 0.2.0 之前装过的用户升级后配置照旧生效，不用重填 PAT。但**浏览器 bundle 的模块 id、以及设置卡片两个槽位的 key 都按带作用域的包名建**（`plugins.bundle.config` 用裸包名，`plugins.row.config` 用 `<包名>#<行 id>`，行 id 仍不带作用域），这几处由构建期从 `package.json` 注入，改包名不会漏下它们。
 
 ### 从源码构建（开发）
 
