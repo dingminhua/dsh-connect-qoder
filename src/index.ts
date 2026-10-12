@@ -11,7 +11,9 @@
  *     `$DSH_HOME/.qoder-accounts.<region>.json` vault 的多账号池；
  *   - 聊天直接走 Qoder cosy 网关协议（见 src/upstream.ts），模型目录为网关
  *     model/list 的实时快照（src/catalog.ts）；
- *   - 没有 daily check-in（`pool.checkinSupported` 恒 false），没有扫码 OAuth
+ *   - **有** daily check-in（两个区域都有）：CN 直接调 sash 的 campaigns 活动；
+ *     国际版额外需要设备风控头（本机 UMID 组件，见 device-risk.ts）。
+ *     没有扫码 OAuth
  *     （账号增删走 PAT 粘贴的 accounts 路由），没有桌面临终诊断 / markup 恢复；
  *   - 多账号池「实测优先」：test 批量用各成员凭据探测目标模型，落
  *     `$DSH_HOME/.qoder-pool.<region>.json`；failover 循环在流首字节前按 rankPool
@@ -939,9 +941,12 @@ function displayModels(
       poolProbes: reg => stacks[reg].poolRuntime,
       credentialFor: (reg, accountId) => store.credentialFor(accountId, sourcesOf(reg)),
       probeOne: (reg, credit, modelId) => probeThrough(reg, credit, modelId),
-      // CN 有每日签到（sash 的 campaigns 活动，已实测）；国际版同样有该活动，
-      // 但需要本机 UMID 组件生成的设备风控头，暂未接通。
-      checkinSupported: reg => reg === 'cn',
+      // 两个区域**都有**每日签到（sash 的 campaigns 活动，已实测）。
+      // 差别只在认证细节：国际版额外需要设备风控头（本机 UMID 组件的三件套），
+      // 由 upstream 按 region 条件附加（见 QoderRegionConfig.requiresDeviceRisk）。
+      // 本机没有 Qoder 客户端（取不到组件）时，签到会在读取那一步如实报错，
+      // 而不是把「取不到设备身份」伪装成「今天没有活动」。
+      checkinSupported: () => true,
       checkin: async reg => runCheckinBatch(reg),
       test: async reg => {
         const prefs = poolPreferencesOf(config, reg)

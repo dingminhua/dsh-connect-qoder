@@ -33,6 +33,7 @@ import {
   type CosySessionContext,
 } from './cosy.ts'
 import { createChatBodyTemplate, buildQoderMessages, extractLatestUserPrompt, deepClone, applyModelKey, type QoderChatTemplate } from './messages.ts'
+import { readDeviceRisk } from './device-risk.ts'
 
 // ---------------------------------------------------------------------------
 // 区域
@@ -53,6 +54,14 @@ export interface QoderRegionConfig {
   jobTokenPath: string
   /** 每日签到的活动列表端点（sash 的 v1 campaigns）。 */
   campaignsPath: string
+  /**
+   * 该区域的签到是否需要**设备风控头**（`Cosy-MachineToken/Code/Type`）。
+   *
+   * 国际版为 true：它的签到活动只下发给带这些头的请求，缺了拿不到活动列表
+   * （实测端点存在，返回 401 而不是 404）。国内版为 false —— 实测不需要，
+   * 多发反而在另一侧成为噪音。三件套由本机 UMID 组件生成，见 device-risk.ts。
+   */
+  requiresDeviceRisk: boolean
 }
 
 /** 一条签到活动（`GET /sash/api/v1/me/campaigns` 的条目，只取用得到的字段）。 */
@@ -96,6 +105,7 @@ export const QODER_REGIONS: Readonly<Record<QoderRegion, QoderRegionConfig>> = {
     modelsPath: MODELS_PATH,
     jobTokenPath: JOB_TOKEN_PATH,
     campaignsPath: CAMPAIGNS_PATH,
+    requiresDeviceRisk: false,
   },
   global: {
     gateway: 'https://api1.qoder.sh',
@@ -104,6 +114,7 @@ export const QODER_REGIONS: Readonly<Record<QoderRegion, QoderRegionConfig>> = {
     modelsPath: '/algo/api/v2/model/list?Encode=1',
     jobTokenPath: '/algo/api/v3/user/jobToken?Encode=1',
     campaignsPath: CAMPAIGNS_PATH,
+    requiresDeviceRisk: true,
   },
 }
 
@@ -224,6 +235,8 @@ const DEFAULT_HEADERS: Record<string, string> = {
  */
 export class QoderUpstreamClient {
   readonly region: QoderRegionConfig
+  /** 本实例所属区域（`region` 是它的配置表；这里保留区域名本身）。 */
+  private readonly regionKey: QoderRegion
   private readonly logger: (message: string) => void
   private readonly installSalt: string | undefined
   private readonly fetchImpl: typeof fetch
@@ -241,6 +254,7 @@ export class QoderUpstreamClient {
 
   constructor(region: QoderRegion, options: QoderUpstreamOptions = {}) {
     this.region = QODER_REGIONS[region]!
+    this.regionKey = region
     this.logger = options.logger ?? (() => {})
     this.installSalt = options.installSalt
     this.fetchImpl = options.fetch ?? globalThis.fetch
@@ -657,6 +671,10 @@ export class QoderUpstreamClient {
    * 认证与用量查询同一套：`Authorization: Bearer <jobToken.securityOauthToken>`。
    * 但那两个接口需要 `cosy-clienttype: 10` 与 `user-agent: Qoder`——参考实现
    * 如此，缺了会被拒；而夹带 cosy 协议头（chat/models 那套）反而不认。
+   *
+   * **国际版额外需要设备风控头**（`Cosy-MachineToken/Code/Type`，见 device-risk.ts）：
+   * 签到活动只下发给带这些头的请求，缺了就拿不到活动列表。国内版不需要，所以按
+   * region 条件附加 —— 不要无条件发，多余的头在另一侧是噪音。
    */
   private async sashRequest(
     method: 'GET' | 'POST',
@@ -677,6 +695,7 @@ export class QoderUpstreamClient {
         accept: 'application/json',
         'accept-language': 'zh-CN',
         'user-agent': SASH_USER_AGENT,
+        ...(await this.deviceRiskHeaders()),
         ...(method === 'POST' ? { 'content-type': 'application/json', origin: this.region.openapi } : {}),
       },
       ...(method === 'POST' ? { body: JSON.stringify(body ?? {}) } : {}),
@@ -690,6 +709,24 @@ export class QoderUpstreamClient {
       return JSON.parse(text) as Record<string, unknown>
     } catch {
       throw new QoderUpstreamError('unknown', `响应不是 JSON: ${truncate(text, 200)}`, resp.status)
+    }
+  }
+
+  /**
+   * 本区域签到需要的设备风控头。
+   *
+   * 国内版返回空对象（不需要，发了反而是噪音）；国际版读取本机 UMID 组件的
+   * 三件套。读取失败**不**静默降级成「无头请求」——那样只会拿到一个空的活动
+   * 列表，用户看到「今天没有活动」而真实原因是取不到设备身份。所以这里让错误
+   * 抛出去，由调用方带着原因回报。
+   */
+  private async deviceRiskHeaders(): Promise<Record<string, string>> {
+    if (!this.region.requiresDeviceRisk) return {}
+    const risk = await readDeviceRisk(this.regionKey)
+    return {
+      'cosy-machinetoken': risk.machineToken,
+      'cosy-machinecode': risk.machineCode,
+      'cosy-machinetype': risk.machineType,
     }
   }
 

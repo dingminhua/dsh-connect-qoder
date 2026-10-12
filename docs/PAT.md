@@ -163,5 +163,16 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 - 官方刷新时间：**每天 10:00 (UTC+8)** 开窗（阿里云文档写 0 点，桌面端截图显示 10:00
   ——以桌面端为准）。
 - **国际版**还需要设备风控头 `Cosy-MachineToken` / `Cosy-MachineCode` /
-  `Cosy-MachineType`（由本机 UMID 组件生成）；**CN 不需要**。
+  `Cosy-MachineType`；**CN 不需要**（实测多发这些头在 CN 侧是噪音）。
+  三件套由 Qoder 客户端自带的 UMID 组件在本机生成，插件按区域读取：
+
+  | 区域 | 优先组件路径 |
+  |---|---|
+  | 国内版 | `/Applications/Qoder CN.app/Contents/Resources/umid/runtime-info` |
+  | 国际版 | `/Applications/Qoder.app/Contents/Resources/umid/runtime-info` |
+
+  两侧都装了时各自优先自己那个 —— 设备身份与区域绑定，用错一侧会被风控拒绝。
+  组件不存在时签到**如实报错**（「未找到 Qoder 设备风控组件」），而不是把
+  「取不到设备身份」伪装成「今天没有活动」。也可用 `QODER_UMID_PATH` 显式指定。
+  读取结果按 50 分钟在进程内缓存（参考实现同量级），避免每次签到都 fork 进程。
 - 企业版账号不支持该活动（仅个人用户）。
