@@ -116,13 +116,6 @@ function formatNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(value)
 }
 
-function formatDate(value: number): string {
-  return new Intl.DateTimeFormat(undefined, {
-    month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(new Date(value))
-}
-
 function dotStyle(status: QoderWebUsage['status']): Record<string, string> {
   const color = status === 'signed-in'
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
@@ -130,21 +123,6 @@ function dotStyle(status: QoderWebUsage['status']): Record<string, string> {
       ? 'var(--dsw-alias-state-error-primary, #d92d20)'
       : 'var(--dsw-alias-label-dimmed, #9aa0a6)'
   return { background: color }
-}
-
-/**
- * 积分桶的名称标签（base / addon / org）。
- *
- * 桶键由宿主给出（`packageName`），文案由卡片本地化——两者解耦，宿主的
- * DTO 因此不需要携带任何人类可读文案。
- */
-function bucketLabel(t: Translate, packageName: string): string {
-  switch (packageName) {
-    case 'base': return t('row.usageBucketBase')
-    case 'addon': return t('row.usageBucketAddon')
-    case 'org': return t('row.usageBucketOrg')
-    default: return packageName
-  }
 }
 
 /**
@@ -472,7 +450,19 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
             </label>
 
-            {renderCredits()}
+            {/* 额度明细**不再**在这里重复一遍：账号池表格的「积分」列按账号逐行
+                显示同样的数字（余额 + 最近积分包到期），粒度还更细——用户实拍
+                「下面已经显示了」。
+                但**读不到**的情况要留下：池行只能显示一个「—」，说不出为什么，
+                而 `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档
+                里，池行拿不到。所以这里只保留失败文案，成功时什么都不渲染。 */}
+            {signIn === undefined || signIn.credits !== undefined ? null : (
+              <p className="dsm-qoder-usage-text">
+                {signIn.creditsError === undefined
+                  ? t('row.usageUnavailable')
+                  : t('row.creditsError', { message: signIn.creditsError })}
+              </p>
+            )}
           </div>
 
           {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
@@ -516,39 +506,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     void writeRegionCreditsShown(scope, activeRegion, on, slotWith(scope, activeRegion, { showCreditsInMainUi: on })).finally(() => {
       if (mounted.current) setSiblingBusy(false)
     })
-  }
-
-  function renderCredits(): ReactElement {
-    const c = signIn?.credits
-    return (
-      <div className="dsm-qoder-usage">
-        {c === undefined
-          ? <p className="dsm-qoder-usage-text">{signIn?.creditsError === undefined ? t('row.usageUnavailable') : t('row.creditsError', { message: signIn.creditsError })}</p>
-          : (
-            // 这里**不再**另起一行「合计」文字：它会把同一组数字说两遍——
-            // 「92 Token 余额 · 最近积分包 12/31 过期」下面紧接着就是
-            // 「附加额度 · 92 / 100 (12/31 到期)」，后者才是明细（带进度条）。
-            // 用户实拍圈出这段要求清理。
-            // 「即将过期」的信息没有丢：账号池的每个账号行各自标
-            // `pool-soon` / `pool-soon-plain`，那里的粒度更有用（哪个账号要过期）。
-            <>
-              {c.packages.map(pkg => (
-                <div key={pkg.packageName} className="dsm-qoder-usage">
-                  <div className="dsm-qoder-usage" style={{ gap: 4 }}>
-                    <span className="dsm-qoder-usage-text">
-                      <b>{bucketLabel(t, pkg.packageName)}</b> · {formatNumber(pkg.remain)} / {formatNumber(pkg.size)}
-                        {pkg.expiresAtMs === undefined
-                          ? pkg.monthly ? ` (${t('row.usageTotal')})` : ''
-                          : ` (${pkg.expiresAtMs <= Date.now() ? t('row.usageExpired') : t('row.usageExpiresAt', { at: formatDate(pkg.expiresAtMs) })})`}
-                      </span>
-                      <progress className="dsm-qoder-usage-progress" value={pkg.remain} max={pkg.size} />
-                    </div>
-                  </div>
-                ))}
-            </>
-          )}
-      </div>
-    )
   }
 
   function renderRejected(usage: Extract<QoderWebUsage, { status: 'signed-in' }>): ReactElement | null {
