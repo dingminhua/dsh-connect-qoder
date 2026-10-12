@@ -57,7 +57,18 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-tab-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-qoder-tab-switch input:disabled{opacity:.4;cursor:default}
 /* One sidebar-credit switch, belonging to the ACTIVE tab's region. */
-.dsm-qoder-credits-switch{display:flex;align-items:center;gap:6px;margin:8px 0 2px;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/*
+ * 这一行（勾选框 + 可选的失败文案）自己的外壳。
+ *
+ * 它**不再**套 .dsm-qoder-usage：那个容器的 padding:16px 0 4px 是为「积分
+ * 明细列表」准备的，而明细已经移到账号池表格里（用户实拍两次：先说那行合计
+ * 重复、再说明细本身在下面已经有了）。明细没了之后，那 16px 上内边距外加
+ * gap:16px 就变成一截纯粹的空白——用户实拍要求「红色的部分向上靠拢一些」。
+ */
+.dsm-qoder-credits-row{display:flex;flex-direction:column;gap:6px;padding:12px 0 2px}
+/* 失败文案贴着自己的勾选框，不再另起一段距离。 */
+.dsm-qoder-credits-row .dsm-qoder-usage-text{margin:0}
+.dsm-qoder-credits-switch{display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-credits-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-qoder-credits-switch input:disabled{opacity:.4;cursor:default}
 .dsm-qoder-tab-off{opacity:.55}
@@ -165,7 +176,9 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-usage-cheer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
 
 /* ---- Account pool ---- */
-.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:16px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+/* 区块分隔线之上只留 8px：上方的「在对话框显示积分」勾选框只有一行，
+   16px 会让这截空档看着像丢了内容（用户实拍：「红色的部分向上靠拢一些」）。 */
+.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:8px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-qoder-pool-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .dsm-qoder-pool-current-badge{padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .dsm-qoder-pool-account-select{min-width:200px}

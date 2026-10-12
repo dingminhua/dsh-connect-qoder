@@ -436,7 +436,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             : null}
 
           {/* Credits readout + sidebar-credit switch */}
-          <div className="dsm-qoder-usage">
+          <div className="dsm-qoder-credits-row">
             <label
               className="dsm-qoder-credits-switch"
               title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}

@@ -39,6 +39,19 @@ describe('QODER_CARD_CSS', () => {
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-inline-select option')).toContain('background')
   })
 
+  it('积分勾选框一行不再撑出空白（用户实拍要求上移）', () => {
+    // 该行原本套着 .dsm-qoder-usage（padding:16px 0 4px + gap:16px），那是给
+    // 「积分明细列表」准备的；明细移到账号池表格后，这些内边距就是纯粹的空白。
+    const row = ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-row')
+    expect(row).toBeDefined()
+    expect(row).not.toContain('16px 0 4px')
+    expect(row).toContain('padding:12px 0 2px')
+    // 勾选框自己不再另加 margin（间距由这一行统一负责）。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-switch')).toContain('margin:0')
+    // 账号池的上内边距收紧，否则「分隔线之上」会留一截看着像丢内容的空档。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool')).toContain('padding:8px 0 4px')
+  })
+
   it('账号池表格自己的数字框仍然保留', () => {
     // 它是家族共用的规则（workbuddy 也有同名规则），不要因为「卡片里没人用」
     // 就删掉——那会制造一处与同族插件不一致的差异。
