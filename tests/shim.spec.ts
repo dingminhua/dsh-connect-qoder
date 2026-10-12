@@ -11,6 +11,8 @@ interface ChatCall {
   modelKey: string
   tools?: unknown[] | undefined
   signal?: AbortSignal | undefined
+  isReasoning?: boolean | undefined
+  reasoningEffort?: string | undefined
 }
 
 function delta(text: string): Delta {
@@ -23,12 +25,16 @@ function stubUpstream(failures: Record<string, UpstreamErrorKind>, calls: ChatCa
     chatStream: async (credential: string, modelKey: string, _messages: Array<Record<string, unknown>>, options: {
       tools?: unknown[]
       isReasoning?: boolean
+      reasoningEffort?: string
       isVl?: boolean
       signal?: AbortSignal
       onDelta: (d: Delta) => void
       userType?: string
     }) => {
-      calls.push({ credential, modelKey, tools: options.tools, signal: options.signal })
+      calls.push({
+        credential, modelKey, tools: options.tools, signal: options.signal,
+        isReasoning: options.isReasoning, reasoningEffort: options.reasoningEffort,
+      })
       const kind = failures[credential]
       if (kind !== undefined) {
         const status = kind === 'rate-limited' ? 429 : kind === 'auth' ? 401 : 502
@@ -210,6 +216,47 @@ describe('Qoder shim chat translation', () => {
     const resp = await chat(shim, { tools })
     expect(resp.status).toBe(200)
     expect(calls[0]!.tools).toEqual(tools)
+  })
+
+  it('carries the saved thinking strength into every request', async () => {
+    // 整条链路的成败点：设置里存的档位必须真的到达上游调用，否则那个下拉
+    // 只是装饰。官方客户端的形态是顶层 reasoningEffort + parameters
+    // .reasoning_effort；shim 把存档读出来交给 chatStream。
+    const calls: ChatCall[] = []
+    const shim = await startShim({
+      upstream: stubUpstream({}, calls),
+      reasoningEffortOf: (name: string) => (name === 'dmodel' ? 'xhigh' : undefined),
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    expect(calls[0]!.reasoningEffort).toBe('xhigh')
+    // 选中档位本身即「开启思考」，所以布尔侧也必须是 true。
+    expect(calls[0]!.isReasoning).toBe(true)
+  })
+
+  it('sends no strength when the model has none saved', async () => {
+    const calls: ChatCall[] = []
+    const shim = await startShim({
+      upstream: stubUpstream({}, calls),
+      reasoningEffortOf: () => undefined,
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    // 不下发档位字段 → 上游用它自己的默认档。
+    expect(calls[0]!.reasoningEffort).toBeUndefined()
+  })
+
+  it('honours an explicit host "off" over the saved strength', async () => {
+    // 宿主明确要求关闭思考时，保存的档位必须让位：用户此刻的意图优先于设置。
+    const calls: ChatCall[] = []
+    const shim = await startShim({
+      upstream: stubUpstream({}, calls),
+      reasoningEffortOf: () => 'xhigh',
+    })
+    const resp = await chat(shim, { reasoning_effort: 'off' })
+    expect(resp.status).toBe(200)
+    expect(calls[0]!.reasoningEffort).toBeUndefined()
+    expect(calls[0]!.isReasoning).toBe(false)
   })
 
   it('refuses image requests when the model is not multimodal', async () => {

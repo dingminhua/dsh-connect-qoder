@@ -107,6 +107,12 @@ interface QoderDraft {
   offModelKeys: Set<string>
   supportsImages: Set<string>
   contextBudgets: Record<string, number>
+  /**
+   * 逐模型保存的思考强度（模型 key → 档位名）。这是一项**设置**：选好之后
+   * 每个请求都会带上它，与 Qoder 客户端的 `reasoning-effort-changed` 同形态。
+   * 缺席表示用模型自己声明的默认档。
+   */
+  thinkingEfforts: Record<string, string>
 }
 
 function formatNumber(value: number): string {
@@ -256,6 +262,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const offModelKeys = usage?.status === 'signed-in' ? usage.offModelKeys : []
   const imageModelKeys = usage?.status === 'signed-in' ? usage.imageModelKeys : []
   const savedBudgets = usage?.status === 'signed-in' ? (usage.contextBudgets ?? {}) : {}
+  const savedEfforts = usage?.status === 'signed-in' ? (usage.thinkingEfforts ?? {}) : {}
 
   const draft: QoderDraft = drafts[activeRegion] ?? {
     enabledModelKeys: new Set(enabledModelKeys),
@@ -268,6 +275,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
       ? new Set(imageModelKeys)
       : new Set(cartesianModels.filter(m => imageDefaultFor({ id: m.key, ...(m.supportsImages === undefined ? {} : { supportsImages: m.supportsImages }) })).map(m => m.key)),
     contextBudgets: { ...savedBudgets },
+    thinkingEfforts: { ...savedEfforts },
   }
 
   const toggleModel = (key: string, on: boolean): void => {
@@ -309,6 +317,18 @@ export function QoderCard(props: QoderCardProps): ReactElement {
       const d = cloneDraft(prev[activeRegion] ?? draft)
       if (tokens > 0) d.contextBudgets[key] = tokens
       else delete d.contextBudgets[key]
+      return { ...prev, [activeRegion]: d }
+    })
+  }
+
+  /** 保存某个模型的思考强度；空串表示「跟随上游默认」（删掉保存值）。 */
+  const setThinkingEffort = (key: string, effort: string): void => {
+    setDirty(true)
+    setSaveError(undefined)
+    setDrafts(prev => {
+      const d = cloneDraft(prev[activeRegion] ?? draft)
+      if (effort === '') delete d.thinkingEfforts[key]
+      else d.thinkingEfforts[key] = effort
       return { ...prev, [activeRegion]: d }
     })
   }
@@ -797,21 +817,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                   <div className="dsm-qoder-model-meta">
                     <span>{t('row.modelContext', { context: formatCapacity(model.contextWindow) })}</span>
                     <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens) })}</span>
-                    {/* 思考强度档位（workbuddy 的 modelReasoning 同位、同形）：
-                        上游 thinking_config.enabled.efforts 的键，已按强度升序。
-                        默认档括注，用户才知道不改设置时用哪一档。没有档位的模型
-                        （auto、kmodel_latest 等）不渲染这一项——空标签会让人以为
-                        该模型支持思考却没有强度可选。 */}
-                    {model.thinkingEfforts === undefined
-                      ? null
-                      : <span>
-                          {t('row.modelReasoning', {
-                            efforts: model.thinkingEfforts.map(effort =>
-                              effort === model.defaultThinkingEffort
-                                ? t('row.modelReasoningDefault', { effort })
-                                : effort).join(' / '),
-                          })}
-                        </span>}
+                    {/* 思考强度：一项**设置**（选好保存后每个请求自动带上），所以
+                        是可选的控件而不是只读文字。没有档位的模型（auto、
+                        kmodel_latest 等）不渲染——空控件会让人以为该模型支持思考
+                        却没有强度可选。 */}
+                    {renderEffortPicker(model)}
                     {model.isFree === true ? <span className="dsm-qoder-model-meta-tag">{t('row.modelFree')}</span> : null}
                   </div>
                 </div>
@@ -865,6 +875,41 @@ export function QoderCard(props: QoderCardProps): ReactElement {
           </div>
         </div>
       </section>
+    )
+  }
+
+  /**
+   * 思考强度选择器（一项设置，保存后每个请求自动带上）。
+   *
+   * 档位名由上游逐模型声明，且**不统一**（Qwen 系 low/medium/xhigh，
+   * DeepSeek/GLM 系 low/high/max），所以选项直接显示上游给的档位名，不做
+   * 本地化、也不跨模型比较。多出一个「默认」项表示不干预（清掉保存值，请求
+   * 不带档位字段，由上游用它自己的默认档）——没有这一项的话，用户选过一次
+   * 就再也回不到「跟随上游默认」。
+   */
+  function renderEffortPicker(model: QoderWebModel): ReactElement {
+    const efforts = model.thinkingEfforts ?? []
+    if (efforts.length === 0) return <span />
+    const saved = draft.thinkingEfforts[model.key] ?? ''
+    return (
+      <span className="dsm-qoder-effort">
+        <label>
+          {t('row.modelReasoningLabel')}{' '}
+          <select
+            className="dsm-qoder-pool-num"
+            disabled={!canWrite(scope) || siblingBusy}
+            value={saved}
+            onChange={(e) => setThinkingEffort(model.key, e.target.value)}
+          >
+            <option value="">
+              {model.defaultThinkingEffort === undefined
+                ? t('row.modelReasoningFollowUpstream')
+                : t('row.modelReasoningFollowUpstreamNamed', { effort: model.defaultThinkingEffort })}
+            </option>
+            {efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+          </select>
+        </label>
+      </span>
     )
   }
 
@@ -971,6 +1016,7 @@ function cloneDraft(draft: QoderDraft): QoderDraft {
     offModelKeys: new Set(draft.offModelKeys),
     supportsImages: new Set(draft.supportsImages),
     contextBudgets: { ...draft.contextBudgets },
+    thinkingEfforts: { ...draft.thinkingEfforts },
   }
 }
 
@@ -999,6 +1045,7 @@ function buildModelsPayload(draft: QoderDraft, models: readonly QoderWebModel[])
     imageModelKeys: [...draft.supportsImages],
     offModelKeys: [...draft.offModelKeys],
     contextBudgets: draft.contextBudgets,
+    thinkingEfforts: draft.thinkingEfforts,
   }
 }
 

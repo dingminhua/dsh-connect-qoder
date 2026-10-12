@@ -42,6 +42,15 @@ export interface QoderChatTemplate {
     is_reasoning: boolean
     source: string
   }
+  /**
+   * 思考强度档位（`low` / `medium` / `xhigh` …）。
+   *
+   * 实测自 Qoder 官方客户端：档位在这个**顶层**字段上，不在 `model_config`
+   * 里；同时还会写一份到 `parameters.reasoning_effort`。缺席即用模型默认档。
+   */
+  reasoningEffort?: string
+  /** 上游透传参数袋（含 `reasoning_effort`）。 */
+  parameters?: Record<string, unknown>
   messages: unknown[]
   business: {
     id: string

@@ -144,6 +144,8 @@ export interface QoderWebRouteDeps {
   catalogs: Record<QoderRegion, { current(): QoderModelInfo[] }>
   /** Persisted context budgets by model key, one region. */
   contextBudgets(region: QoderRegion): Record<string, number>
+  /** Persisted thinking strength per model key (`low` / `medium` / `xhigh` …). */
+  thinkingEfforts(region: QoderRegion): Record<string, string>
   offModelKeys(region: QoderRegion): readonly string[]
   /** Model keys the user explicitly enabled image input for (independent set). */
   imageModelKeys(region: QoderRegion): readonly string[]
@@ -621,6 +623,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     ...(usageEntry?.error !== undefined ? { creditsError: redactQoderText(usageEntry.error) } : {}),
     ...(credentialRejected && recovery ? { credentialRejected: true, recovery } : {}),
     contextBudgets: budgets,
+    thinkingEfforts: deps.thinkingEfforts(region),
     ...(pool === undefined ? {} : { pool }),
   }
 }

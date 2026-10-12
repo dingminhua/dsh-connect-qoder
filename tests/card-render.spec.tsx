@@ -170,23 +170,24 @@ describe('QoderCard render', () => {
     }
   })
 
-  it('模型行渲染思考强度档位，并括注默认档；无档位的模型不渲染这一项', async () => {
+  it('模型行提供思考强度选择器（设置项），无档位的模型不渲染', async () => {
     const { container, unmount } = await mountCard()
     try {
       const metas = Array.from(container.querySelectorAll('.dsm-qoder-model-meta'))
       expect(metas).toHaveLength(2)
 
-      // 第一行有档位：`推理强度：low / medium（默认） / xhigh`——顺序即强度序，
-      // 默认档带括注（用户才知道不改设置时用的是哪一档）。
-      const first = metas[0]!.textContent ?? ''
-      expect(first).toContain('row.modelReasoning')
-      expect(first).toContain('low')
-      expect(first).toContain('row.modelReasoningDefault')
-      expect(first.indexOf('low')).toBeLessThan(first.indexOf('xhigh'))
+      // 第一行有档位：一个**可选择**的下拉（这是设置，选好保存后每个请求都
+      // 带上），不是一行只读文字。
+      const picker = metas[0]!.querySelector('.dsm-qoder-effort select')
+      expect(picker).not.toBeNull()
+      const values = Array.from(picker!.querySelectorAll('option')).map(o => (o as HTMLOptionElement).value)
+      // 空值 = 跟随上游默认（没有它用户选过一次就再也回不到默认）；其余是档位。
+      expect(values[0]).toBe('')
+      expect(values.slice(1)).toEqual(['low', 'medium', 'xhigh'])
+      expect(metas[0]!.textContent).toContain('row.modelReasoningLabel')
 
-      // 第二行（无档位）不渲染这一项：空标签会让人以为「支持思考却没有强度可选」。
-      const second = metas[1]!.textContent ?? ''
-      expect(second).not.toContain('row.modelReasoning')
+      // 第二行（无档位）不渲染这一项：空控件会让人以为「支持思考却没有强度可选」。
+      expect(metas[1]!.querySelector('.dsm-qoder-effort')).toBeNull()
     } finally {
       await unmount()
     }

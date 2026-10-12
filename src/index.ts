@@ -152,6 +152,15 @@ const regionConfig = z.object({
   offModelKeys: z.array(z.string()).default([]),
   /** 每个模型的显式上下文预算（必须是模型声明的 tier，否则用原生值）。 */
   contextBudgets: z.dict(z.number()).default({}),
+  /**
+   * 每个模型保存的思考强度（档位名，如 `low` / `medium` / `xhigh`）。
+   *
+   * 「设置里选好、之后每个请求自动带上」——与 Qoder 客户端同形态（它的事件
+   * 名就叫 `reasoning-effort-changed`）。缺省表示用模型自己声明的默认档。
+   * 键是模型 key：不同模型的档位名不统一（Qwen 系 low/medium/xhigh，
+   * DeepSeek/GLM 系 low/high/max），所以必须逐模型存。
+   */
+  thinkingEfforts: z.dict(z.string()).default({}),
   /** 账号池偏好。 */
   pool: poolConfig.default({ enabled: false, targetModelId: '', probeInputTokens: 0, memberAccountIds: [] }),
   /** 保存的模型目录（卡片“保存”时写入）。 */
@@ -217,6 +226,18 @@ function contextBudgetsOf(config: { regions?: Record<string, unknown> | null }, 
 function offModelKeysOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): readonly string[] {
   const state = regionStateOf(config, region)
   return Array.isArray(state.offModelKeys) ? (state.offModelKeys as string[]) : []
+}
+
+/** 某区域保存的逐模型思考强度（模型 key → 档位名）。 */
+function thinkingEffortsOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): Record<string, string> {
+  const state = regionStateOf(config, region)
+  const raw = state.thinkingEfforts
+  if (raw === null || raw === undefined || typeof raw !== 'object') return {}
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'string' && value !== '') out[key] = value
+  }
+  return out
 }
 
 /** 某区域保存的 imageModelKeys（用户显式开启图片输入的模型）。 */
@@ -428,6 +449,13 @@ export function apply(ctx: Context, config: Config): void {
       credential: () => resolveServingPat(region),
       modelKeyOf: selector => catalog.keyOf(selector),
       supportsImagesOf: selector => catalog.supportsImagesOf(selector),
+      // 设置里为这个模型保存的思考强度（模型选择器名 → 档位名）。目录换代后
+      // 旧 key 自然失配（返回 undefined），请求退回模型默认档，不需要额外清理。
+      reasoningEffortOf: selector => {
+        const key = catalog.keyOf(selector)
+        if (key === undefined) return undefined
+        return thinkingEffortsOf(config, region)[key]
+      },
       logger: log,
       resolveServing: async () => {
         const serving = await resolveServing(region)
@@ -953,6 +981,7 @@ export function apply(ctx: Context, config: Config): void {
       selectedAccountId: region => selectedAccountId(config, region),
       catalogs: { cn: stacks.cn.catalog, global: stacks.global.catalog },
       contextBudgets: region => contextBudgetsOf(config, region),
+      thinkingEfforts: region => thinkingEffortsOf(config, region),
       offModelKeys: region => offModelKeysOf(config, region),
       imageModelKeys: region => imageModelKeysOf(config, region),
       enabledModelKeys: region => enabledModelKeysOf(config, region),

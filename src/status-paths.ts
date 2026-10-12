@@ -745,6 +745,15 @@ export type QoderWebUsage =
      * snapshot.
      */
     contextBudgets?: Record<string, number>
+    /**
+     * The saved thinking strength per model key (`low` / `medium` / `xhigh` …).
+     *
+     * This is a SETTING, not a per-request choice: once saved, every request for
+     * that model carries it — the same shape as Qoder's own client, whose event
+     * is literally `reasoning-effort-changed`. An absent key means the model's
+     * own default strength.
+     */
+    thinkingEfforts?: Record<string, string>
   }
   | { status: 'error', message: string }
 

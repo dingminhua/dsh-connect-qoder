@@ -354,6 +354,18 @@ export class QoderUpstreamClient {
     options: {
       tools?: unknown[]
       isReasoning?: boolean
+      /**
+       * 思考强度档位名（`low` / `medium` / `xhigh` …），来自插件设置里为该
+       * 模型保存的值。
+       *
+       * 实测自 Qoder 官方客户端（app.asar.unpacked 的 SDK）：档位**不走**
+       * `model_config`，而是请求体顶层的 `reasoningEffort` 加
+       * `parameters.reasoning_effort`——官方客户端两者同时写
+       * （`{..., reasoningEffort:"none", parameters:{...A.parameters,
+       *   reasoning_effort:"none"}}`），只写一个有可能被网关忽略。
+       * 缺席时不下发任何档位字段，由上游用模型自己的默认档。
+       */
+      reasoningEffort?: string
       isVl?: boolean
       signal?: AbortSignal
       onDelta: (delta: QoderChatDelta) => void
@@ -366,6 +378,12 @@ export class QoderUpstreamClient {
     if (options.isReasoning) {
       template.model_config.is_reasoning = true
       template.chat_context.extra.modelConfig.is_reasoning = true
+    }
+    if (options.reasoningEffort !== undefined && options.reasoningEffort !== '') {
+      // 两个位置都写：官方客户端如此，照抄以避免网关只认其中一个。
+      template.reasoningEffort = options.reasoningEffort
+      const params = (template.parameters ?? {}) as Record<string, unknown>
+      template.parameters = { ...params, reasoning_effort: options.reasoningEffort }
     }
     const prompt = extractLatestUserPrompt(messages)
     const built = buildQoderMessages(messages, prompt, Array.isArray(options.tools) && options.tools.length > 0)

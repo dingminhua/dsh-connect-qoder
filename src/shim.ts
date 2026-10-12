@@ -81,6 +81,14 @@ export interface QoderShimOptions {
   /** 该模型是否支持图像输入（用于请求校验，可选）。 */
   supportsImagesOf?: (displayName: string) => boolean
   /**
+   * 该模型在设置里保存的思考强度档位（模型显示名 → 档位名）。
+   *
+   * 「设置里选一次、之后每个请求自动带上」——与 Qoder 客户端同形态
+   * （它的事件名就叫 `reasoning-effort-changed`）。返回 undefined 表示没保存
+   * 过，请求不带档位字段，由上游用模型自己的默认档。
+   */
+  reasoningEffortOf?: (displayName: string) => string | undefined
+  /**
    * 换号重试前的间隔（默认 {@link FAILOVER_ACCOUNT_GAP_MS}）。测试注入 0。
    * 上游限流按请求体积触发，零间隔连环重试会让每个候选都撞同一堵墙。
    */
@@ -331,6 +339,9 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
 
     const key = options.modelKeyOf ? options.modelKeyOf(model) ?? model : model
     const supportsImages = options.supportsImagesOf ? options.supportsImagesOf(model) : false
+    // 设置里为该模型保存的思考强度。选中档位本身就是「开启思考并指定强度」，
+    // 所以它与布尔 is_reasoning 是同一件事的两个粒度——档位存在时按开启处理。
+    const savedEffort = options.reasoningEffortOf ? options.reasoningEffortOf(model) : undefined
     const hasImages = messages.some(m => Array.isArray(m.content) && (m.content as Array<Record<string, unknown>>).some(p => p?.type === 'image_url'))
     if (hasImages && !supportsImages) {
       writeJson(res, 400, { error: { message: `模型 ${model} 不支持图像输入`, code: 'invalid_request_error' } })
@@ -350,8 +361,11 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
 
     // reasoning 档：DSH 的 thinking 选择落在 `reasoning_effort` 上。Qoder 的
     // 线是布尔 `is_reasoning`：`off` → false；任何正档 → true；否则回落到
-    // stream_options.include_reasoning。
-    const isReasoning = isReasoningRequested(body)
+    // stream_options.include_reasoning。设置里为这个模型保存过档位时，档位
+    // 本身即表示「开启并指定强度」，因此以它为准（除非请求明确说 off）。
+    const requestedOff = body.reasoning_effort === 'off'
+    const isReasoning = savedEffort !== undefined && !requestedOff ? true : isReasoningRequested(body)
+    const reasoningEffort = requestedOff ? undefined : savedEffort
 
     // 客户端断开要中止上游（否则上游继续烧额度），且断开前的失败不该记成账号
     // 的测量。监听**响应**的 close 而非请求的：请求流被读完后 Node 会自行
@@ -393,6 +407,7 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         await upstream.chatStream(serving.pat, key, messages, {
           ...(tools === undefined ? {} : { tools }),
           isReasoning,
+          ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
           isVl: supportsImages,
           signal: controller.signal,
           onDelta: (delta) => {

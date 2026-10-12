@@ -132,6 +132,10 @@ export const en = {
   'row.contextBudget': 'Context',
   'row.modelOutput': 'Output {output}',
   'row.modelReasoning': 'Reasoning: {efforts}',
+  'row.modelReasoningLabel': 'Reasoning',
+  'row.modelReasoningFollowUpstream': 'Upstream default',
+  'row.modelReasoningFollowUpstreamNamed': '{effort} (upstream default)',
+
   'row.modelReasoningDefault': '{effort} (default)',
   'row.modelMultimodal': 'Multimodal',
   'row.modelFree': 'Free',
@@ -408,6 +412,10 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.contextBudget': '上下文',
   'row.modelOutput': '最大输出 {output}',
   'row.modelReasoning': '推理强度：{efforts}',
+  'row.modelReasoningLabel': '思考强度',
+  'row.modelReasoningFollowUpstream': '跟随上游默认',
+  'row.modelReasoningFollowUpstreamNamed': '{effort}（上游默认）',
+
   'row.modelReasoningDefault': '{effort}（默认）',
   'row.modelMultimodal': '多模态',
   'row.modelFree': '免费',

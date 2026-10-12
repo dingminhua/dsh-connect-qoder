@@ -43,9 +43,11 @@
   - **why it existed**: workbuddy 走 OAuth，昵称由上游直接给出，没有「手动填名字」这一步，所以对等审计时这一条没有可对照的实现——它是 qoder 特有的 PAT 模式才需要的功能，只做了前端、没接到存储。
 - **凭据被上游拒时静默成空白（「积分看不到」的真正原因）**：实测过期 PAT 打上游返回 `401 TOKEN_EXPIRE / token is not active`，而 `fetchUsage` 把**所有**错误一律吞成 `undefined`，宿主于是走成功分支写入 `{usage: undefined}`——卡片既没有积分、也没有任何错误提示，只剩一片空白，用户无从判断发生了什么。现在 `fetchUsage` 区分两类失败：**凭据被拒（401/403）抛出**（两条回退路径都拒绝才抛，保留原始错误），其他错误（超时、5xx、网关抖动）仍返回 `undefined`（那是「这次没读到」，报成凭据被拒会把用户引去换一个没问题的 PAT）；宿主把 `kind === 'auth'` 记为 `credential-rejected`，卡片随之渲染「凭据被拒」区块与切换/添加 PAT 的出路。
   - 同一处静默还导致 `credential-recovery` 的凭据可用性判定**永远为真**：它靠 `try { await fetchUsage } catch { usable = false }` 判断，而原实现正常返回 `undefined`，`await` 不抛错——过期凭据因此被判定为可用，于是「切换到另一个账号」的恢复建议建立在错误的可用性判断上。
-- **模型行补回思考强度档位**：上游模型条目带 `thinking_config.enabled.efforts`（实测形状 `{xhigh:{}, low:{}, medium:{is_default:true}}`，键即档位名），qoder 此前只从 `thinking_config` 读「能否关闭思考」一个布尔值，档位数据全部丢弃，卡片上没有任何强度信息。现在解析为 `thinkingEfforts` / `defaultThinkingEffort` 并在模型行的 meta 行渲染为 `推理强度：low / medium（默认） / xhigh`（workbuddy 的 `modelReasoning` 同位同形）。
+- **思考强度：从「一行只读文字」做成真正可用的设置**（用户指出「没有地方可以选择」）。上游模型条目带 `thinking_config.enabled.efforts`（实测形状 `{xhigh:{}, low:{}, medium:{is_default:true}}`，键即档位名）；上一轮只在模型行渲染了一行只读文字，这一轮补上真正的选择器与**发送链路**：逐模型保存的 `thinkingEfforts`（一项设置——选好保存后每个请求自动带上，与 Qoder 客户端的 `reasoning-effort-changed` 同形态），卡片上是带「跟随上游默认」选项的下拉。
+  - **档位确实发得出去**（修正上一轮的错误判断）：我此前查了 `model_config` 只有四个字段就断言「发不了档位」——查得不够。档位走的是**另一个字段**：反编译 Qoder 官方客户端（`app.asar.unpacked` 里的 agent SDK）可见请求体为 `{..., reasoningEffort:"none", parameters:{...A.parameters, reasoning_effort:"none"}}`，即顶层 `reasoningEffort` 加 `parameters.reasoning_effort` 双写。现在两个位置都写，与官方客户端一致。
+  - **选中档位即开启思考**：档位与布尔 `is_reasoning` 是同一件事的两个粒度，所以保存了档位就按开启处理；宿主明确要求 `reasoning_effort: "off"` 时让位（那一刻的意图优先于设置）。
   - **键序不可信**：上游给的顺序是 `xhigh, low, medium`，直接显示会让用户以为 xhigh 是最弱档；解析按强度语义序表（`minimal<low<medium<high<xhigh<max`）排序，未知档位名排在已知档之后以保证顺序稳定。
-  - **不是每个模型都有档位**：`auto`、`qmodel_latest`、`mmodel` 等实测 `efforts` 缺失，此时字段缺席、卡片不渲染这一项（空标签会让人以为「支持思考却没有强度可选」）；档位名也不统一（Qwen 系 `low/medium/xhigh`、DeepSeek/GLM 系 `low/high/max`），只做展示、不做跨模型比较。
+  - **不是每个模型都有档位**：`auto`、`qmodel_latest`、`mmodel` 等实测 `efforts` 缺失，此时字段缺席、卡片不渲染控件（空控件会让人以为「支持思考却没有强度可选」）；档位名也不统一（Qwen 系 `low/medium/xhigh`、DeepSeek/GLM 系 `low/high/max`），直接显示上游档位名、不做本地化与跨模型比较。
 
 - **积分与目录的成败解耦**：`refreshUsage` 此前链在目录刷新成功的分支里——动态目录一挂（启动时网络抖动、网关超时……），积分就永远不来，卡片上「看不到积分」。现在目录失败只落兜底目录，积分照常拉取。
 - **账号池投影的倍率规则统一**：`index.ts` 的 `poolModelsOf` 是第三处「只对免费模型写 0、付费模型没数字」的投影（前两处在 web-status，上一轮已修）。三处现统一为「免费折叠为 0（`resolveTargetModel` 只认 `=== 0` 的契约），付费透传真实 `priceFactor`」。

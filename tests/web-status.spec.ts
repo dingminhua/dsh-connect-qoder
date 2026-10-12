@@ -99,6 +99,7 @@ function deps(overrides: Partial<QoderWebRouteDeps> = {}): QoderWebRouteDeps {
     selectedAccountId: () => undefined,
     catalogs: { cn: { current: () => [FREE_MODEL] }, global: { current: () => [FREE_MODEL] } },
     contextBudgets: () => ({}),
+    thinkingEfforts: () => ({}),
     offModelKeys: () => [],
     enabledModelKeys: () => ['dfmodel'],
     imageModelKeys: () => ['dfmodel'],

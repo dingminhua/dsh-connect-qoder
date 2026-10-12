@@ -103,6 +103,9 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-context-budget{display:flex;align-items:center;justify-content:flex-end;gap:12px;flex:none;margin:0;padding:0;border:0;color:var(--dsw-alias-label-secondary,#c6c9d0);font-size:11px;line-height:16px}
 .dsm-qoder-context-budget label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .dsm-qoder-context-budget input{margin:0;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+/* 思考强度选择器：与上下文选择器同一套观感（两者都是「一项设置」）。 */
+.dsm-qoder-effort{display:inline-flex;align-items:center;gap:4px}
+.dsm-qoder-effort label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
 .dsm-qoder-model-capability-note{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 .dsm-qoder-models-head-actions{display:flex;align-items:center;gap:8px;flex:none}
 .dsm-qoder-model-probe{flex:none;padding:3px 10px;font-size:11px;line-height:16px}
