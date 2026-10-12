@@ -485,4 +485,314 @@ describe('QoderCard render', () => {
       }
     }
   })
+  // ==========================================================================
+  // 零凭据区域（国际版实拍「看起来就是空的」）：账号池与它的添加入口必须在。
+  //
+  // `renderPool` 此前第一行就是 `if (signIn?.pool === undefined) return <span />`，
+  // 而 `signIn` 只在 `status === 'signed-in'` 时存在 —— 于是没有 PAT 的区域永远
+  // 拿到 `signed-out`，账号池整块不渲染，连同由它渲染的「添加 PAT / 导出导入」
+  // 一起消失。**最需要添加第一个账号的页面，反而没有任何添加账号的入口。**
+  // 宿主侧已修好一半（signed-out 支也带 pool），这一半是客户端剩下的部分。
+  // ==========================================================================
+  describe('零凭据区域（signed-out）', () => {
+    /** A signed-out usage document carrying a zero-account pool, as the Host now sends. */
+    const signedOutDoc = (region: string): Record<string, unknown> => ({
+      status: 'signed-out',
+      enabled: true,
+      showCreditsInMainUi: true,
+      selectionExplicit: false,
+      selectionLost: false,
+      accounts: [],
+      message: '请填写 Qoder PAT（或设置环境变量）',
+      // The Host includes the pool even with zero accounts; every row would be
+      // `current: false`. With no rows at all, this is the empty-pool shape.
+      pool: {
+        enabled: false,
+        checkinSupported: true,
+        targetModelSource: 'none',
+        memberAccountIds: [],
+        effectiveMemberAccountIds: [],
+        accounts: [],
+        catalog: [],
+      },
+    })
+
+    const withSignedOut = (doc?: Record<string, unknown>): void => {
+      vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+          const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+          return { ok: true, status: 200, json: async () => doc ?? signedOutDoc(region) } as Response
+        }
+        return { ok: false, status: 404, json: async () => ({}) } as Response
+      }))
+    }
+
+    it('账号池仍然渲染 —— 国际版零凭据时不是一片空白', async () => {
+      withSignedOut()
+      const { container, unmount } = await mountCard()
+      try {
+        // 整块账号池在。这是这次修复的全部意义。
+        expect(container.querySelector('.dsm-qoder-pool')).not.toBeNull()
+        expect(container.textContent).toContain('row.poolTitle')
+      } finally {
+        await unmount()
+      }
+    })
+
+    it('「添加 PAT」入口在 —— 零账号时唯一能添加账号的地方', async () => {
+      withSignedOut()
+      const { container, unmount } = await mountCard()
+      try {
+        // 添加 PAT 由账号池设置区渲染（renderPool 的 accountTools），所以
+        // 账号池一消失，这个入口就没了。这就是「没有地方添加账号」。
+        expect(container.querySelector('.dsm-qoder-pool-tools')).not.toBeNull()
+        expect(container.textContent).toContain('row.addAccountStart')
+        // 导出 / 导入同一处，也不能一起消失。
+        expect(container.textContent).toContain('row.transferTitle')
+      } finally {
+        await unmount()
+      }
+    })
+
+    it('空池给出「还没有账号」的说法，而不是「成员限流/积分耗尽」', async () => {
+      withSignedOut()
+      const { container, unmount } = await mountCard()
+      try {
+        expect(container.querySelector('.dsm-qoder-pool-empty')?.textContent).toBe('row.poolEmptyHint')
+        // 一个成员都还没有，就不能说成员出了问题。
+        expect(container.textContent).not.toContain('row.poolNoCandidate')
+      } finally {
+        await unmount()
+      }
+    })
+
+    it('usage 读失败（status=error）时仍不渲染空壳池', async () => {
+      // error 变体根本没有 pool 字段（那份文档没读成）。渲染一个空壳只会把错误行
+      // 挤到下面 —— 与 workbuddy 同规，只留错误行。
+      withSignedOut({ status: 'error', message: 'HTTP 500' })
+      const { container, unmount } = await mountCard()
+      try {
+        expect(container.textContent).toContain('HTTP 500')
+        expect(container.querySelector('.dsm-qoder-pool')).toBeNull()
+      } finally {
+        await unmount()
+      }
+    })
+  })
+})
+
+// ==========================================================================
+// cn / global 对等：一个区域被另一个区域取消掉请求 → 那个 tab 永远空白
+// ==========================================================================
+
+/**
+ * 用户实拍「国际版还是缺少账号池这些功能」。两个独立缺陷叠在一起，都只影响
+ * **非 cn** 的那个 tab，所以「cn 一切正常」的观察完全查不出来：
+ *
+ * 1. **共享一个 AbortController**：轮询里 `for (const region of QODER_REGIONS)
+ *    void refresh(region)` 背靠背连发两次，cn 的请求刚建好就被 global 那次
+ *    `controllers.current?.abort()` 取消掉（反之亦然）——同一时刻只有一个区域的
+ *    usage 能落地。
+ * 2. **挂载时只读 `cn`**：另一个区域要等 60 秒轮询才第一次有数据，所以切过去
+ *    是空白，且没有任何补读。
+ *
+ * 断言用的是**同一份 signed-in 文档**：若两 tab 渲染出的东西不等，问题一定在
+ * 客户端的区域分发，与上游、凭据、PAT 都无关。
+ */
+describe('cn / global 两个 tab 的渲染对等', () => {
+  /** One signed-in document, region filled in per request. */
+  const signedInDoc = (region: string): Record<string, unknown> => ({
+    status: 'signed-in',
+    accountId: 'a1',
+    accountName: 'A1',
+    region,
+    enabled: true,
+    showCreditsInMainUi: true,
+    selectionExplicit: false,
+    accounts: [{ id: 'a1', accountName: 'A1', source: 'vault', selected: true }],
+    models: [modelOf({ key: 'm1', name: 'M1', creditMultiplier: 0 })],
+    enabledModelKeys: ['m1'],
+    offModelKeys: [],
+    imageModelKeys: [],
+    credits: { total: 92, expiringSoon: 0, packages: [] },
+    pool: {
+      enabled: true,
+      checkinSupported: true,
+      targetModelId: 'm1',
+      targetModelSource: 'preferred',
+      memberAccountIds: ['a1'],
+      effectiveMemberAccountIds: ['a1'],
+      accounts: [{ accountId: 'a1', accountName: 'A1', current: true, member: true, source: 'vault', credits: 92 }],
+      catalog: [{ id: 'm1', name: 'M1', creditMultiplier: 0 }],
+    },
+  })
+
+  /** Everything a tab shows, so a one-sided gap shows up as an unequal object. */
+  const inventoryOf = (host: HTMLElement): Record<string, unknown> => ({
+    pool: host.querySelector('.dsm-qoder-pool') !== null,
+    poolRows: host.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)').length,
+    modelRows: host.querySelectorAll('.dsm-qoder-model').length,
+    checkinButton: (host.textContent ?? '').includes('row.poolCheckinAll'),
+    testButton: (host.textContent ?? '').includes('row.poolTestAll'),
+    addPat: (host.textContent ?? '').includes('row.addAccountStart'),
+    transfer: (host.textContent ?? '').includes('row.transferTitle'),
+    checkinColumn: (host.textContent ?? '').includes('row.poolColumnCheckin'),
+  })
+
+  it('国际版 tab 与国内版 tab 渲染出完全一样的池 / 模型 / 账号工具', async () => {
+    /** The abort signal per request, so the stub can honour a real cancellation. */
+    const signals = new Map<string, AbortSignal | undefined>()
+    // **刻意让 usage 响应有延迟**：共享一个 AbortController 的那个缺陷只在请求
+    // **重叠**时才显形 —— 挂载时两个区域背靠背连发，先发的那次会被后发的
+    // `abort()` 掉。零延迟的桩两者都能立刻落地，缺陷就被掩盖了（第一版测试
+    // 正是这样假通过的）。真实网络有延迟，所以这里必须模拟。
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        signals.set(region, init?.signal as AbortSignal | undefined)
+        await new Promise(resolve => setTimeout(resolve, 20))
+        // 真实的 abort 会让 fetch 以 AbortError 拒绝；这里如实模拟，
+        // 否则被取消的请求仍会「成功」，缺陷又被掩盖。
+        if (signals.get(region)?.aborted === true) throw new DOMException('aborted', 'AbortError')
+        return { ok: true, status: 200, json: async () => signedInDoc(region) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const { container, unmount } = await mountCard()
+    try {
+      // 两个区域都要有数据才谈得上对等：等待挂载时的两次读取落地（含延迟）。
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 120)) })
+      const cn = inventoryOf(container)
+      // 切到国际版。切 tab 必须自己补读 —— 不许依赖「下一次轮询」。
+      const tabs = Array.from(container.querySelectorAll<HTMLButtonElement>('button.dsm-qoder-tab'))
+      expect(tabs).toHaveLength(2)
+      await act(async () => {
+        tabs[1]!.click()
+        await new Promise(resolve => setTimeout(resolve, 30))
+      })
+      const global = inventoryOf(container)
+
+      // 国际版一个都不少：账号池、成员行、模型行、签到、测试、添加 PAT、导出导入、签到列。
+      expect(global.pool).toBe(true)
+      expect(global.poolRows).toBe(1)
+      expect(global.modelRows).toBe(1)
+      expect(global.addPat).toBe(true)
+      // 两条必须完全一致 —— 任何一侧少一样东西，这里就炸。
+      expect(global).toEqual(cn)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('一个区域的请求**不会**取消另一个区域的请求', async () => {
+    // 直接钉住那条规则本身。`controllers[region].abort()` 取消的**只能是该区域
+    // 上一次的请求**（同区域连续刷新只认最后一次）；若它取消的是**另一个区域**的
+    // 请求，那个区域的数据永远落不了地。
+    //
+    // 判据：把请求按发起顺序排好，第 i 个被取消只可能是被第 i+1 个取消 ——
+    // 所以「第 i 个被取消，而第 i+1 个属于别的区域」就是缺陷。
+    // 注意：seq 只收**本次**挂载发起的请求 —— 断言时按发起顺序两两配对，
+    // 若把别的挂载混进来，配对关系就乱了（第一版就是这么假通过的）。
+    const seq: Array<{ region: string, signal: AbortSignal | undefined }> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        seq.push({ region, signal: init?.signal as AbortSignal | undefined })
+        // 有延迟，两个请求才会真正重叠（零延迟时缺陷被掩盖）。
+        await new Promise(resolve => setTimeout(resolve, 25))
+        if (init?.signal?.aborted === true) throw new DOMException('aborted', 'AbortError')
+        return { ok: true, status: 200, json: async () => signedInDoc(region) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const { container, unmount } = await mountCard()
+    try {
+      // 等待足够长，让「有延迟」的两个 usage 请求都落地（每次 25ms，加上 act 的批处理）。
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)) })
+      // 两个区域都真的读过 —— 否则下面这条断言是空转。
+      expect(new Set(seq.map(r => r.region))).toEqual(new Set(['cn', 'global']))
+      // 判据：对每个**被取消**的请求，它之后必须还有一个**同区域**的请求 ——
+      // 那才是合法的「只认最后一次」。若它之后只有别的区域的请求，说明它是被
+      // 另一个区域顶掉的（缺陷），而它自己那个区域的数据也就永远落不了地。
+      const crossRegion: string[] = []
+      for (let i = 0; i < seq.length; i++) {
+        if (seq[i]!.signal?.aborted !== true) continue
+        const laterSame = seq.slice(i + 1).some(r => r.region === seq[i]!.region)
+        if (!laterSame) crossRegion.push(seq[i]!.region)
+      }
+      expect(crossRegion).toEqual([])
+      // 两个区域最终都必须有 usage 落地。这一条才是「跨区域取消」的真实后果：
+      // 被顶掉的那个区域 `usages[region]` 永远停在 undefined，圆点也就永远不画。
+      // 圆点是 `<span class="dsm-qoder-tab-dot">`，只在读到文档后才画。
+      expect(container.querySelectorAll('.dsm-qoder-tab-dot')).toHaveLength(2)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('轮询同时刷新两个区域时，不会互相取消（共享 AbortController 的缺陷在此显形）', async () => {
+    // 挂载那一次现在两个区域都能落地（挂载读已经修好），**共享 AbortController
+    // 的缺陷要到轮询才显形**：`for (const region of QODER_REGIONS) void
+    // refresh(region)` 背靠背连发两次，只有共享一个 controller 时，先发的那次
+    // 才会被后发的那次取消掉。用假定时器直接推进 60 秒。
+    const seq: Array<{ region: string, signal: AbortSignal | undefined }> = []
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        seq.push({ region, signal: init?.signal as AbortSignal | undefined })
+        await new Promise(resolve => setTimeout(resolve, 25))
+        if (init?.signal?.aborted === true) throw new DOMException('aborted', 'AbortError')
+        return { ok: true, status: 200, json: async () => signedInDoc(region) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const { unmount } = await mountCard()
+    try {
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)) })
+      const beforePoll = seq.length
+      expect(beforePoll).toBeGreaterThan(0)
+      // 推进到下一次 60 秒轮询：两个区域各发一次。
+      await act(async () => { vi.advanceTimersByTime(60_000) })
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)) })
+      const poll = seq.slice(beforePoll)
+      // 轮询确实同时刷新了两个区域。
+      expect(new Set(poll.map(r => r.region))).toEqual(new Set(['cn', 'global']))
+      // 而它们**互不取消**：跨区域被取消即为缺陷。
+      const crossRegion: string[] = []
+      for (let i = 0; i < poll.length; i++) {
+        if (poll[i]!.signal?.aborted !== true) continue
+        if (!poll.slice(i + 1).some(r => r.region === poll[i]!.region)) crossRegion.push(poll[i]!.region)
+      }
+      expect(crossRegion).toEqual([])
+    } finally {
+      vi.useRealTimers()
+      await unmount()
+    }
+  })
+
+  it('挂载时两个区域都被读取（而不是只读 cn）', async () => {
+    const seen: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        seen.push(region)
+        return { ok: true, status: 200, json: async () => signedInDoc(region) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const { unmount } = await mountCard()
+    try {
+      // 首次挂载就把两个区域都读了。此前只有 cn，另一个区域要等 60 秒。
+      expect(seen).toContain('cn')
+      expect(seen).toContain('global')
+    } finally {
+      await unmount()
+    }
+  })
 })

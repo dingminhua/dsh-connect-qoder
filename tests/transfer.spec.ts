@@ -21,6 +21,7 @@ import {
   parseTransferFile,
   previewTransferFile,
   transferRecordOf,
+  transferRecordsFor,
 } from '../src/transfer.ts'
 import { qoderAccountId } from '../src/credentials.ts'
 import type { QoderStoredAccount } from '../src/accounts.ts'
@@ -169,6 +170,67 @@ describe('mergeTransferRecords (region domain positive-match gate)', () => {
 
   it('skips a record whose domain is the EMPTY string rather than guessing a region', () => {
     const merged = mergeTransferRecords('global', JSON.stringify([record({ domain: undefined })]), [0])
+    expect(merged.imported).toBe(0)
+    expect(merged.skipped).toBe(1)
+  })
+})
+
+/**
+ * **往返回归**：导出 → 原样喂回导入。
+ *
+ * 这两个函数各自测过都正常，但没人把真实的导出路径接到导入路径上，于是
+ * `exportAccounts`（index.ts）长期直接吐 vault 内部字段 `{pat, accountName, id}`
+ * —— 既不调用 transferRecordOf，也就没有 `domain`、字段名也不是 snake_case。
+ * 后果是用户导出的文件再导入时**全判 skipped（0 条成功）**，功能等于不可用，
+ * 而两侧的单元测试一直是绿的。
+ *
+ * 这里固定住这条接缝：导出物必须原样导得回来，且导回自己那一侧、导不到另一侧。
+ */
+describe('export → import round trip', () => {
+  /**
+   * 走**真实的导出投影**（`index.ts` 的 exportAccounts 也调这一个），而不是在
+   * 测试里另写一份形状。上一版曾在这里直接调 `transferRecordOf`，结果把 bug 还原
+   * 后测试仍然全绿 —— 又是「两半各自对、接缝没人测」。共享这个函数正是为了
+   * 让接缝有唯一入口。
+   */
+  function exportedFileFor(region: 'cn' | 'global', accounts: readonly QoderStoredAccount[]): string {
+    return JSON.stringify(transferRecordsFor(region, accounts), null, 2)
+  }
+
+  it('round-trips a CN account back into CN', () => {
+    const account = vaultAccount({ accountName: '阿九' })
+    const file = exportedFileFor('cn', [account])
+    const merged = mergeTransferRecords('cn', file, [0])
+    expect(merged.imported).toBe(1)
+    expect(merged.skipped).toBe(0)
+    expect(merged.changes.get(account.id)).toEqual({ pat: account.pat, accountName: account.accountName })
+  })
+
+  it('round-trips a GLOBAL account back into global', () => {
+    const account = vaultAccount({ pat: 'pt-global-token-9', id: qoderAccountId('pt-global-token-9'), accountName: 'Nine' })
+    const file = exportedFileFor('global', [account])
+    const merged = mergeTransferRecords('global', file, [0])
+    expect(merged.imported).toBe(1)
+    expect(merged.skipped).toBe(0)
+    expect(merged.changes.get(account.id)).toEqual({ pat: account.pat, accountName: account.accountName })
+  })
+
+  it('gets the region domain right per region, so a record cannot cross regions', () => {
+    const account = vaultAccount()
+    const cnFile = exportedFileFor('cn', [account])
+    const globalFile = exportedFileFor('global', [account])
+    // 各自导回自己
+    expect(mergeTransferRecords('cn', cnFile, [0]).imported).toBe(1)
+    expect(mergeTransferRecords('global', globalFile, [0]).imported).toBe(1)
+    // 交叉导入一律跳过
+    expect(mergeTransferRecords('global', cnFile, [0]).skipped).toBe(1)
+    expect(mergeTransferRecords('cn', globalFile, [0]).skipped).toBe(1)
+  })
+
+  it('an export carrying the raw vault shape would NOT round-trip (the old bug)', () => {
+    // 这正是 exportAccounts 过去吐出的形状：没有 domain、字段名也不是 snake_case。
+    const legacy = JSON.stringify([{ pat: 'pt-vault-token-1', accountName: '阿九', id: qoderAccountId('pt-vault-token-1') }])
+    const merged = mergeTransferRecords('cn', legacy, [0])
     expect(merged.imported).toBe(0)
     expect(merged.skipped).toBe(1)
   })

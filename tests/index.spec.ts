@@ -258,3 +258,127 @@ describe('Qoder status route deps', () => {
     expect(Qoder.regionHasCredential({ regions: {} }, 'cn')).toBe(true)
   })
 })
+/**
+ * 签到领了积分，卡片上的积分却不刷新（用户实拍：「我领了积分，但是积分没刷新」）。
+ *
+ * 根因在 `runCheckinBatch` 的收尾：它只 `delete usageCache[region]` —— **作废**了
+ * 缓存，却没有任何人去重新填充它。于是积分停在签到前的数字，直到某个与签到无关
+ * 的动作（改配置 / 点「从 Qoder 刷新」）顺带触发 `refreshUsage`。
+ *
+ * 这里锁住的是「签到之后 usage 缓存里必须是**签到后**的数字」，而不是「缓存被
+ * 清空了」—— 后者恰好是旧的（错的）行为。
+ */
+
+/** A captured web route: path + handler, as the fake webServer records them. */
+interface CapturedRoute {
+  path: string
+  handler: (req: unknown, res: unknown) => Promise<void> | void
+}
+
+/**
+ * 签到领了积分，卡片上的积分却不刷新（用户实拍：「我领了积分，但是积分没刷新」）。
+ *
+ * 根因在 `runCheckinBatch` 的收尾：它只 `delete usageCache[region]` —— **作废**了
+ * 缓存，却没有任何人去重新填充它。于是积分停在签到前的数字，直到某个与签到无关
+ * 的动作（改配置 / 点「从 Qoder 刷新」）顺带触发 `refreshUsage`。
+ *
+ * 断言锁的是「签到之后 usage 被**再读了一次**」（也就是新余额能落地），而不是
+ * 「缓存被清空了」—— 后者恰好就是旧的（错的）行为本身。
+ */
+describe('签到之后积分会被重新拉取', () => {
+  /** One sash usage payload; `total` is the figure the card shows. */
+  const usageBody = (total: number): string => JSON.stringify({
+    data: { creditConsume: { total, origin: total, packages: [] } },
+  })
+
+  it('checkin 之后会再读一次 usage（而不是只作废缓存）', async () => {
+    const realFetch = globalThis.fetch
+    let usageCalls = 0
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      // 用量读（sash）：第一次旧余额，签到之后必须读到新余额。
+      if (url.includes('/sash/api/v2/me/usage')) {
+        usageCalls += 1
+
+        return new Response(usageBody(usageCalls === 1 ? 10 : 60), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      // jobToken 交换：sash 的前置，缺了它 usage 根本发不出去。
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // 签到活动的活动列表 / 领取：回报成功并带数额。
+      if (url.includes('/sash/api/v1/me/campaigns')) {
+        return new Response(JSON.stringify({
+          success: true, code: 0,
+          data: { campaigns: [{ id: 'c1', name: 'daily', credit: 50 }] },
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+
+    const routes: CapturedRoute[] = []
+    try {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(MemorySettings)
+      // 挂一个假的 webServer，把插件注册的路由抓下来，好真的去调那条 pool 路由。
+      ctx.provide('webServer', {
+        register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+      } as never)
+      await mountQoder(ctx, {
+        regions: {
+          cn: {
+            pat: 'pt-test-checkin',
+            pool: { enabled: true, targetModelId: '', memberAccountIds: ['pat-test-checkin'] },
+          },
+        },
+      })
+
+      await waitFor(() => routes.some(r => r.path.includes('/pool')))
+      const pool = routes.find(r => r.path.includes('/pool'))!
+
+      // 挂载会触发若干次 usage 读（applySelection 等），**全部落定之后**再取基线 ——
+      // 否则一次迟到的挂载期读取会混进「签到引起的那次」，断言就假通过了。
+      await waitFor(() => usageCalls >= 1)
+      await new Promise(resolve => setTimeout(resolve, 800))
+      const before = usageCalls
+
+      // 真的走一次 checkin 路由（池里没有成员也照样会走完收尾逻辑）。
+      const res = fakeResponse()
+      await pool.handler(
+        { method: 'POST', url: `${pool.path}?region=cn&action=checkin`, headers: { origin: 'http://127.0.0.1:19387' } },
+        res.node,
+      )
+      expect(res.status()).toBe(200)
+
+      // 关键断言：签到之后 usage **又被读了**。旧实现只 `delete usageCache`，
+      // 这里永远是 `before`，于是卡片继续显示领之前的数字。
+      // 硬边界：签到处理完再等 1s，让任何「迟到」的补读也有机会发生，然后断言。
+      // 不能用 waitFor —— 它会一直等，而旧实现里那次补读根本不存在（永远等不到
+      // 就会超时；更糟的是别的 usage 读顺手把计数推上去，于是断言假通过）。
+      await new Promise(resolve => setTimeout(resolve, 1000))
+      expect(usageCalls).toBeGreaterThan(before)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})
+
+/** A minimal ServerResponse stand-in: records status + body. */
+function fakeResponse(): { node: Record<string, unknown>, status: () => number } {
+  let code = 0
+  const node: Record<string, unknown> = {
+    statusCode: 0,
+    setHeader: () => {},
+    end: () => {},
+    writeHead(code_: number) { code = code_; (node as { statusCode: number }).statusCode = code_ },
+    get headersSent() { return false },
+  }
+  return { node, status: () => code }
+}

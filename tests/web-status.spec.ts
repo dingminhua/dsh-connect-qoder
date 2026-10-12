@@ -29,6 +29,7 @@ import {
   QODER_USAGE_PATH,
 } from '../src/status-paths.ts'
 import type { QoderModelInfo } from '../src/catalog.ts'
+import type { QoderRegion } from '../src/upstream.ts'
 import type { QoderPoolProbe } from '../src/account-pool.ts'
 import type { QoderWebProbeResult, QoderWebPoolTestRow, QoderWebAccountCredit } from '../src/status-paths.ts'
 import { qoderAccountId } from '../src/credentials.ts'
@@ -73,6 +74,9 @@ function baseStore(): QoderAccountDeps {
       if (existing === -1) vault.push(entry); else vault[existing] = entry
       return { id, pat, accountName: name, addedAtMs: Date.now() }
     },
+    // 删除路由据此区分「本插件存的凭据」与 settings/env 的 PAT：只有 vault 里
+    // 有的 id 才可删。mock 与 accounts() 共用同一个 vault 数组，不会说谎。
+    vaultAccounts: async () => vault.map(a => ({ ...a, addedAtMs: 0 })),
     remove: async (accountId) => {
       const before = vault.length
       const remaining = vault.filter(a => a.id !== accountId)
@@ -486,30 +490,124 @@ describe('pool route (test|remove)', () => {
     expect(status()).toBe(503)
   })
 
-  it('removes one account\'s membership', async () => {
-    const removed: string[] = []
-    const pool = poolDeps({ updateMembership: (_r, ids) => { removed.push(...ids) } })
-    const captured = await mountRoutes(deps({ pool }))
+  // ==========================================================================
+  // remove = 彻底删除（凭据 + 池成员 + 区域选择）。
+  // 此前这一支只做了「从 memberAccountIds 剔掉」，也就是**移出池**，却长得像删除：
+  // 用户点它期望账号消失，PAT 却留在 vault 里，「全选」一下又回来了
+  // （用户实拍：「删除唯一的号，但是号并没有删除干净」）。移出池现在只由勾选框表达。
+  // ==========================================================================
+
+  it('deletes the vault entry, not just the pool membership', async () => {
+    const store = baseStore()
+    await store.add('pt-del-me', 'del-me')
+    const target = qoderAccountId('pt-del-me')
+    const pool = poolDeps({ preferences: () => ({ enabled: true, targetModelId: '', probeInputTokens: 0, memberAccountIds: [target] }) })
+    const captured = await mountRoutes(deps({ pool, store: () => store }))
     const handler = findHandler(captured, QODER_POOL_PATH)
     const { res, status, body } = response()
-    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove&accountId=pat-env`), res)
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove&accountId=${target}`), res)
     expect(status()).toBe(200)
     expect(body()).toMatchObject({ removed: true })
-    // 原成员 去掉 pat-env。
-    expect(removed).toEqual(['pat-settings'])
+    // **凭据真的没了** —— 这是整条路由存在的理由。旧实现只动 memberAccountIds，
+    // 这里断言的是 vault 里那条记录本身，所以它能接住那次回归。
+    expect(await store.vaultAccounts()).toEqual([])
+    expect((await store.accounts({ settingsPat: 'pt-settings' })).map(a => a.id)).not.toContain(target)
+  })
+
+  it('clears the config residue: the pool membership AND a selection pointing at it', async () => {
+    const store = baseStore()
+    await store.add('pt-del-me', 'del-me')
+    const target = qoderAccountId('pt-del-me')
+    const kept: string[][] = []
+    const cleared: QoderRegion[] = []
+    const pool = poolDeps({
+      preferences: () => ({ enabled: true, targetModelId: '', probeInputTokens: 0, memberAccountIds: ['pat-settings', target] }),
+      updateMembership: (_r, ids) => { kept.push([...ids]) },
+    })
+    const captured = await mountRoutes(deps({
+      pool,
+      store: () => store,
+      selectedAccountId: () => target,
+      clearSelection: region => { cleared.push(region) },
+    }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove&accountId=${target}`), res)
+    expect(status()).toBe(200)
+    // 两处残骸都要收：memberAccountIds 否则会留下一条勾不上的幽灵 id，
+    // accountId 否则会让卡片一直说「所选账号已不存在」。
+    expect(kept.at(-1)).toEqual(['pat-settings'])
+    expect(cleared).toEqual(['cn'])
+  })
+
+  it('leaves the selection alone when it points at some other account', async () => {
+    const store = baseStore()
+    await store.add('pt-del-me', 'del-me')
+    const target = qoderAccountId('pt-del-me')
+    let cleared = false
+    const pool = poolDeps({ preferences: () => ({ enabled: true, targetModelId: '', probeInputTokens: 0, memberAccountIds: [target] }) })
+    const captured = await mountRoutes(deps({
+      pool,
+      store: () => store,
+      selectedAccountId: () => 'pat-settings',
+      clearSelection: () => { cleared = true },
+    }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove&accountId=${target}`), res)
+    expect(status()).toBe(200)
+    // 删 A 不该动用户为 B 做的选择 —— 否则一次删除会顺手改掉另一件事。
+    expect(cleared).toBe(false)
+  })
+
+  it('refuses a settings/env PAT instead of reporting a removal that changed nothing', async () => {
+    const pool = poolDeps()
+    const captured = await mountRoutes(deps({ pool, store: () => baseStore() }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove&accountId=${qoderAccountId('pt-settings')}`), res)
+    // 409 而不是 200：那个 PAT 不在本插件的保险库里，删 vault 条目对它无效。
+    // 回 200 会让用户以为删掉了，其实它下一次读取时还在（凭据来自插件之外）。
+    expect(status()).toBe(409)
+    expect(body()).toMatchObject({ reason: 'account-not-deletable' })
+  })
+
+  it('answers 400 for a malformed account id before touching the store', async () => {
+    const pool = poolDeps()
+    const captured = await mountRoutes(deps({ pool }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove&accountId=..%2Fetc%2Fpasswd`), res)
+    expect(status()).toBe(400)
+  })
+
+  it('answers 400 when remove names no account', async () => {
+    const pool = poolDeps()
+    const captured = await mountRoutes(deps({ pool }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=remove`), res)
+    expect(status()).toBe(400)
   })
 })
 
 describe('transfer route', () => {
   it('answers export with the region and no account-selection requirement', async () => {
     const handled: string[] = []
-    const transfer = transferDeps({ exportAccounts: async (region) => { handled.push(region); return { accounts: [{ pat: 'pt-x', accountName: 'A', id: 'pat-x' }] } } })
+    // The export answer must carry the TRANSFER-FILE shape (access_token / uid /
+    // nickname / domain). It used to echo the vault's internal fields
+    // (pat / accountName / id), which is what made every exported file
+    // unimportable — see the round-trip regression in transfer.spec.ts.
+    const transfer = transferDeps({ exportAccounts: async (region) => {
+      handled.push(region)
+      return { accounts: [{ access_token: 'pt-x', uid: 'pat-x', nickname: 'A', domain: 'qoder.sh' }] }
+    } })
     const captured = await mountRoutes(deps({ transfer }))
     const handler = findHandler(captured, QODER_TRANSFER_PATH)
     const { res, status, body } = response()
     await handler(reqWithBody('POST', `${QODER_TRANSFER_PATH}?region=global&action=export`, {}), res)
     expect(status()).toBe(200)
-    expect(body()).toMatchObject({ accounts: [{ pat: 'pt-x', accountName: 'A', id: 'pat-x' }] })
+    expect(body()).toMatchObject({ accounts: [{ access_token: 'pt-x', uid: 'pat-x', nickname: 'A', domain: 'qoder.sh' }] })
     expect(handled).toEqual(['global'])
   })
 
@@ -702,15 +800,33 @@ describe('buildWebUsage', () => {
     expect(envRow?.expiringSoon).toBeUndefined()
   })
 
-  it('marks nothing as `current` when no credential resolves', async () => {
-    // signed-out 时不出现 pool 段，这本身就是「没有任何账号正在使用」的表达。
-    const store: QoderAccountDeps = { ...baseStore(), resolve: async () => undefined }
+  it('still serves the pool view when nothing resolves, so accounts can be added', async () => {
+    // 这一支**必须**带 pool：账号池是「添加 PAT / 导入账号」的唯一入口，而
+    // 「一个账号都没有」恰恰是最需要它的状态。此前刻意不带 pool（「不出现 pool 段
+    // 就等于没有账号正在使用」），结果最需要添加账号的页面反而没有添加入口。
+    // 「没有正在计费的账号」现在由每行的 `current` 表达（无账号时自然全为 false）。
+    const store: QoderAccountDeps = { ...baseStore(), accounts: async () => [], resolve: async () => undefined }
     const d = deps({
       store: () => store,
       pool: poolDeps({ preferences: () => ({ enabled: false, targetModelId: '', memberAccountIds: [] }) }),
     })
     const usage = await buildWebUsage(d, 'cn')
     expect(usage.status).toBe('signed-out')
+    if (usage.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(usage.accounts).toHaveLength(0)
+    expect(usage.pool).toBeDefined()
+    expect(usage.pool?.accounts).toHaveLength(0)
+    // 没有任何账号 → 没有任何一行可以被称为「当前使用」。
+    expect(usage.pool?.accounts.some(row => row.current)).toBe(false)
+  })
+
+  it('omits the pool view entirely when the host serves no pool deps', async () => {
+    // 反向保证：没有 pool dep（旧宿主）时不凭空造一个池。
+    const store: QoderAccountDeps = { ...baseStore(), accounts: async () => [], resolve: async () => undefined }
+    const d = deps({ store: () => store })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-out') throw new Error('expected signed-out')
+    expect(usage.pool).toBeUndefined()
   })
 
   it('reports signed-out with selectionLost when the saved id matches no credential but accounts exist', async () => {

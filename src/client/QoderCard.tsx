@@ -12,8 +12,10 @@
  * 改动（按 Qoder 现实）：
  *   1. 账号是 PAT（settings / env / vault），不是桌面端登录：无 searched-paths
  *      诊断、无 OAuth 登录；账号列表旁是「Add PAT」表单与每 vault 账号的删除；
- *   2. 没有每日签到：`QoderWebPool.checkinSupported` 恒 false，签到动作/列不渲染；
- *   3. 积分是「基础/附加/组织」三类额度桶（`QoderWebCredits.packages`）聚合渲染；
+ *   2. 每日签到走 campaigns 端点：`QoderWebPool.checkinSupported` 按区域判定
+ *      （CN 与国际版均已接通），为 false 时签到动作与那一列不渲染；
+ *   3. 积分逐账号显示在账号池表格里（卡片正文不再重复一份额度明细，只在读不到
+ *      时渲染失败原因）；
  *   4. 模型行：勾选（enabledModelKeys / offModelKeys）、图像开关（supportsImages）、
  *      上下文预算 tier 选择器（model.contextTiers + contextBudgets）、探针；
  *   5. 保存仍是草稿态 + dirty + 「保存/放弃」，写入走共享的 verified-write
@@ -173,7 +175,8 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const [drafts, setDrafts] = useState<Record<string, QoderDraft | undefined>>({})
   const [revision, setRevision] = useState(0)
   const mounted = useRef(true)
-  const controllers = useRef<AbortController | null>(null)
+  /** Per-region in-flight usage requests, so one region never cancels another's. */
+  const controllers = useRef<Partial<Record<QoderWebRegion, AbortController>>>({})
 
   const scope = props.settingsScope
 
@@ -182,9 +185,20 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   useEffect(() => scope?.subscribe(() => setRevision(v => v + 1)), [scope])
 
   const refresh = useCallback(async (region: QoderWebRegion, force?: boolean): Promise<void> => {
-    controllers.current?.abort()
+    // **每区域一个 AbortController**，不是一个共享的。
+    //
+    // 此前 `controllers.current?.abort()` 取消的是「上一次发起的那个请求」，而那个
+    // 请求可能属于**另一个区域**：60 秒轮询里 `for (const region of QODER_REGIONS)
+    // void refresh(region)` 背靠背连发两次，cn 的请求刚建好就被 global 那次
+    // 取消掉（反之亦然）。结果是**同一时刻只有一个区域的 usage 能落地**，另一个
+    // 永远停在 `undefined` —— 切到那个 tab 就是一片空白，连账号池带「添加 PAT」
+    // 一起没有（用户实拍：「国际版还是缺少账号池这些功能」）。
+    //
+    // 取消自己的用途只有一个：同一区域连续刷新时只认最后一次（避免旧响应覆盖新
+    // 响应）。所以按区域分别取消，互不干涉。
+    controllers.current[region]?.abort()
     const controller = new AbortController()
-    controllers.current = controller
+    controllers.current[region] = controller
     setBusyRegions(prev => new Set(prev).add(region))
     try {
       const response = await fetch(withQoderRegion(QODER_USAGE_PATH, region), {
@@ -209,16 +223,33 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
   useEffect(() => {
     mounted.current = true
-    void refresh('cn')
+    // **两个区域都要读，不是只读 `cn`。** 此前只 `refresh('cn')`，另一个区域要
+    // 等到 60 秒轮询才第一次有数据 —— 于是「切到国际版」看到的是一片空白
+    // （连账号池带「添加 PAT」一起没有），要等一分钟才自己长出来
+    // （用户实拍：「国际版还是缺少账号池这些功能」）。
+    // 两个 tab 的状态圆点也依赖这个：没读过的区域只能画成「未知」。
+    for (const region of QODER_REGIONS) void refresh(region)
     if (typeof window !== 'undefined') {
       const timer = window.setInterval(() => {
         for (const region of QODER_REGIONS) void refresh(region)
       }, POLL_INTERVAL_MS)
-      return () => { mounted.current = false; window.clearInterval(timer); controllers.current?.abort() }
+      return () => { mounted.current = false; window.clearInterval(timer); abortAllRegions() }
     }
-    return () => { mounted.current = false; controllers.current?.abort() }
+    return () => { mounted.current = false; abortAllRegions() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // 切 tab 时若那个区域**还没读过**，立刻补读一次。否则首次打开设置页、国际版
+  // 又恰好排在轮询窗口之后，用户要盯着空白等一分钟才看到内容。
+  useEffect(() => {
+    if (usages[activeRegion] === undefined) void refresh(activeRegion)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeRegion])
+
+  /** Cancel every region's in-flight usage read (unmount only). */
+  const abortAllRegions = (): void => {
+    for (const controller of Object.values(controllers.current)) controller?.abort()
+  }
 
   // Re-fetch the ACTIVE region whenever a settings write might have changed the
   // serving account (the write helpers call onChanged from sub-sections only;
@@ -539,7 +570,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   function renderAccounts(usage: Extract<QoderWebUsage, { status: 'signed-in' }> | undefined): ReactElement {
     const accounts = usage?.accounts ?? []
     // 同名账号必须还能分辨：同一个邮箱重新签发 PAT 会得到**两条**记录（id 由
-    // PAT 推导，是不同的），两条都叫 REDACTED@example.invalid。只显示名字的话，
+    // PAT 推导，是不同的），两条显示名一模一样。只显示名字的话，
     // 「我当前在用哪一条」这个问题的答案是「看不出」。重名时补 id 尾号，并标出
     // 正在计费的那条（用户实拍的就是这种两条同名、一条过期的情况）。
     const nameCounts = new Map<string, number>()
@@ -814,8 +845,28 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     )
   }
 
+  /**
+   * 账号池区。**读 `usage` 而不是 `signIn`** —— 这一行是国际版整块空白的直接原因。
+   *
+   * 此前它第一行就 `if (signIn?.pool === undefined) return <span />`，而 `signIn`
+   * 只在 `status === 'signed-in'` 时存在。于是国际版（一个 PAT 都没有）永远拿到
+   * `signed-out`，账号池整块不渲染 —— 连同由它渲染的「添加 PAT / 导出导入」
+   * 一起消失。**最需要添加第一个账号的页面，反而没有任何添加账号的入口**
+   * （用户实拍：国际版看起来就是空的）。
+   *
+   * 宿主侧此前已经修好了一半：`buildWebUsage` 的 `signed-out` 支现在也构建并带上
+   * `pool`（零账号时 `current` 全为 false）。这一行是剩下的另一半 —— 两边都改完，
+   * 零凭据的区域才会既能看到「这里还没有账号」的说法，又拿得到添加入口。
+   *
+   * `status === 'error'` 仍不渲染：那是一份没读成的文档，它的 pool 字段根本没
+   * 有过，渲染一个空壳只会把错误行挤到下面（与 workbuddy 同规）。
+   */
   function renderPool(): ReactElement {
-    if (signIn?.pool === undefined) return <span />
+    // `error` 变体没有 pool / accounts 字段（那份文档根本没读成），所以在这里
+    // 就把它排除掉 —— 早于任何 `.accounts` 访问，窄化才有意义。
+    const doc = usage?.status === 'error' ? undefined : usage
+    const pool = doc?.pool
+    if (pool === undefined || doc === undefined) return <span />
     // 账号工具（添加 PAT / 导出导入）交给账号池设置区渲染：workbuddy 把它们
     // 放在「账号池设置」标题下、说明行之前的虚线框里（`pool-tools`），而不是
     // 塞在账号行末尾。两者回答的是同一个问题——「这个区域有哪些账号」。
@@ -825,7 +876,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         <AccountTransfer
           t={t}
           region={activeRegion}
-          accounts={(signIn?.accounts ?? []).map(a => ({ id: a.id, accountName: a.accountName }))}
+          accounts={doc.accounts.map(a => ({ id: a.id, accountName: a.accountName }))}
           onChanged={() => refresh(activeRegion, true)}
         />
       </>
@@ -850,7 +901,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
       <AccountPool
         t={t}
         region={activeRegion}
-        pool={signIn.pool}
+        pool={pool}
         settingsScope={scope}
         siblingBusy={siblingBusy}
         canWrite={canWrite(scope)}

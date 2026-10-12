@@ -9,8 +9,8 @@
  * 改动（按 Qoder 上游的实际能力）：
  *   1. 凭据是 PAT，不是桌面端登录文件——没有 searched-paths 诊断，
  *      账号来源是 settings / 环境变量 / 插件自有保险库三种；
- *   2. Qoder 没有每日签到，池的批量动作只有 test（checkinSupported 恒为
- *      false，字段保留以维持家族形状：卡片按它隐藏整个签到列）；
+ *   2. 每日签到走 Qoder 的 campaigns 端点（CN 与国际版都已接通），池的批量动作
+ *      因此是 checkin / test 两个；`checkinSupported` 仍按区域可判，字段保留；
  *   3. 扫码登录换成「添加 PAT」：accounts 路由的 add/remove 动作；
  *   4. 积分模型是「基础/附加/组织」三个额度桶，聚合成与家族一致的
  *      packages 形状；模型字段是倍率/上下文档位/推理与多模态标记。
@@ -166,8 +166,8 @@ export const QODER_ACTION_PARAM = 'action'
  * The pool actions. `remove` is per-account and never batch-wide; `checkin`
  * 与 `test` 一样是批量动作（对勾选的成员逐个执行）。
  *
- * `checkin` 只在区域真的提供每日签到时才被路由接受（CN 有；国际版暂未接通，
- * 因为需要 UMID 设备风控头）——见 `QoderWebPoolPreferences.checkinSupported`。
+ * `checkin` 只在区域真的提供每日签到时才被路由接受（两个区域都有；国际版的
+ * 活动只下发给带 UMID 设备风控头的请求）——见 `QoderWebPoolPreferences.checkinSupported`。
  */
 export type QoderPoolAction = 'checkin' | 'test' | 'remove'
 
@@ -242,6 +242,12 @@ export function withQoderRegionAndAction(
   return `${withQoderRegion(path, region)}&${QODER_ACTION_PARAM}=${action}`
 }
 
+/** All region keys, in display order. The single source for region loops. */
+export const QODER_WEB_REGIONS: readonly QoderWebRegion[] = ['cn', 'global']
+
+/** Every domain {@link knownQoderRegionOfDomain} admits, i.e. the transfer domains. */
+const TRANSFER_DOMAINS: readonly string[] = ['qoder.com.cn', 'qoder.sh']
+
 /**
  * The login domain a transfer record must carry to belong to a region.
  *
@@ -255,6 +261,32 @@ export function knownQoderRegionOfDomain(domain: string): QoderWebRegion | undef
   // An empty/spoofed/misspelled value is NOT admitted to either vault.
   return undefined
 }
+
+/**
+ * 该区域的**传输域名**：导出账号时写进 transfer 文件的 `domain` 字段。
+ *
+ * 与 {@link knownQoderRegionOfDomain}（域名 → 区域）是同一组事实的**反向读法**，
+ * 所以在这里定义、并从那张反查表**推导**出来，而不是再手抄一遍域名 —— 手抄才是
+ * 这两处漂移过一次就很难被发现的原因。推导失败即抛错，让漏登记的区域在编译期
+ * 与首屏就暴露，而不是等到用户导出才发现。
+ *
+ * 注意这与 {@link QODER_CONSOLE_DOMAIN} **不是同一个域名**：那边是用户浏览器里
+ * 申请 PAT 的控制台（国际版是 `qoder.com`），这边是 PAT 实际发证方所在的网关域
+ * （国际版是 `qoder.sh`），导入时的区域门只认后者。
+ */
+export const QODER_REGION_TRANSFER_DOMAIN: Readonly<Record<QoderWebRegion, string>> = (() => {
+  const table = {} as Record<QoderWebRegion, string>
+  for (const region of QODER_WEB_REGIONS) table[region] = ''
+  for (const domain of TRANSFER_DOMAINS) {
+    const region = knownQoderRegionOfDomain(domain)
+    if (region === undefined) throw new Error(`transfer domain is not a known Qoder region: ${domain}`)
+    table[region] = domain
+  }
+  for (const region of QODER_WEB_REGIONS) {
+    if (table[region] === '') throw new Error(`region has no transfer domain: ${region}`)
+  }
+  return table
+})()
 
 /**
  * 该区域的**控制台域名**，用于「PAT 去哪弄」这句说明。
@@ -605,8 +637,25 @@ export interface QoderWebPoolAccount {
    * Listed rows include UNCHECKED accounts so the card can offer them to
    * check: membership is an explicit opt-in, and a user can only opt in to
    * something they can see. Only checked rows can bill or be batched.
+   *
+   * Membership is expressed by the row's CHECKBOX, never by a separate "remove
+   * from pool" button: the checkbox already says "is this a member" and the
+   * Save button already persists it, so a second control for the same fact can
+   * only drift from it (workbuddy 同规).
    */
   member: boolean
+  /**
+   * Where this account's credential comes from — and therefore whether it can
+   * be deleted here at all.
+   *
+   * `vault` is the only deletable source: those PATs were added through this
+   * plugin and are stored in its vault. A `settings` / `env` PAT is owned by
+   * whoever set it outside the plugin, so the delete route refuses it with
+   * `account-not-deletable` rather than reporting a removal that changed
+   * nothing. The card hides the delete button for those rows instead of
+   * offering one that cannot work.
+   */
+  source: 'settings' | 'env' | 'vault'
 }
 
 /** One model as the pool's target picker needs it. */
@@ -741,6 +790,16 @@ export type QoderWebUsage =
     selectionLost?: boolean
     /** A saved per-region choice is in effect (false = following the default). */
     selectionExplicit: boolean
+    /**
+     * The account pool, present even with **zero** accounts.
+     *
+     * The pool section is the only surface that offers "add a PAT" and
+     * export/import, so omitting it here left the one state that most needs an
+     * add-account entry — a region with nothing stored — without any way in.
+     * "No account is billing right now" is expressed per row (`current`), not by
+     * this section's absence. Absent only when the Host serves no pool deps.
+     */
+    pool?: QoderWebPool
   }
   | {
     status: 'signed-in'

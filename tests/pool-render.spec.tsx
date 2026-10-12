@@ -48,6 +48,8 @@ function poolFixture(): Record<string, unknown> {
         accountName: 'Alpha',
         current: true,
         member: true,
+        // 只有 vault 的凭据能在这里删；settings/env 的 PAT 由插件之外管理。
+        source: 'vault',
         credits: 1200,
         expiringSoon: 300,
         nearestExpiryMs: Date.now() + 86_400_000,
@@ -58,6 +60,7 @@ function poolFixture(): Record<string, unknown> {
         accountName: 'Beta',
         current: false,
         member: true,
+        source: 'vault',
         credits: 0,
         excludedBy: 'out-of-credit',
         probe: { outcome: 'out-of-credit', atMs: Date.now() - 120_000, source: 'live-request' },
@@ -330,5 +333,181 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     expect(members).toContain('a1')
     expect(members).not.toContain('pat-dead0001')
     expect(members).not.toContain('pat-dead0002')
+  })
+
+  /**
+   * 一个账号都没有时，账号池**仍然必须渲染**：它是「添加 PAT / 导入账号」的唯一
+   * 入口（账号工具由本组件渲染）。此前 host 在 signed-out 支里不带 pool，客户端
+   * `renderPool()` 直接返回空 span —— 最需要添加账号的页面反而没有添加入口。
+   */
+  it('零账号时仍然渲染账号池、给出空状态，并保留添加账号的入口', async () => {
+    const emptyPool = {
+      ...poolFixture(),
+      // 开着一个空池：这是「一个成员都还没有」的状态，不是「成员都不可用」。
+      enabled: true,
+      memberAccountIds: [],
+      effectiveMemberAccountIds: [],
+      accounts: [],
+    }
+    const tools = React.createElement('button', { type: 'button', className: 'fake-add-pat' }, 'Add PAT')
+    const { container, unmount } = await mountPool({ pool: emptyPool, accountTools: tools })
+    try {
+      // 账号池整块在。
+      expect(container.querySelector('.dsm-qoder-pool')).not.toBeNull()
+      // 空状态说清楚了去哪加（而不是留一张没有行的表格）。
+      const empty = container.querySelector('.dsm-qoder-pool-empty')
+      expect(empty?.textContent).toBe('row.poolEmptyHint')
+      // 添加账号的入口确实渲染出来了 —— 这正是这次修复的目的。
+      expect(container.querySelector('.fake-add-pat')).not.toBeNull()
+      expect(container.querySelector('.dsm-qoder-pool-tools')).not.toBeNull()
+      // 但不能说「成员要么限流、要么积分耗尽」——这里根本还没有成员。
+      // 断文案而不是类名：`.dsm-qoder-pool-warn` 还被「一个都没勾选」那句复用。
+      expect(container.textContent).not.toContain('row.poolNoCandidate')
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('有账号但都不可用时，才显示「没有可用候选」的警告', async () => {
+    const unusable = {
+      ...poolFixture(),
+      enabled: true,
+      memberAccountIds: ['a1'],
+      effectiveMemberAccountIds: [],
+      accounts: [{
+        accountId: 'a1',
+        accountName: 'Alpha',
+        current: false,
+        member: true,
+        excludedBy: 'out-of-credit',
+        probe: { outcome: 'out-of-credit', atMs: Date.now(), source: 'test-batch' },
+      }],
+    }
+    const { container, unmount } = await mountPool({ pool: unusable })
+    try {
+      expect(container.querySelector('.dsm-qoder-pool-warn')).not.toBeNull()
+      // 有账号时不该再显示「还没有账号」那句。
+      expect(container.querySelector('.dsm-qoder-pool-empty')).toBeNull()
+    } finally {
+      await unmount()
+    }
+  })
+
+  // ==========================================================================
+  // 移出池 = 勾选；删除 = 按钮 + 二次确认。
+  // 此前行内只有一个「移除」，它做的其实是移出池却长得像删除：用户点它期望账号
+  // 消失，PAT 却留在 vault 里，「全选」一下又回来（用户实拍：「删除唯一的号，
+  // 但是号并没有删除干净」）。
+  // ==========================================================================
+
+  it('行内没有「移除」按钮：移出池只由勾选框表达', async () => {
+    const { container, unmount } = await mountPool()
+    try {
+      // 同一件事实（是不是成员）只能有一个控件。两个控件迟早会不一致 ——
+      // 上一次的「移除了却还在」就是这么来的。
+      expect(container.textContent).not.toContain('row.poolRowRemove')
+      // 勾选框在，且已勾选的行是 checked。
+      const boxes = Array.from(container.querySelectorAll('.dsm-qoder-pool-check input[type="checkbox"]')) as HTMLInputElement[]
+      expect(boxes).toHaveLength(2)
+      expect(boxes.every(b => b.checked)).toBe(true)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('点「删除」只展开确认条，不发请求；确认后才真删', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({ removed: true }) }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    const { container, unmount } = await mountPool()
+    try {
+      const rows = Array.from(container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)'))
+      const first = rows[0]!
+      const deleteBtn = first.querySelector('.dsm-qoder-pool-delete-btn') as HTMLButtonElement
+      expect(deleteBtn.textContent).toBe('row.poolRowDelete')
+
+      // 第一下：就地换成确认条，**还没有任何网络请求**。不可恢复的动作不能
+      // 一点就生效。
+      await act(async () => { deleteBtn.click() })
+      expect(fetchMock).not.toHaveBeenCalled()
+      const confirm = first.querySelector('.dsm-qoder-pool-confirm')
+      expect(confirm).not.toBeNull()
+      // 确认条要说清删的是谁、以及不可恢复。
+      expect(confirm?.textContent).toContain('row.poolDeleteConfirm')
+      // 危险动作的那颗按钮才带危险样式；取消那颗是中性。
+      const yes = Array.from(confirm!.querySelectorAll('button')).find(b => b.textContent === 'row.poolDeleteConfirmYes') as HTMLButtonElement
+      const no = Array.from(confirm!.querySelectorAll('button')).find(b => b.textContent === 'row.poolDeleteCancel') as HTMLButtonElement
+      expect(yes.className).toContain('dsm-btn-danger')
+      expect(no.className).not.toContain('dsm-btn-danger')
+
+      // 第二下：才发请求，且走的是 pool remove 路由并带上 accountId。
+      await act(async () => { yes.click() })
+      expect(fetchMock).toHaveBeenCalledTimes(1)
+      const url = String((fetchMock.mock.calls[0] as unknown[])[0])
+      expect(url).toContain('action=remove')
+      expect(url).toContain('accountId=a1')
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('确认条上「保留」会撤掉它，同样不发请求', async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }) as Response)
+    vi.stubGlobal('fetch', fetchMock)
+    const { container, unmount } = await mountPool()
+    try {
+      const first = container.querySelector('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)')!
+      await act(async () => { (first.querySelector('.dsm-qoder-pool-delete-btn') as HTMLButtonElement).click() })
+      expect(first.querySelector('.dsm-qoder-pool-confirm')).not.toBeNull()
+      const cancel = Array.from(first.querySelectorAll('.dsm-qoder-pool-confirm button'))
+        .find(b => b.textContent === 'row.poolDeleteCancel') as HTMLButtonElement
+      await act(async () => { cancel.click() })
+      // 回到静止态，且什么都没删。
+      expect(first.querySelector('.dsm-qoder-pool-confirm')).toBeNull()
+      expect(first.querySelector('.dsm-qoder-pool-delete-btn')).not.toBeNull()
+      expect(fetchMock).not.toHaveBeenCalled()
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('settings/env 的账号不给删除按钮（那个 PAT 删不动，给了只会 409）', async () => {
+    const withEnv = {
+      ...poolFixture(),
+      accounts: [
+        { accountId: 'a1', accountName: 'Alpha', current: true, member: true, source: 'settings', probe: { outcome: 'ok', atMs: Date.now(), source: 'test-batch' } },
+        { accountId: 'a2', accountName: 'Beta', current: false, member: true, source: 'vault', probe: { outcome: 'ok', atMs: Date.now(), source: 'test-batch' } },
+      ],
+    }
+    const { container, unmount } = await mountPool({ pool: withEnv })
+    try {
+      const rows = Array.from(container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)'))
+      // 第一行来自 settings：没有删除按钮；第二行来自 vault：有。
+      expect(rows[0]!.querySelector('.dsm-qoder-pool-delete-btn')).toBeNull()
+      expect(rows[1]!.querySelector('.dsm-qoder-pool-delete-btn')).not.toBeNull()
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('删除失败时把宿主的话显示出来（settings/env 的 PAT 删不动）', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false,
+      status: 409,
+      json: async () => ({ reason: 'account-not-deletable', error: 'only accounts added by this plugin can be deleted' }),
+    }) as Response))
+    const { container, unmount } = await mountPool()
+    try {
+      const first = container.querySelector('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)')!
+      await act(async () => { (first.querySelector('.dsm-qoder-pool-delete-btn') as HTMLButtonElement).click() })
+      const yes = Array.from(first.querySelectorAll('.dsm-qoder-pool-confirm button'))
+        .find(b => b.textContent === 'row.poolDeleteConfirmYes') as HTMLButtonElement
+      await act(async () => { yes.click() })
+      // 结构化 reason 要翻成文案，而不是把英文原文甩给用户。
+      expect(container.querySelector('.dsm-qoder-pool-error')?.textContent).toContain('row.poolErrNotDeletable')
+      // 失败后确认条复位，用户还能再试或改主意。
+      expect(container.querySelector('.dsm-qoder-pool-confirm')).toBeNull()
+    } finally {
+      await unmount()
+    }
   })
 })

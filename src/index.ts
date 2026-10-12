@@ -747,9 +747,21 @@ function displayModels(
       else if (row.status === 'failed') next[row.accountId] = false
     }
     checkinState[region] = next
-    // 签到会改变积分余额：把该区域的用量缓存作废，免得卡片继续显示领之前的
-    // 数字（下次读取会重新拉）。
-    delete usageCache[region]
+    // 签到会改变积分余额：必须**重新拉一次**，否则这个区域的积分会一直停在签到
+    // 前的数字，直到某个**与签到无关**的动作（改配置 / 点「从 Qoder 刷新」）
+    // 顺带触发 `refreshUsage` —— 用户看到的就是「我领了积分，但积分没刷新」
+    // （用户实拍）。此前这里只 `delete usageCache[region]`：作废了缓存却没有
+    // 任何人来重新填充它，等于把「读到新值」这件事推给了一个不会到来的下一次
+    // 无关动作。
+    //
+    // **await 而非 fire-and-forget**：客户端在收到签到响应后立刻调 `onChanged()`
+    // 重新读一次 usage（`AccountPool.runCheckinBatch` 末尾）。若这里不等待，
+    // 这次重读会发生在上游返回之前、读到刚被作废的空缓存，积分仍然不刷新 ——
+    // 竞态，而不是修复。
+    //
+    // 失败不影响签到本身：结果已经如实回报给用户了，积分补读失败只是这一格数字
+    // 没更新，下一次轮询会再试。
+    await refreshUsage(region).catch(() => {})
     return rows
   }
 
@@ -920,6 +932,7 @@ function displayModels(
       credentialFor: (accountId, sources) => store.credentialFor(accountId, sources ?? sourcesOf(region)),
       resolve: (sources, selectedId) => store.resolve(sources ?? sourcesOf(region), selectedId ?? selectedAccountId(config, region)),
       add: (pat, name) => store.add(pat, name),
+      vaultAccounts: () => store.vaultAccounts(),
       remove: accountId => store.remove(accountId),
       rename: (accountId, name) => store.rename(accountId, name),
     }
@@ -1007,8 +1020,15 @@ function displayModels(
   /** Build the transfer deps once (region-dispatched). */
   const transferDeps: QoderTransferDeps = {
     exportAccounts: async region => {
+      // 必须经 transferRecordsFor 投影成 transfer 文件形状（`access_token` /
+      // `uid` / `nickname` / `domain`）。此前这里直接吐 vault 原始字段
+      // （`pat` / `accountName` / `id`）——**既没有 domain，字段名也不是
+      // snake_case**，于是导出物再导入时被区域门整批判 skipped
+      // （导出即导入 = 0 条成功）。投影留在 transfer.ts（而非内联在此），
+      // 是为了往返回归测试能直接走同一条代码路径。
+      const { transferRecordsFor } = await import('./transfer.ts')
       const vault = await stacks[region].store.vaultAccounts()
-      return { accounts: vault.map(a => ({ pat: a.pat, accountName: a.accountName, id: a.id })) }
+      return { accounts: transferRecordsFor(region, vault) }
     },
     previewImport: async (_region, text) => {
       const { previewTransferFile } = await import('./transfer.ts')
@@ -1134,6 +1154,10 @@ function displayModels(
       store: accountDeps,
       credentialSources: sourcesOf,
       selectedAccountId: region => selectedAccountId(config, region),
+      // 删除账号后清掉指向它的区域选择：凭据没了，这个选择也没意义了。写 `''`
+      // 而不是删键——`''` 就是「自动」，正是 `writeAccountSlot` 在用户选「自动」
+      // 时写的那个值，两条路径落到同一状态。
+      clearSelection: region => { submitRegionSettings(region, { accountId: '' }) },
       // 卡片读的是**完整目录**（displayModels），不是过滤后的运行时目录。
       catalogs: {
         cn: { current: () => [...displayModels(config, 'cn')] },
@@ -1201,6 +1225,11 @@ function displayModels(
           for (const region of QODER_REGIONS) {
             releaseAdapter[region] = registration[region].adapter = ctx.llm.registerAdapter([QODER_PROVIDERS[region]], adapters[region].adapter)
           }
+          // registerConfigurableProviders 一次登记**两个区域**的 provider 条目
+          // （map 遍历 QODER_REGIONS），所以这里只有**一个**句柄。它沿用
+          // `registration.cn.directory` 这个槽位只是为了不新增字段：整个目录
+          // 条目集由这一个句柄持有，并按区域整体 replace（见 syncRegionRegistration）。
+          // 不要读成「global 漏了 directory 句柄」。
           releaseDirectory = registration.cn.directory = ctx.llm.registerConfigurableProviders(
             QODER_REGIONS.map(region => ({
               provider: QODER_PROVIDERS[region],

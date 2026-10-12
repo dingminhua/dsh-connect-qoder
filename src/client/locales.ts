@@ -9,17 +9,19 @@
  *   1. 账号是 PAT（Personal Access Token），不是桌面端登录——没有
  *      searched-paths、没有 OAuth、没有「桌面端重新登录」文案；账号来源是
  *      settings PAT / 环境变量 / 插件保险库（vault）；
- *   2. 没有每日签到：签到相关的 `row.poolColumnCheckin` / `row.poolCheckin*` /
- *      `row.poolLogCheckin*` 等键保留为家族形状但卡片按 `checkinSupported`
- *      恒 false 隐藏整列（这些键本就不被渲染）；
- *   3. 国内版 = 通义灵码国际（Qoder，QD），国际版 = 通义灵码国际（Qoder，QD
- *      AI，即 qoder.sh）；composer 读数是 region 标注的「QD CN」/「QD AI」。
+ *   2. 每日签到走 Qoder 的 campaigns 端点，CN 与国际版都已接通；卡片按区域的
+ *      `checkinSupported` 决定是否渲染签到列与按钮（为 false 时整列不出现）；
+ *   3. 国内版 = 通义灵码 / Qoder CN（qoder.com.cn，QD CN），国际版 = Qoder
+ *      （qoder.sh，QD AI）；composer 读数是 region 标注的「QD CN」/「QD AI」。
  *
  * @module dsh-connect-qoder/client/locales
  */
 
+import { QODER_PACKAGE_NAME } from '../version.ts'
+
 export const en = {
-  'row.title': 'Qoder (Lingma) credits & models (dsh-connect-qoder)',
+  // 包名用构建期注入的真实值，而不是手抄 —— 改名过一次，手抄的那份就过期了。
+  'row.title': `Qoder (Lingma) credits & models (${QODER_PACKAGE_NAME})`,
   'row.desc': 'Use Qoder (Lingma CN / global) models in DSH and see your remaining credits; the CN and international sides are two independent providers (qoder / qoder-global), each with its own PAT and accounts — use both at the same time.',
   'row.expand': 'Expand',
   'row.collapse': 'Collapse',
@@ -164,6 +166,7 @@ export const en = {
   'row.poolTitle': 'Account pool',
   'row.poolNoCandidate': 'No account in this pool can be used right now.',
   'row.poolNoCandidateHint': 'Members are rate-limited, out of credits, rejected, or unreachable. Rate limits, drained quotas and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. Only a rejected credential needs a new PAT.',
+  'row.poolEmptyHint': 'This region has no accounts yet. Use “Add PAT” above to paste one, or “Export / import accounts” to bring them over from another machine — the pool, the model tests and the daily check-in all need at least one account.',
   'row.poolTestAll': 'Test all accounts',
   'row.poolCheckinAll': 'Claim daily credits',
   'row.poolCheckingIn': 'Claiming…',
@@ -258,11 +261,16 @@ export const en = {
   'row.poolNotMember': 'Not in pool',
   'row.poolUnsavedMembers': 'Selection changed — save to apply',
   'row.poolRowTest': 'Test',
-  'row.poolRowRemove': 'Remove',
-  'row.poolRowRemoveHint': 'Remove this account from the pool\'s membership. This only drops it from the pool — the vault entry, if any, is left untouched.',
-  'row.poolRowRemoveAria': 'Remove {accountName} from the account pool',
-  'row.poolRowRemoved': '{accountName}: removed from the pool membership.',
-  'row.poolRowRemoving': 'Removing the account…',
+  'row.poolRowDelete': 'Delete',
+  'row.poolRowDeleteHint': 'Delete this account for good: its stored PAT is erased, and it drops out of the pool and the region selection. To only take it out of the rotation, untick it and save instead.',
+  'row.poolRowDeleteAria': 'Delete the account {accountName}',
+  'row.poolDeleteConfirm': 'Delete {accountName} for good? Its stored PAT is erased and cannot be recovered.',
+  'row.poolDeleteConfirmAria': 'Confirm deleting {accountName}',
+  'row.poolDeleteConfirmYes': 'Delete for good',
+  'row.poolDeleteCancel': 'Keep it',
+  'row.poolRowDeleting': 'Deleting the account…',
+  'row.poolRowRemoved': '{accountName}: deleted, along with its stored PAT.',
+  'row.poolErrNotDeletable': 'This account\'s PAT does not come from this plugin — it comes from the app\'s settings or the environment, where it is managed outside here. Remove it there instead.',
   'row.poolErrUnavailable': 'The account pool is not available in this build (or its batch route is missing). Restart the app; if it persists, the plugin needs reinstalling.',
   'row.poolErrFailed': 'The batch failed on the host side: {message}',
   'row.poolErrHttp': 'The batch was refused (HTTP {status}). Check the plugin is up to date and try again.',
@@ -298,7 +306,7 @@ export const en = {
 export type QoderSettingsKey = keyof typeof en
 
 export const zh: Record<QoderSettingsKey, string> = {
-  'row.title': '接入使用 Qoder（通义灵码）积分与模型（dsh-connect-qoder）',
+  'row.title': `接入使用 Qoder（通义灵码）积分与模型（${QODER_PACKAGE_NAME}）`,
   'row.desc': '在 DSH 中使用 Qoder（通义灵码 国内/国际）模型并随时查看剩余积分；国内版与国际版是两个独立供应商（qoder / qoder-global），各有自己的 PAT 与账号，可同时使用。',
   'row.expand': '展开',
   'row.collapse': '收起',
@@ -438,6 +446,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolTitle': '账号池',
   'row.poolNoCandidate': '账号池里目前没有可用的账号。',
   'row.poolNoCandidateHint': '成员要么在限流冷却中、要么积分耗尽、要么凭据被拒、要么上游无响应。限流、积分耗尽与瞬时故障都会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底，不需要你操作；只有「凭据被拒」需要换一个新 PAT。',
+  'row.poolEmptyHint': '这个区域还没有账号。用上面的「添加 PAT」粘贴一个，或用「导出 / 导入账号」把别的机器上的账号搬过来 —— 账号池、模型测试与每日签到都需要至少一个账号。',
   'row.poolTestAll': '一键测试所有账号',
   'row.poolCheckinAll': '一键签到所有账号',
   'row.poolCheckingIn': '签到中…',
@@ -532,11 +541,16 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolNotMember': '未入池',
   'row.poolUnsavedMembers': '勾选已改动 —— 保存后生效',
   'row.poolRowTest': '测试',
-  'row.poolRowRemove': '移除',
-  'row.poolRowRemoveHint': '把它从账号池的成员中移除。这只会取消它的池成员资格——保险库条目（如果有）不受影响。',
-  'row.poolRowRemoveAria': '把 {accountName} 从账号池移除',
-  'row.poolRowRemoved': '{accountName}：已从账号池成员中移除。',
-  'row.poolRowRemoving': '正在移除账号…',
+  'row.poolRowDelete': '删除',
+  'row.poolRowDeleteHint': '彻底删除这个账号：它的 PAT 会被抹掉，并自动退出账号池与该区域的选择。如果只想让它不参与轮换，取消勾选并保存即可。',
+  'row.poolRowDeleteAria': '删除账号 {accountName}',
+  'row.poolDeleteConfirm': '彻底删除 {accountName}？它保存的 PAT 会被抹掉，找不回来。',
+  'row.poolDeleteConfirmAria': '确认删除 {accountName}',
+  'row.poolDeleteConfirmYes': '彻底删除',
+  'row.poolDeleteCancel': '保留',
+  'row.poolRowDeleting': '正在删除账号…',
+  'row.poolRowRemoved': '{accountName}：已删除，保存的 PAT 一并抹掉。',
+  'row.poolErrNotDeletable': '这个账号的 PAT 不是本插件存的（来自应用设置或环境变量），由插件之外管理。请到那里删除。',
   'row.poolErrUnavailable': '本版本没有可用的账号池（或其批量接口缺失）。请重启应用；若仍不行，插件可能需要重新安装。',
   'row.poolErrFailed': '批量操作在宿主侧失败：{message}',
   'row.poolErrHttp': '批量操作被拒绝（HTTP {status}）。请确认插件是最新版本后重试。',

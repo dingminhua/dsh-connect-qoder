@@ -22,7 +22,7 @@
 
 import { qoderAccountId } from './credentials.ts'
 import type { QoderStoredAccount } from './accounts.ts'
-import type { QoderWebRegion } from './status-paths.ts'
+import { QODER_REGION_TRANSFER_DOMAIN, type QoderWebRegion } from './status-paths.ts'
 import type {
   QoderTransferPreview,
   QoderTransferPreviewEntry,
@@ -107,6 +107,25 @@ export function transferRecordOf(
     domain: regionDomain,
   }
   return record
+}
+
+/**
+ * Project a region's whole vault into the exported transfer document.
+ *
+ * This is the ONE place the export path turns vault accounts into records;
+ * the `exportAccounts` dep (`index.ts`) MUST go through it. It used to be
+ * written inline in `exportAccounts` as a raw `{pat, accountName, id}` map,
+ * which is what produced files that could never be re-imported: the region
+ * gate (`mergeTransferRecords`) reads `domain`, and the raw vault shape has
+ * none. Keeping the projection here — rather than in the Host wiring — is what
+ * lets a test export through it and immediately import the result.
+ */
+export function transferRecordsFor(
+  region: QoderWebRegion,
+  accounts: readonly QoderStoredAccount[],
+): QoderTransferRecord[] {
+  const domain = QODER_REGION_TRANSFER_DOMAIN[region]
+  return accounts.map(account => transferRecordOf(account, domain))
 }
 
 /**

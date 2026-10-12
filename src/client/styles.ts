@@ -214,6 +214,9 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-pool-warn{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-warn-primary,#f59e0b);background:rgba(245,158,11,.09);border:1px solid rgba(245,158,11,.3)}
+/* 空状态（这一区一个账号都没有）：不是警告，是引导 —— 用中性色，别让「还没添加」
+   读起来像「出问题了」。 */
+.dsm-qoder-pool-empty{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#666);background:var(--dsw-alias-fill-tertiary,rgba(127,127,127,.08));border:1px dashed var(--dsw-alias-border-secondary,rgba(127,127,127,.3))}
 .dsm-qoder-pool-error{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary,#ef4444);white-space:pre-line}
 .dsm-qoder-pool-table{border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-qoder-pool-row{display:grid;grid-template-columns:1.6fr 1fr 1.3fr .9fr .8fr;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
@@ -297,6 +300,17 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-log-empty{padding:14px;font-size:12px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-pool-row-actions{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex:none}
 .dsm-qoder-pool-row-actions .dsm-qoder-pool-small-btn{padding:2px 10px;font-size:12px}
+/* 「删除」在静止态刻意保持中性（outline）：它和「测试」并排，一个中性一个危险，
+   每次看都要重新判断哪个会丢数据。危险色留给按下去之后那条确认条里的按钮——
+   也就是用户已经明确表达「我要删」的那一刻。 */
+.dsm-qoder-pool-delete-btn{color:var(--dsw-alias-state-error-primary,#ef4444)}
+.dsm-qoder-pool-delete-btn:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary,#ef4444)}
+/* 二次确认就地展开在这一行的操作格里，不弹窗：确认的是什么（哪个账号）必须
+   和被确认的那一行待在同一视线内，隔到弹窗里就说错了对象。 */
+.dsm-qoder-pool-confirm{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
+.dsm-qoder-pool-confirm-text{font-size:11px;line-height:15px;color:var(--dsw-alias-state-error-primary,#ef4444);text-align:right}
+.dsm-qoder-pool .dsm-btn-danger{border-color:var(--dsw-alias-state-error-primary,#ef4444);color:#fff;background:var(--dsw-alias-state-error-primary,#ef4444)}
+.dsm-qoder-pool .dsm-btn-danger:hover:not(:disabled){opacity:.9}
 @media (max-width:760px){.dsm-qoder-pool-row{grid-template-columns:1fr 1fr;row-gap:6px}.dsm-qoder-pool-select{max-width:180px}}
 /* Pool switch, namespaced under .dsm-qoder-pool so it cannot collide with host styles. */
 .dsm-qoder-pool .sw{position:relative;display:inline-block;width:38px;height:22px;flex:none;cursor:pointer}

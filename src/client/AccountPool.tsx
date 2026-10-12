@@ -5,12 +5,20 @@
  *   — `AccountPool.tsx`：草稿态 + dirty 标记 + 「保存/放弃」、`writeField` 验证
  *     写入、批量测试进度、活动日志的计时/配色、池表格的分列与配色，全部沿用。
  * 改动（按 Qoder 现实）：
- *   1. 没有每日签到：`checkinSupported` 恒 false，签到按钮与那一列整体不渲染；
+ *   1. 每日签到走 campaigns 端点，`checkinSupported` 按区域判定（CN 与国际版均已
+ *      接通）；为 false 的区域，签到按钮与那一列整体不渲染；
  *   2. 批量测试走 `POST /pool?action=test`，Host 一次性返回 JSON
  *      `{action, modelId, rows}`（Qoder 上游不支持逐 account 流式），不再逐行
  *      流式进度；
- *   3. 账号来自 PAT（settings / env / vault）；「删除」仅移除池成员，不影响
- *      vault 条目（真正的 vault 删除在卡片的账号列表里）。
+ *   3. 账号来自 PAT（settings / env / vault）。**两件不同的事必须分开**：
+ *        - 移出池 = 取消勾选并保存（只改 `memberAccountIds`，凭据留着）；
+ *        - 彻底删除 = 行内「删除」按钮 + 二次确认（删 vault 条目，并连带收掉
+ *          配置里指向它的 `accountId` 与 `memberAccountIds` 残骸）。
+ *      此前只有一个「移除」按钮，它做的其实是移出池，却长得像删除：用户点它
+ *      期望账号消失，PAT 却原封不动留在 vault 里，「全选」一下又回来了（用户
+ *      实拍：「删除唯一的号，但是号并没有删除干净」）。移出池现在只由勾选框表达
+ *      （workbuddy 同规），按钮留给真正不可恢复的那个动作。
+ *   4. settings / env 的 PAT 不归本插件管，删不动，所以那些行不给删除按钮。
  *
  * Add-PAT 与导出/导入由卡片以单独小节渲染（`AddAccount` / `AccountTransfer`），
  * 本模块只负责池本身：批量动作、成员勾选、偏好设置、活动日志。
@@ -138,7 +146,20 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const [batchAction, setBatchAction] = useState<'checkin' | 'test' | undefined>(undefined)
   /** 任一批量动作在跑。两个按钮共用同一把锁，避免签到与测试交错。 */
   const batchBusy = batchAction !== undefined
+  /** 正在删除的账号 id；undefined = 空闲。删除过程中锁住整张表。 */
   const [removingId, setRemovingId] = useState<string | undefined>(undefined)
+  /**
+   * 等待二次确认的「删除账号」目标 id。
+   *
+   * 删除是**硬删** vault 条目：那是这个账号在本插件里的唯一存储位置，删掉就
+   * 找不回来（对比「勾选框」表达的移出池——那只改名单，凭据留着，随时能勾回来）。
+   * 所以按第一下只把这一行换成确认条，第二个按钮才真的删。
+   *
+   * 用两步内联确认而不是 `window.confirm`：不阻塞、可被测试、禁用态下也能复位
+   * （workbuddy 的删除是「暂时隐藏」、可 rescan 找回，所以它不需要确认；这里
+   * 没有第二来源可按，必须有）。
+   */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | undefined>(undefined)
   // 日志种子来自模块级 logStore：折叠卡片/切换 tab 导致的 unmount 不再清空
   // 历史（workbuddy 同规）。两个区域各持一份，切 tab 是换历史而不是混历史。
   const [log, setLog] = useState<readonly PoolLogEntry[]>(() => logStore.get(region) ?? [])
@@ -367,9 +388,18 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     }
   }
 
-  const runRowRemove = async (accountId: string): Promise<void> => {
+  /**
+   * 彻底删除一个账号（凭据 + 池成员 + 区域选择）。
+   *
+   * 这一支以前叫 `runRowRemove`，做的却只是「从池名单里剔掉」——也就是移出池。
+   * 用户点它期望账号消失，PAT 却留在 vault 里，下一次「全选」又勾回来，看起来
+   * 就是「删不掉」（用户实拍：「删除唯一的号，但是号并没有删除干净」）。
+   * 现在两件事彻底分开：移出池 = 取消勾选并保存；删除 = 这里，且要二次确认。
+   */
+  const runDeleteAccount = async (accountId: string): Promise<void> => {
     setActionError(undefined)
     setRemovingId(accountId)
+    setConfirmDeleteId(undefined)
     try {
       const url = `${withQoderRegionAndAction(QODER_POOL_PATH, region, 'remove')}&${QODER_POOL_ACCOUNT_PARAM}=${encodeURIComponent(accountId)}`
       const response = await fetch(url, {
@@ -385,11 +415,17 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       }
       const accountName = pool?.accounts.find(a => a.accountId === accountId)?.accountName ?? t('row.accountUnnamed')
       appendLog({ atMs: Date.now(), text: t('row.poolRowRemoved', { accountName }), tone: 'ok' })
+      // 硬删会连带把池名单与区域选择里的残骸收掉。草稿里若还留着这个 id，保存
+      // 会把它写回去、复活成一个勾不上的幽灵——这里跟着一起摘掉。
+      if (draftPool !== null && draftRegion === region) {
+        setDraftPool({ ...draftPool, memberAccountIds: draftPool.memberAccountIds.filter(id => id !== accountId) })
+        if (draftPool.memberAccountIds.includes(accountId)) setDirty(true)
+      }
       try { await onChanged?.() } catch { /* reconciled on the next poll */ }
     } catch (error) {
       if (mounted.current) setActionError(String((error as Error)?.message ?? error))
     } finally {
-      if (mounted.current) setRemovingId(undefined)
+      if (mounted.current) { setRemovingId(undefined); setConfirmDeleteId(undefined) }
     }
   }
 
@@ -458,10 +494,18 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       {pool?.enabled === false
         ? h('p', { className: 'dsm-qoder-pool-note' }, t('row.poolEnabledHint'))
         : null}
-      {/* 开着却没有可用成员时直说：失败会被直接报出来而不是被重试。 */}
-      {pool?.enabled === true && usable.length === 0
+      {/* 开着却没有可用成员时直说：失败会被直接报出来而不是被重试。
+          但**一个账号都没有**时不能说这句 —— 那段文案在讲「成员要么限流、要么
+          积分耗尽……」，而这里根本还没有成员，读起来像账号出了问题而不是还没添加。
+          那种情况由下面的空状态负责。 */}
+      {pool?.enabled === true && usable.length === 0 && (pool?.accounts.length ?? 0) > 0
         ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
             `${t('row.poolNoCandidate')} ${t('row.poolNoCandidateHint')}`)
+        : null}
+      {/* 空状态：这一区一个账号都没有。账号池是**添加 PAT / 导入账号**的唯一入口，
+          所以这里必须把话说清楚，而不是留一张没有行的表格让人猜去哪加。 */}
+      {(pool?.accounts.length ?? 0) === 0
+        ? h('p', { className: 'dsm-qoder-pool-empty', role: 'status' }, t('row.poolEmptyHint'))
         : null}
 
       {/* 成员选择就在这张表里完成：复选框即成员资格（workbuddy 的单表同构）。
@@ -573,18 +617,47 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                   <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch() }}>
                     {t('row.poolRowTest')}
                   </button>
-                  {account.member ? (
-                    <button
-                      type="button"
-                      className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
-                      title={t('row.poolRowRemoveHint')}
-                      aria-label={t('row.poolRowRemoveAria', { accountName: name })}
-                      disabled={!canEditPool || removingId !== undefined}
-                      onClick={() => { void runRowRemove(account.accountId) }}
-                    >
-                      {removingId === account.accountId ? t('row.poolRowRemoving') : t('row.poolRowRemove')}
-                    </button>
-                  ) : null}
+                  {/* 移出池**不用按钮**：这一行的勾选框已经表达「是不是成员」，再给
+                      一个只改同一件事的按钮，两处迟早会不一致（这正是此前「移除了
+                      账号却还在」的由来）。取消勾选 + 保存 = 移出池，凭据留着。
+                      这一列是**彻底删除**——另一个动作、另一种后果，所以要有
+                      二次确认。 */}
+                  {account.source !== 'vault'
+                    ? null
+                    : confirmDeleteId === account.accountId
+                      ? (
+                        <span className="dsm-qoder-pool-confirm" role="group" aria-label={t('row.poolDeleteConfirmAria', { accountName: name })}>
+                          <span className="dsm-qoder-pool-confirm-text">{t('row.poolDeleteConfirm', { accountName: name })}</span>
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-danger dsm-qoder-pool-small-btn"
+                            disabled={removingId !== undefined}
+                            onClick={() => { void runDeleteAccount(account.accountId) }}
+                          >
+                            {t('row.poolDeleteConfirmYes')}
+                          </button>
+                          <button
+                            type="button"
+                            className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                            disabled={removingId !== undefined}
+                            onClick={() => setConfirmDeleteId(undefined)}
+                          >
+                            {t('row.poolDeleteCancel')}
+                          </button>
+                        </span>
+                      )
+                      : (
+                        <button
+                          type="button"
+                          className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn dsm-qoder-pool-delete-btn"
+                          title={t('row.poolRowDeleteHint')}
+                          aria-label={t('row.poolRowDeleteAria', { accountName: name })}
+                          disabled={!canEditPool || removingId !== undefined}
+                          onClick={() => { setConfirmDeleteId(account.accountId) }}
+                        >
+                          {removingId === account.accountId ? t('row.poolRowDeleting') : t('row.poolRowDelete')}
+                        </button>
+                      )}
                 </span>
               </div>
             )

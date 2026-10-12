@@ -85,6 +85,19 @@ function regionArg(): readonly QoderRegion[] {
   return REGION_KEYS
 }
 
+/**
+ * 从 argv 里取出**命令词**：剥掉 flag 与区域实参，剩下的第一个就是。
+ *
+ * 必须是「保留**不是** flag、**不是**区域名的实参」。写反成
+ * `REGION_KEYS.includes(arg)`（只留 cn/global）会让命令词自己被过滤掉，
+ * 于是三条子命令全部只会打印 usage。抽成纯函数就是为了能对它断言。
+ */
+export function commandArgOf(argv: readonly string[]): string | undefined {
+  return argv.filter(
+    arg => arg !== '--json' && arg !== '--region' && !REGION_KEYS.includes(arg as QoderRegion),
+  )[0]
+}
+
 interface DoctorEntry {
   region: string
   gateway: string
@@ -241,8 +254,7 @@ async function logout(): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2).filter(arg => arg !== '--json' && arg !== '--region' && REGION_KEYS.includes(arg as QoderRegion))
-  const command = args[0]
+  const command = commandArgOf(process.argv.slice(2))
   if (command === 'doctor') {
     await doctor()
     return

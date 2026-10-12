@@ -2,19 +2,28 @@
  * Qoder 上游 HTTP 客户端：cosy 签名请求、jobToken 交换、聊天 SSE、
  * 模型目录与用量查询。
  *
- * 端点映射（CN 与 Global 双区域，来自 Go 版 qoder2api 的 account/region.go
- * 与官方 SDK 的用量说明）：
+ * 端点映射（CN 与 Global 双区域）。两区域**各自一个网关主机**，chat / models /
+ * jobToken 三个端点共用它（见 `QODER_REGIONS` 的 `gateway` 字段）：
  *
  * ```text
- * CN     chat: gateway.qoder.com.cn/algo/api/v2/service/pro/sse/agent_chat_generation
- *        models: gateway.qoder.com.cn/algo/api/v2/model/list
- *        jobToken: gateway.qoder.com.cn/algo/api/v3/user/jobToken
- *        openapi: openapi.qoder.com.cn
- * Global chat: api1.qoder.sh/algo/api/v2/service/pro/sse/agent_chat_generation
- *        models: api2.qoder.sh/algo/api/v2/model/list
- *        jobToken: center.qoder.sh/algo/api/v3/user/jobToken
- *        openapi: openapi.qoder.sh
+ * CN     gateway: gateway.qoder.com.cn
+ *        chat:     /algo/api/v2/service/pro/sse/agent_chat_generation
+ *        models:   /algo/api/v2/model/list
+ *        jobToken: /algo/api/v3/user/jobToken
+ *        openapi:  openapi.qoder.com.cn
+ * Global gateway: api1.qoder.sh
+ *        chat:     /algo/api/v2/service/pro/sse/agent_chat_generation
+ *        models:   /algo/api/v2/model/list
+ *        jobToken: /algo/api/v3/user/jobToken
+ *        openapi:  openapi.qoder.sh
  * ```
+ *
+ * 注：早期注释称国际版的 models 走 `api2.qoder.sh`、jobToken 走
+ * `center.qoder.sh`。实测（2026-10）三者对本插件用到的端点**完全等效**——
+ * 对同一个假 PAT 都回 `401 personal token is invalid`（凭据层被拒，而非
+ * `Signature invalid`），说明三者都接受同一套 cosy 签名、只是拒绝坏凭据。
+ * 所以国际版统一用 `api1.qoder.sh`，不按端点分主机；若将来真要分流，请改
+ * `QODER_REGIONS` 的配置表，而不是只改这段注释。
  *
  * @module dsh-connect-qoder/upstream
  */
@@ -558,7 +567,8 @@ export class QoderUpstreamClient {
    * 与 {@link bearerGet} 的区别只有一个——**认证凭据不同**：`sash` 要的是
    * jobToken 交换产出的 `jt-…`，不是 COSY 签名 bearer（实测后者回
    * `TOKEN_INVALID / invalid token`），也不是裸 PAT（回 `TOKEN_EXPIRE`）。
-   * 也正因为如此，这里**不**带那套 cosy-* 头：它们属于 cosy 协议面。
+   * 也正因为如此，这里**不**带那套 cosy-* 协议头：它们属于 cosy 协议面。
+   * 但**设备风控三件套属于 sash 面**，按 `requiresDeviceRisk` 附加 —— 见下。
    */
   private async jobTokenGet(
     holder: QoderSessionHolder,
@@ -569,10 +579,14 @@ export class QoderUpstreamClient {
     if (oauthToken === '') {
       throw new QoderUpstreamError('auth', 'jobToken 未返回 securityOauthToken，无法查询用量', 401)
     }
+    // 设备风控头按区域附加：`requiresDeviceRisk` 的语义是「该区域的 sash 请求
+    // 都要带这三件套」，用量查询同属 sash 面，**不能只给签到带**。此前这里只发
+    // accept + authorization，国际版的积分查询因此少了 machine 三件套。
     const resp = await this.fetchImpl(url, {
       headers: {
         accept: 'application/json',
         authorization: `Bearer ${oauthToken}`,
+        ...(await this.deviceRiskHeaders()),
       },
       ...(signal === undefined ? {} : { signal }),
     })
@@ -741,12 +755,15 @@ export class QoderUpstreamClient {
     signal?: AbortSignal,
   ): Promise<QoderUsage | undefined> {
     try {
+      // 与 jobTokenGet 同规：该区域要求设备风控时，回退路径也要带上那三件套，
+      // 否则「主路径失败 → 走回退」恰好落在唯一漏发头的那条分支上。
       const resp = await this.fetchImpl(url, {
         headers: {
           authorization: `Bearer ${credential}`,
           accept: 'application/json',
           'cosy-clienttype': '10',
           'user-agent': 'Qoder',
+          ...(await this.deviceRiskHeaders()),
         },
         ...(signal === undefined ? {} : { signal }),
       })
@@ -760,6 +777,9 @@ export class QoderUpstreamClient {
       }
     } catch {
       // 直连路径失败不代表凭据坏了，交给调用方用原始错误判定。
+      // 注意：本机取不到 UMID 组件时 deviceRiskHeaders() 会在这里抛错，同样
+      // 落进这个分支 —— 结果是「回退没走成」，由 fetchUsage 把原始凭据错误抛给
+      // 上层，用户看到的是带原因的那条，而不是一条凭空消失的用量查询。
     }
     return undefined
   }

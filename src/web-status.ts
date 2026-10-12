@@ -55,12 +55,14 @@ import {
   type QoderWebPoolTestRow,
   type QoderWebProbeResult,
   type QoderWebRecovery,
+  type QoderTransferRecord,
 } from './status-paths.ts'
 import type { QoderRegion } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { resolveTargetModel, exclusionOf } from './account-pool.ts'
 import type { QoderPoolCredits, QoderPoolProbe } from './account-pool.ts'
 import type { QoderStoredAccount } from './accounts.ts'
+import { isQoderAccountId } from './credentials.ts'
 
 // ---------------------------------------------------------------------------
 // 构件类型（Host 端注入给路由层）
@@ -76,6 +78,15 @@ export interface QoderAccountDeps {
   resolve(sources: { settingsPat?: string | undefined, envPat?: string | undefined }, selectedId: string | undefined): Promise<{ id: string, pat: string, accountName: string, source: 'settings' | 'env' | 'vault' } | undefined>
   /** Add (or refresh) one vault entry; `name` from a validated JobToken. */
   add(pat: string, name: string): Promise<QoderStoredAccount>
+  /**
+   * The vault entries only — NOT settings/env PATs.
+   *
+   * Deleting needs this distinction: a settings or env PAT is owned by whoever set
+   * it (outside this plugin), so removing a vault entry cannot delete it. Asking
+   * "is this id one we store?" is what lets the delete route refuse honestly
+   * instead of reporting a removal that changed nothing.
+   */
+  vaultAccounts(): Promise<QoderStoredAccount[]>
   /** Remove one vault entry. */
   remove(accountId: string): Promise<boolean>
   /** Backfill a display name learned from a JobToken exchange. */
@@ -118,8 +129,8 @@ export interface QoderPoolDeps {
   /** Issue a `test` batch for the region's members. OnRow for progress. */
   test(region: QoderRegion, modelId: string): Promise<QoderWebPoolTestRow[]>
   /**
-   * 该区域是否提供每日签到。CN 为 true；国际版暂为 false（需要 UMID 设备
-   * 风控头）。路由据此在**到达上游之前**拒绝 checkin 动作。
+   * 该区域是否提供每日签到。两个区域都为 true（国际版需要本机 UMID 组件产出的
+   * 设备风控头，取不到时签到如实报错）。路由据此在**到达上游之前**拒绝 checkin 动作。
    */
   checkinSupported(region: QoderRegion): boolean
   /** Issue a `checkin` batch for the region's members (每个成员各领一次). */
@@ -135,9 +146,17 @@ export interface QoderPoolDeps {
   updateMembership(region: QoderRegion, memberAccountIds: readonly string[], enabled?: boolean): void
 }
 
-/** What the transfer route needs from the Host. */
+/**
+ * What the transfer route needs from the Host.
+ *
+ * `exportAccounts` must return records in the **transfer-file shape**
+ * (`access_token` / `uid` / `nickname` / `domain`) — NOT the vault's internal
+ * shape. The exported document gets re-imported through `importAccounts`, whose
+ * region gate recognises a record only by its `domain`, so exporting the vault's
+ * raw fields made every exported record unimportable (0 imported, all skipped).
+ */
 export interface QoderTransferDeps {
-  exportAccounts(region: QoderRegion): Promise<{ accounts: Array<{ pat: string, accountName: string, id: string }> }>
+  exportAccounts(region: QoderRegion): Promise<{ accounts: QoderTransferRecord[] }>
   previewImport(region: QoderRegion, text: string): Promise<{ accounts: readonly { index: number, uid: string, nickname: string, email: string, hasToken: boolean }[], total: number }>
   importAccounts(region: QoderRegion, text: string, indexes: readonly number[]): Promise<{ imported: number, skipped: number }>
 }
@@ -155,6 +174,16 @@ export interface QoderWebRouteDeps {
   store(region: QoderRegion): QoderAccountDeps
   credentialSources(region: QoderRegion): { settingsPat?: string | undefined, envPat?: string | undefined }
   selectedAccountId(region: QoderRegion): string | undefined
+  /**
+   * Drop the region's saved `accountId` selection (back to "automatic").
+   *
+   * Called after the account it pointed at is deleted: the choice is gone with its
+   * credential, and leaving it behind makes the card keep reporting
+   * `selectionLost` — "the account you selected no longer exists" — for a region
+   * that is in fact fine. Optional so an older Host without it still works; the
+   * stale selection then resolves to automatic on its own.
+   */
+  clearSelection?(region: QoderRegion): Promise<void> | void
   /** The per-region RUNTIME catalog. */
   catalogs: Record<QoderRegion, { current(): QoderModelInfo[] }>
   /** Persisted context budgets by model key, one region. */
@@ -475,12 +504,38 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
       return json(res, 200, { action: 'test', modelId: target.modelId, rows })
     }
 
-    // remove one account's membership
+    // ---- 彻底删除一个账号（凭据 + 池成员 + 区域选择，一次做完）----
+    //
+    // 这一支以前只做了「从 memberAccountIds 里剔掉」——也就是**移出池**，不是删除。
+    // 用户点它期望账号消失，PAT 却原封不动留在 vault 里，下一次「全选」又勾回来，
+    // 于是看起来像「删不掉」（用户实拍：「删除唯一的号，但是号并没有删除干净」）。
+    // 移出池现在由**勾选框**表达（workbuddy 同规），这个动作只保留「彻底删除」。
     const accountId = poolAccountIdOf(req.url ?? '')
     if (accountId === undefined) return json(res, 400, { error: 'accountId is required' })
+    // id 来自查询参数、马上就要拿去当 vault 里的键比对。先在这里按形状拒掉畸形值：
+    // 让一次构造出来的请求得到 400，而不是走到宿主内部才炸成 500。
+    if (!isQoderAccountId(accountId)) {
+      return json(res, 400, { error: 'accountId is not a well-formed account id' })
+    }
+    // settings / env 里的 PAT **不属于本插件**：它们由用户在插件之外管理，删掉
+    // vault 条目对它无效。所以先问清楚这个 id 是不是本插件自己存的凭据，
+    // 不是的话明确回报，而不是回一个「其实没删掉什么」的 200。
+    const store = deps.store(region)
+    const stored = (await store.vaultAccounts()).find(entry => entry.id === accountId)
+    if (stored === undefined) {
+      return json(res, 409, { reason: 'account-not-deletable', error: 'only accounts added by this plugin can be deleted' })
+    }
+    const removed = await store.remove(accountId)
+    // 凭据没了，配置里指向它的两处残骸必须一起收掉，否则卡片会一直说
+    // 「所选账号已不存在」：区域的 accountId 与池的 memberAccountIds。
+    if (deps.selectedAccountId(region) === accountId) {
+      await deps.clearSelection?.(region)
+    }
     const prefs = pool.preferences(region)
-    pool.updateMembership(region, prefs.memberAccountIds.filter(id => id !== accountId), prefs.enabled)
-    return json(res, 200, { removed: true })
+    if (prefs.memberAccountIds.includes(accountId)) {
+      pool.updateMembership(region, prefs.memberAccountIds.filter(id => id !== accountId), prefs.enabled)
+    }
+    return json(res, 200, { removed })
   })
 
   // -------------------------------------------------------------------------
@@ -633,6 +688,15 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     const selectionExplicit = selectedId !== undefined && selectedId !== ''
     const selectionLost = selectionExplicit && accounts.length > 0
     deps.regionUsable?.(region, false)
+    // 账号池**在没有账号时也必须给出来**：它是「添加 PAT / 导入账号」的**唯一**
+    // 入口（账号工具由账号池区渲染，见客户端 `renderPool`）。此前这一支刻意不带
+    // `pool`，理由是「不出现 pool 段就等于没有任何账号正在使用」——但那个表达
+    // 让最需要添加账号的页面（一个账号都没有）恰恰没有添加入口（用户实拍）。
+    // 「当前没有正在计费的账号」这件事改由每一行的 `current` 表达：没有账号时
+    // 自然全为 false，无需靠整段缺席来暗示。
+    const pool = deps.pool === undefined
+      ? undefined
+      : await buildPoolView(deps, region, accounts, deps.catalogs[region].current(), undefined)
     return {
       status: 'signed-out',
       accounts: accounts.map(webAccountOf(deps, region)),
@@ -643,6 +707,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
         : '请填写 Qoder PAT（或设置环境变量）',
       selectionLost,
       selectionExplicit,
+      ...(pool === undefined ? {} : { pool }),
     }
   }
 
@@ -763,6 +828,9 @@ async function buildPoolView(
     rows.push({
       accountId: account.id,
       accountName: account.accountName,
+      // 这个 PAT 归谁管：只有 `vault` 的能在这里删（见 QoderWebPoolAccount.source）。
+      // 卡片据此不给 settings/env 的行显示删除按钮，而不是给一个点了会 409 的按钮。
+      source: account.source,
       ...(reading === undefined ? {} : {
         credits: reading.total,
         expiringSoon: reading.expiringSoon,

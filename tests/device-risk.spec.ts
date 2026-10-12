@@ -113,6 +113,83 @@ describe('sash 请求头按区域附加', () => {
   }, 30_000)
 })
 
+/**
+ * **用量查询也必须按区域带设备风控头。**
+ *
+ * 上面的 campaigns 断言曾在很长一段时间里是唯一的覆盖，而用量走的是另一条
+ * 代码路径（`jobTokenGet`，国际版还有一条 `fetchUsageDirect` 回退）。这两条
+ * 当时只发 `accept` + `authorization`，**漏发 machine 三件套** —— 于是
+ * `requiresDeviceRisk: true` 这个区域配置在用量查询上等于没生效。签到测得到、
+ * 用量测不到，因为这个文件从来没调用过 `fetchUsage`。
+ */
+describe('用量查询的 sash 头按区域附加', () => {
+  /** 捕获用量查询实际发出的头（含 jobToken 交换本身）。 */
+  function captureUsage(region: 'cn' | 'global'): { headers: Array<Record<string, string>>, client: QoderUpstreamClient } {
+    const headers: Array<Record<string, string>> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const target = String(url)
+      if (target.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u', name: 'n', expireTime: Date.now() + 1_000_000,
+          securityOauthToken: 'jt-TEST', refreshToken: 'r', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      headers.push(Object.fromEntries(new Headers(init?.headers ?? {}).entries()))
+      // 用量响应（主路径与回退路径都会尝试解析它）。
+      return new Response(JSON.stringify({ credit_packages: [] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    return { headers, client: new QoderUpstreamClient(region, { fetch: fetchImpl }) }
+  }
+
+  it('国际版的用量查询带齐三个 machine 头', async () => {
+    if (findDeviceRiskComponent('global') === undefined) return
+    const { headers, client } = captureUsage('global')
+    await client.fetchUsage('pt-x')
+    expect(headers.length).toBeGreaterThan(0)
+    const sent = headers[0]!
+    expect(sent['cosy-machinetoken']).toBeTruthy()
+    expect(sent['cosy-machinecode']).toBeTruthy()
+    expect(sent['cosy-machinetype']).toBeTruthy()
+  }, 30_000)
+
+  it('国内版的用量查询不带 machine 头', async () => {
+    const { headers, client } = captureUsage('cn')
+    await client.fetchUsage('pt-x')
+    expect(headers.length).toBeGreaterThan(0)
+    expect(headers[0]!['cosy-machinetoken']).toBeUndefined()
+  }, 30_000)
+
+  it('国际版的直连回退路径也带齐三个 machine 头', async () => {
+    if (findDeviceRiskComponent('global') === undefined) return
+    const seen: Array<Record<string, string>> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const target = String(url)
+      if (target.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u', name: 'n', expireTime: Date.now() + 1_000_000,
+          securityOauthToken: 'jt-TEST', refreshToken: 'r', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      seen.push(Object.fromEntries(new Headers(init?.headers ?? {}).entries()))
+      // 主路径一律 401 → 迫使 fetchUsage 走 fetchUsageDirect 回退。
+      return new Response(JSON.stringify({ code: 'TOKEN_EXPIRE' }), {
+        status: 401, headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    const client = new QoderUpstreamClient('global', { fetch: fetchImpl })
+    await client.fetchUsage('pt-x').catch(() => undefined)
+    // 主路径 1 次 + 回退 1 次，两条都必须带风控头。
+    expect(seen.length).toBe(2)
+    for (const sent of seen) {
+      expect(sent['cosy-machinetoken']).toBeTruthy()
+      expect(sent['cosy-machinecode']).toBeTruthy()
+      expect(sent['cosy-machinetype']).toBeTruthy()
+    }
+  }, 30_000)
+})
+
 describe('本机组件探测', () => {
   it('国内版优先 Qoder CN，国际版优先 Qoder', () => {
     const cn = findDeviceRiskComponent('cn')

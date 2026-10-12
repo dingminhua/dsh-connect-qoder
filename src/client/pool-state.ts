@@ -81,6 +81,7 @@ export function poolErrorText(
     case 'no-free-model': return t('row.poolErrNoFreeModel')
     case 'target-model-stale': return t('row.poolErrStaleModel')
     case 'checkin-unsupported': return t('row.poolErrNoCheckin')
+    case 'account-not-deletable': return t('row.poolErrNotDeletable')
     case 'pool-unavailable': return t('row.poolErrUnavailable')
     case 'pool-failed': return t('row.poolErrFailed', { message: detail ?? '' })
     default: return undefined
