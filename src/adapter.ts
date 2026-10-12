@@ -172,7 +172,23 @@ function toPiModel(
     maxTokens: info.maxOutputTokens,
     reasoning: thinkingLevelMap !== undefined,
     ...thinkingLevelMap === undefined ? {} : { thinkingLevelMap },
-    compat: { supportsReasoningEffort: thinkingLevelMap !== undefined },
+    // `supportsDeveloperRole: false` 是**必须**的，不是保守起见。
+    //
+    // pi-ai 的 openai-completions API 这样决定系统提示词的角色：
+    //     const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole
+    //     const role = useDeveloperRole ? 'developer' : 'system'
+    // Qoder 上游只接受 `system` / `assistant` / `user` / `tool` / `function`，
+    // 收到 `developer` 会直接 400：
+    //     "developer is not one of ['system', 'assistant', 'user', 'tool', 'function']"
+    // （用户实拍）。
+    //
+    // 这个分支只在**同时**满足「reasoning 为真」与「compat 未显式关闭」时才走。
+    // 我此前让档位真正生效（reasoning 从 false 变 true）恰好把第一个条件打开了，
+    // 于是第二个条件默认值（开启）开始起作用 —— 两个改动叠加才暴露出来。
+    compat: {
+      supportsReasoningEffort: thinkingLevelMap !== undefined,
+      supportsDeveloperRole: false,
+    },
   } as unknown as Model<Api>
 }
 

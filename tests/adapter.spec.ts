@@ -39,6 +39,42 @@ const MODEL: QoderModelInfo = {
   isNew: false,
 }
 
+describe('模型 compat：必须关掉 developer 角色', () => {
+  // 用户实拍 400：
+  //   "developer is not one of ['system','assistant','user','tool','function']"
+  //
+  // pi-ai 的 openai-completions API 这样决定系统提示词的角色：
+  //   const useDeveloperRole = model.reasoning && compat.supportsDeveloperRole
+  //   const role = useDeveloperRole ? 'developer' : 'system'
+  // Qoder 上游只认 system，收到 developer 直接 400。
+  //
+  // 这个分支只在**同时**满足「reasoning 为真」与「compat 未显式关闭」时才走。
+  // 本插件让档位真正生效后 reasoning 变为 true，把第一个条件打开了，于是
+  // `supportsDeveloperRole` 的默认值（开启）开始起作用 —— 所以必须显式关闭。
+  const providerOf = (info: QoderModelInfo) => {
+    const adapter = createQoderAdapter({
+      shim: { baseUrl: 'http://127.0.0.1:1', secret: 's', token: () => 's' },
+      catalog: new QoderCatalog([info]),
+      piAiGeneration: 'modern',
+    } as never)
+    const profiles = (adapter.adapter as unknown as {
+      config: { profiles: () => Map<string, { piProvider?: { getModels: () => Array<{ reasoning?: boolean, compat?: { supportsDeveloperRole?: boolean, supportsReasoningEffort?: boolean } }> } }> },
+    }).config.profiles()
+    return [...profiles.values()][0]!.piProvider!
+  }
+
+  it('推理模型：reasoning 为真，但 supportsDeveloperRole 必须为 false', () => {
+    const model = providerOf({ ...MODEL, supportsThinking: true, thinkingEfforts: ['low', 'medium', 'xhigh'] }).getModels()[0]!
+    expect(model.reasoning).toBe(true)
+    expect(model.compat?.supportsDeveloperRole).toBe(false)
+  })
+
+  it('非推理模型同样关闭 developer 角色', () => {
+    const model = providerOf({ ...MODEL, supportsThinking: false }).getModels()[0]!
+    expect(model.compat?.supportsDeveloperRole).toBe(false)
+  })
+})
+
 describe('qoderModelInput', () => {
   it('offers images only for models that advertise them', () => {
     expect(qoderModelInput(MODEL)).toEqual(['text', 'image'])
