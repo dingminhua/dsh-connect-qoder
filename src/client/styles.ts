@@ -106,6 +106,48 @@ export const QODER_CARD_CSS = `
 /* 思考强度选择器：与上下文选择器同一套观感（两者都是「一项设置」）。 */
 .dsm-qoder-effort{display:inline-flex;align-items:center;gap:4px}
 .dsm-qoder-effort label{display:inline-flex;align-items:center;gap:4px;cursor:pointer}
+/*
+ * 模型行里的两个选择器（上下文档位 / 思考强度）。
+ *
+ * 它们**不是**账号池表格里的数字输入框：pool-num 是 13px、74px 宽、8px 圆角
+ * 的实心方块，放进 11px 的 meta 行会格外突兀（用户实拍：「这个字体样式很
+ * 突兀」）。这里做成「行内值 + 小箭头」：无边框、无底色、字号与所在行一致，
+ * 读起来像这一行的文字而不是一个表单控件；hover/focus 才显出可交互。
+ */
+.dsm-qoder-inline-select{
+  appearance:none;
+  padding:0 14px 0 0;
+  margin:0;
+  border:0;
+  border-radius:0;
+  background-color:transparent;
+  background-image:none;
+  color:inherit;
+  font:inherit;
+  font-size:11px;
+  line-height:16px;
+  cursor:pointer;
+  /* 由外层的 ::after 画箭头：原生箭头在暗色主题下不可控。 */
+}
+.dsm-qoder-inline-select:hover{color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-qoder-inline-select:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px;border-radius:3px}
+.dsm-qoder-inline-select:disabled{opacity:.6;cursor:default}
+/* 选项列表由系统绘制，不继承行内样式：不加背景会在大面积卡片上渲染成
+   透明的一列文字（暗色主题下尤其难读）。 */
+.dsm-qoder-inline-select option{background:var(--dsw-alias-bg-layer-2,#24262c);color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-qoder-inline{position:relative;display:inline-flex;align-items:center}
+.dsm-qoder-inline::after{
+  content:"";
+  position:absolute;
+  top:50%;
+  right:3px;
+  width:5px;
+  height:5px;
+  transform:translateY(-70%) rotate(45deg);
+  border-right:1.4px solid var(--dsw-alias-label-tertiary,#999);
+  border-bottom:1.4px solid var(--dsw-alias-label-tertiary,#999);
+  pointer-events:none;
+}
 .dsm-qoder-model-capability-note{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 .dsm-qoder-models-head-actions{display:flex;align-items:center;gap:8px;flex:none}
 .dsm-qoder-model-probe{flex:none;padding:3px 10px;font-size:11px;line-height:16px}

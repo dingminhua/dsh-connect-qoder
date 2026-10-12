@@ -895,19 +895,23 @@ export function QoderCard(props: QoderCardProps): ReactElement {
       <span className="dsm-qoder-effort">
         <label>
           {t('row.modelReasoningLabel')}{' '}
-          <select
-            className="dsm-qoder-pool-num"
-            disabled={!canWrite(scope) || siblingBusy}
-            value={saved}
-            onChange={(e) => setThinkingEffort(model.key, e.target.value)}
-          >
-            <option value="">
-              {model.defaultThinkingEffort === undefined
-                ? t('row.modelReasoningFollowUpstream')
-                : t('row.modelReasoningFollowUpstreamNamed', { effort: model.defaultThinkingEffort })}
-            </option>
-            {efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
-          </select>
+          {/* 行内样式（`.dsm-qoder-inline-select`）而不是 `pool-num`：后者是
+              账号池表格里的 13px 实心方块，放进 11px 的 meta 行很突兀。 */}
+          <span className="dsm-qoder-inline">
+            <select
+              className="dsm-qoder-inline-select"
+              disabled={!canWrite(scope) || siblingBusy}
+              value={saved}
+              onChange={(e) => setThinkingEffort(model.key, e.target.value)}
+            >
+              <option value="">
+                {model.defaultThinkingEffort === undefined
+                  ? t('row.modelReasoningFollowUpstream')
+                  : t('row.modelReasoningFollowUpstreamNamed', { effort: model.defaultThinkingEffort })}
+              </option>
+              {efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
+            </select>
+          </span>
         </label>
       </span>
     )
@@ -925,15 +929,17 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     return (
       <div className="dsm-qoder-context-budget" title={t('row.contextBudget')}>
         <label>
-          <select
-            className="dsm-qoder-pool-num"
-            aria-label={t('row.contextBudget')}
-            disabled={!canWrite(scope) || siblingBusy}
-            value={String(current)}
-            onChange={(e) => setContextBudget(model.key, Number(e.target.value))}
-          >
-            {tiers.map(tier => <option key={String(tier)} value={String(tier)}>{formatCapacity(tier)}</option>)}
-          </select>
+          <span className="dsm-qoder-inline">
+            <select
+              className="dsm-qoder-inline-select"
+              aria-label={t('row.contextBudget')}
+              disabled={!canWrite(scope) || siblingBusy}
+              value={String(current)}
+              onChange={(e) => setContextBudget(model.key, Number(e.target.value))}
+            >
+              {tiers.map(tier => <option key={String(tier)} value={String(tier)}>{formatCapacity(tier)}</option>)}
+            </select>
+          </span>
         </label>
       </div>
     )

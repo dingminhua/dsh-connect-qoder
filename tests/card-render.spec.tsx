@@ -275,6 +275,15 @@ describe('QoderCard render', () => {
       expect(options).toEqual(['262,144', '524,288', '1M'])
       // 重复项是这次回归的正题：同值只能出现一次。
       expect(new Set(options).size).toBe(options.length)
+
+      // 样式：模型行里的选择器必须是「行内值」而非账号池的实心方块
+      // （pool-num 是 13px 的框，放进 11px 的 meta/头部行会突兀——
+      // 用户实拍：「这个字体样式很突兀」）。
+      const select = picker!.querySelector('select')
+      expect(select?.classList.contains('dsm-qoder-inline-select')).toBe(true)
+      expect(select?.classList.contains('dsm-qoder-pool-num')).toBe(false)
+      // 箭头由外层容器绘制（原生箭头在暗色主题下不可控）。
+      expect(select?.closest('.dsm-qoder-inline')).not.toBeNull()
     } finally {
       await unmount()
     }
