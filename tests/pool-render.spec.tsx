@@ -218,6 +218,28 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
+  it('积分开关渲染在账号池标题行右端，排在「当前使用」芯片之前', async () => {
+    // 用户要求把「在对话框显示积分」挪到账号池标题旁边省一行空间。
+    // 卡片构造这个节点（它持有写权限与区域），账号池只负责安置。
+    const { container, unmount } = await mountPool({
+      creditsSwitch: React.createElement('label', { className: 'dsm-qoder-credits-switch' }, 'SW'),
+    })
+    try {
+      const head = container.querySelector('.dsm-qoder-pool-head')
+      const right = head?.querySelector('.dsm-qoder-pool-head-right')
+      expect(head).not.toBeNull()
+      expect(right).not.toBeNull()
+      // 在标题行里，而不是卡片正文（正文那一行已删除）。
+      expect(right!.querySelector('.dsm-qoder-credits-switch')).not.toBeNull()
+      expect(container.querySelector('.dsm-qoder-credits-row')).toBeNull()
+      // 可操作的控件排在状态芯片之前。
+      const html = right!.innerHTML
+      expect(html.indexOf('credits-switch')).toBeLessThan(html.indexOf('current-badge'))
+    } finally {
+      await unmount()
+    }
+  })
+
   it('幽灵成员不再有提示行，而是静默把名单收敛后写回', async () => {
     // 回归（用户实拍）：「有 2 个已保存的账号当前没有可用的 PAT，因此不计入、
     // 也不会被使用。再保存一次即可移除它们。」——删掉 PAT 是用户已经做过的动作，

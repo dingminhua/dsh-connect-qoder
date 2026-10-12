@@ -39,17 +39,15 @@ describe('QODER_CARD_CSS', () => {
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-inline-select option')).toContain('background')
   })
 
-  it('积分勾选框一行不再撑出空白（用户实拍要求上移）', () => {
-    // 该行原本套着 .dsm-qoder-usage（padding:16px 0 4px + gap:16px），那是给
-    // 「积分明细列表」准备的；明细移到账号池表格后，这些内边距就是纯粹的空白。
-    const row = ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-row')
-    expect(row).toBeDefined()
-    expect(row).not.toContain('16px 0 4px')
-    expect(row).toContain('padding:12px 0 2px')
-    // 勾选框自己不再另加 margin（间距由这一行统一负责）。
+  it('积分开关移到账号池标题行，不再独占一行撑出空白', () => {
+    // 它原本在卡片正文里独占一行、套着为「积分明细列表」准备的 .dsm-qoder-usage
+    // （padding:16px 0 4px + gap:16px）；明细移到账号池表格后，那层留白就成了
+    // 纯空档。现在整个搬到账号池标题行右端（用户要求「节约点空间」）。
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-switch')).toContain('margin:0')
-    // 账号池的上内边距收紧，否则「分隔线之上」会留一截看着像丢内容的空档。
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool')).toContain('padding:8px 0 4px')
+    // 那个为明细列表准备的外壳不该再套在开关上。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-row')).toBeUndefined()
+    // 标题行右端的容器（开关 + 当前使用芯片）。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head-right')).toContain('display:flex')
   })
 
   it('账号池表格自己的数字框仍然保留', () => {

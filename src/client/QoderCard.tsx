@@ -435,35 +435,17 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             ? <p className="dsm-qoder-tab-off-notice">{t('row.tabOffNotice')}</p>
             : null}
 
-          {/* Credits readout + sidebar-credit switch */}
-          <div className="dsm-qoder-credits-row">
-            <label
-              className="dsm-qoder-credits-switch"
-              title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}
-            >
-              <input
-                type="checkbox"
-                checked={regionOn ? creditsShownOf(usage) : false}
-                disabled={!regionOn || !canWrite(scope) || siblingBusy || poolBusy}
-                onChange={(event) => { toggleCreditsShown(event.target.checked) }}
-              />
-              {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
-            </label>
-
-            {/* 额度明细**不再**在这里重复一遍：账号池表格的「积分」列按账号逐行
-                显示同样的数字（余额 + 最近积分包到期），粒度还更细——用户实拍
-                「下面已经显示了」。
-                但**读不到**的情况要留下：池行只能显示一个「—」，说不出为什么，
-                而 `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档
-                里，池行拿不到。所以这里只保留失败文案，成功时什么都不渲染。 */}
-            {signIn === undefined || signIn.credits !== undefined ? null : (
-              <p className="dsm-qoder-usage-text">
-                {signIn.creditsError === undefined
-                  ? t('row.usageUnavailable')
-                  : t('row.creditsError', { message: signIn.creditsError })}
-              </p>
-            )}
-          </div>
+          {/* 额度**读不到**时才说话：池行只能显示一个「—」，说不出为什么，而
+              `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档里，
+              池行拿不到。成功时这一块什么都不渲染——明细在账号池表格里。
+              「在对话框显示积分」开关本身已移到账号池标题行（见 renderPool）。 */}
+          {signIn === undefined || signIn.credits !== undefined ? null : (
+            <p className="dsm-qoder-usage-text">
+              {signIn.creditsError === undefined
+                ? t('row.usageUnavailable')
+                : t('row.creditsError', { message: signIn.creditsError })}
+            </p>
+          )}
 
           {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
           {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}
@@ -838,6 +820,22 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         />
       </>
     )
+    // 「在对话框显示积分」开关：卡片持有写权限与区域，所以由卡片构造、交给
+    // 账号池渲染在标题行右端（用户要求：放到账号池标题旁边，省一行空间）。
+    const creditsSwitch = (
+      <label
+        className="dsm-qoder-credits-switch"
+        title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}
+      >
+        <input
+          type="checkbox"
+          checked={regionOn ? creditsShownOf(usage) : false}
+          disabled={!regionOn || !canWrite(scope) || siblingBusy || poolBusy}
+          onChange={(event) => { toggleCreditsShown(event.target.checked) }}
+        />
+        {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
+      </label>
+    )
     return (
       <AccountPool
         t={t}
@@ -848,6 +846,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         canWrite={canWrite(scope)}
         onBusyChange={setPoolBusy}
         accountTools={accountTools}
+        creditsSwitch={creditsSwitch}
         onChanged={() => refresh(activeRegion, true)}
       />
     )
