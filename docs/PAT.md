@@ -120,4 +120,48 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 把令牌在 Qoder 控制台里删掉即可；本插件侧用 `dsh-connect-qoder logout [--region cn|global]` 清除本地 vault 账号。
 
 **能不能像 WorkBuddy 那样直接读本机登录？**
-不能。WorkBuddy 桌面端把登录态存在固定路径的明文/可解密文件里，插件可以直接扫描复用；Qoder 桌面端把凭据加密后存进系统钥匙串相关的封装文件，且 CLI 侧的 `.auth/user` 只有登录过 Qoder CLI 才会生成（大多数用户不会）。所以 Qoder 这边只有官方 PAT 这一条稳妥路径——所有第三方 Qoder 接入工具都是这么做的。
+不能。WorkBuddy 桌面端把登录态存在固定路径的明文/可解密文件里，插件可以直接扫描复用；Qoder 桌面端把凭据加密后存进系统钥匙串相关的封装文件，且 CLI 侧的 `.auth/user` 只有登录过 Qoder CLI 才会生成（大多数用户不会）。所以 Qoder 这边只有官方 PAT 这一条稳妥路径——所有第三方 Qoder 接入工具都是这么做的。## Qoder 每日签到（实测协议，2026-10）
+
+**参考实现**：https://github.com/L0NE-6/Qoder-Daily （青龙脚本，CN + Global）
+**官方规则**：https://help.aliyun.com/zh/lingma/daily-check-in-100-credits-reward-program-terms
+
+### 协议（CN 实测通过）
+
+拉活动列表（**v1**，且叫 campaigns，不是 checkin）：
+
+    GET {openapi}/sash/api/v1/me/campaigns?forceRefresh=true
+    headers:
+      authorization:    Bearer {jobToken.securityOauthToken}   ← jt- 令牌，与用量同一套
+      cosy-clienttype:  10
+      accept:           application/json
+      accept-language:  zh-CN
+      user-agent:       Qoder
+
+响应：
+
+    {"campaigns":[
+      {"campaignId":"01a12102-…","actionType":"CLAIM_BENEFIT","claimStatus":"CLAIMED",
+       "benefit":{"kind":"CREDITS","amount":100,
+                  "modelScope":{"modelSeries":{"key":"ALL_MODELS"}},
+                  "validity":{"mode":"RELATIVE_DAYS","days":30}}},
+      {"campaignId":"01a05bbf-…","actionType":"VIEW_DETAILS","claimStatus":"CLAIMED"}
+    ]}
+
+领取：
+
+    POST {openapi}/sash/api/v1/me/campaigns/{campaignId}/claim
+    （同 headers + content-type: application/json + origin）
+
+已领取的判定：HTTP 409，或 body.result === "ALREADY_CLAIMED"，或 body.replayed === true。
+
+### 关键事实
+
+- 活动名里**没有**「签到」二字，所以照着 checkin / signin / reward 猜路径一律 404
+  （我实测猜了 13 个全 404）。真正的词是 **campaigns**（活动/权益）。
+- 状态机：`claimStatus` ∈ {CLAIMABLE, CLAIMED}；只有 `actionType === "CLAIM_BENEFIT"`
+  且 `CLAIMABLE` 的才可领。
+- 官方刷新时间：**每天 10:00 (UTC+8)** 开窗（阿里云文档写 0 点，桌面端截图显示 10:00
+  ——以桌面端为准）。
+- **国际版**还需要设备风控头 `Cosy-MachineToken` / `Cosy-MachineCode` /
+  `Cosy-MachineType`（由本机 UMID 组件生成）；**CN 不需要**。
+- 企业版账号不支持该活动（仅个人用户）。

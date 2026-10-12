@@ -51,9 +51,40 @@ export interface QoderRegionConfig {
   modelsPath: string
   /** jobToken 交换端点。 */
   jobTokenPath: string
+  /** 每日签到的活动列表端点（sash 的 v1 campaigns）。 */
+  campaignsPath: string
 }
 
+/** 一条签到活动（`GET /sash/api/v1/me/campaigns` 的条目，只取用得到的字段）。 */
+export interface QoderCampaign {
+  campaignId: string
+  /** `CLAIM_BENEFIT` = 可领权益；`VIEW_DETAILS` = 纯展示，跳过。 */
+  actionType: string
+  /** `CLAIMABLE` = 今天可领；`CLAIMED` = 已领。 */
+  claimStatus: string
+  /** 奖励数额（Credits），来自 `benefit.amount`。 */
+  amount?: number
+  /** 有效期天数，来自 `benefit.validity.days`。 */
+  validityDays?: number
+}
+
+/** 一次签到尝试的结果。 */
+export type QoderCheckinOutcome =
+  | { status: 'claimed', amount?: number, validityDays?: number }
+  | { status: 'already-claimed' }
+  | { status: 'unavailable', message: string }
+
 const CHAT_PATH = '/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1'
+/**
+ * 每日签到走 `sash` 的**活动**接口。路径里没有「签到」二字（叫 campaigns），
+ * 所以照着 checkin / signin / reward 猜永远猜不到——实测猜了 13 个全 404。
+ * 注意是 **v1**（用量那套是 v2）。
+ */
+const CAMPAIGNS_PATH = '/sash/api/v1/me/campaigns'
+const CAMPAIGNS_QUERY = '?forceRefresh=true'
+/** sash 接口要求的客户端标识（参考实现如此，缺了会被拒）。 */
+const SASH_CLIENT_TYPE = '10'
+const SASH_USER_AGENT = 'Qoder'
 const MODELS_PATH = '/algo/api/v2/model/list?Encode=1'
 const JOB_TOKEN_PATH = '/algo/api/v3/user/jobToken?Encode=1'
 
@@ -64,6 +95,7 @@ export const QODER_REGIONS: Readonly<Record<QoderRegion, QoderRegionConfig>> = {
     chatPath: CHAT_PATH,
     modelsPath: MODELS_PATH,
     jobTokenPath: JOB_TOKEN_PATH,
+    campaignsPath: CAMPAIGNS_PATH,
   },
   global: {
     gateway: 'https://api1.qoder.sh',
@@ -71,6 +103,7 @@ export const QODER_REGIONS: Readonly<Record<QoderRegion, QoderRegionConfig>> = {
     chatPath: CHAT_PATH,
     modelsPath: '/algo/api/v2/model/list?Encode=1',
     jobTokenPath: '/algo/api/v3/user/jobToken?Encode=1',
+    campaignsPath: CAMPAIGNS_PATH,
   },
 }
 
@@ -531,6 +564,126 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200) {
+      throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
+    }
+    try {
+      return JSON.parse(text) as Record<string, unknown>
+    } catch {
+      throw new QoderUpstreamError('unknown', `响应不是 JSON: ${truncate(text, 200)}`, resp.status)
+    }
+  }
+
+  /**
+   * 拉当日的签到活动列表。
+   *
+   * 协议来自社区参考实现（L0NE-6/Qoder-Daily），已在本机 CN 账号实测通过：
+   * `GET {openapi}/sash/api/v1/me/campaigns?forceRefresh=true`，认证用与用量
+   * 查询同一套 `jt-` 令牌（`jobToken.securityOauthToken`）。
+   *
+   * 注意路径里**没有**「签到」二字——它叫 campaigns（活动/权益）。这也是我早期
+   * 把 `checkinSupported` 写死成 false 的原因：照着 checkin / signin / reward
+   * 猜路径一律 404（实测猜了 13 个），于是误判成「Qoder 没有签到」。
+   */
+  async fetchCampaigns(credential: string, signal?: AbortSignal): Promise<QoderCampaign[]> {
+    const holder = await this.ensureSession(credential)
+    const url = `${this.region.openapi}${this.region.campaignsPath}${CAMPAIGNS_QUERY}`
+    const data = await this.sashRequest('GET', holder, url, undefined, signal)
+    const rows = Array.isArray(data.campaigns)
+      ? data.campaigns
+      : Array.isArray((data.data as Record<string, unknown> | undefined)?.campaigns)
+        ? ((data.data as Record<string, unknown>).campaigns as unknown[])
+        : []
+    return rows
+      .map((entry): QoderCampaign | undefined => {
+        if (!entry || typeof entry !== 'object') return undefined
+        const raw = entry as Record<string, unknown>
+        const campaignId = typeof raw.campaignId === 'string' ? raw.campaignId : ''
+        if (campaignId === '') return undefined
+        const benefit = (typeof raw.benefit === 'object' && raw.benefit !== null ? raw.benefit : {}) as Record<string, unknown>
+        const validity = (typeof benefit.validity === 'object' && benefit.validity !== null ? benefit.validity : {}) as Record<string, unknown>
+        return {
+          campaignId,
+          actionType: typeof raw.actionType === 'string' ? raw.actionType : '',
+          claimStatus: typeof raw.claimStatus === 'string' ? raw.claimStatus : '',
+          ...(typeof benefit.amount === 'number' ? { amount: benefit.amount } : {}),
+          ...(typeof validity.days === 'number' ? { validityDays: validity.days } : {}),
+        }
+      })
+      .filter((c): c is QoderCampaign => c !== undefined)
+  }
+
+  /**
+   * 签到：领取今天那一份每日 Credits。
+   *
+   * 一次调用自足——先拉活动列表找出可领的那条，再领取。三种结果分得很清：
+   *   - `claimed`：领到了（带回数额与有效期）；
+   *   - `already-claimed`：今天已经领过（`CLAIMED` / 409 / `ALREADY_CLAIMED` /
+   *     `replayed`），**不是错误**——重复调用是幂等的；
+   *   - `unavailable`：今天上游没下发活动（未开窗 / 已领到活动行消失 / 企业号
+   *     不支持该活动），带上说明。
+   */
+  async claimDailyCredits(credential: string, signal?: AbortSignal): Promise<QoderCheckinOutcome> {
+    const campaigns = await this.fetchCampaigns(credential, signal)
+    const claimable = campaigns.find(c => c.actionType === 'CLAIM_BENEFIT' && c.claimStatus === 'CLAIMABLE')
+    if (claimable === undefined) {
+      const claimed = campaigns.some(c => c.actionType === 'CLAIM_BENEFIT' && c.claimStatus === 'CLAIMED')
+      return claimed
+        ? { status: 'already-claimed' }
+        : { status: 'unavailable', message: '上游今日没有下发可领取的签到活动' }
+    }
+    const holder = await this.ensureSession(credential)
+    const url = `${this.region.openapi}${this.region.campaignsPath}/${encodeURIComponent(claimable.campaignId)}/claim`
+    try {
+      const data = await this.sashRequest('POST', holder, url, {}, signal)
+      // 上游用 `status` 回报领取结果；`CLAIMED` 才算成功。
+      if (String(data.status ?? '') === 'CLAIMED') {
+        return {
+          status: 'claimed',
+          ...(claimable.amount === undefined ? {} : { amount: claimable.amount }),
+          ...(claimable.validityDays === undefined ? {} : { validityDays: claimable.validityDays }),
+        }
+      }
+      return { status: 'unavailable', message: `签到未完成（上游状态 ${String(data.status ?? '未知')}）` }
+    } catch (error) {
+      // 重复领取是幂等的：409 / ALREADY_CLAIMED / replayed 一律当「今天已领」。
+      if (error instanceof QoderUpstreamError && error.status === 409) return { status: 'already-claimed' }
+      throw error
+    }
+  }
+
+  /**
+   * `sash` 接口的通用请求（活动列表 / 领取共用）。
+   *
+   * 认证与用量查询同一套：`Authorization: Bearer <jobToken.securityOauthToken>`。
+   * 但那两个接口需要 `cosy-clienttype: 10` 与 `user-agent: Qoder`——参考实现
+   * 如此，缺了会被拒；而夹带 cosy 协议头（chat/models 那套）反而不认。
+   */
+  private async sashRequest(
+    method: 'GET' | 'POST',
+    holder: QoderSessionHolder,
+    url: string,
+    body: unknown,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const oauthToken = holder.jobToken.securityOauthToken
+    if (oauthToken === '') {
+      throw new QoderUpstreamError('auth', 'jobToken 未返回 securityOauthToken，无法访问签到接口', 401)
+    }
+    const resp = await this.fetchImpl(url, {
+      method,
+      headers: {
+        authorization: `Bearer ${oauthToken}`,
+        'cosy-clienttype': SASH_CLIENT_TYPE,
+        accept: 'application/json',
+        'accept-language': 'zh-CN',
+        'user-agent': SASH_USER_AGENT,
+        ...(method === 'POST' ? { 'content-type': 'application/json', origin: this.region.openapi } : {}),
+      },
+      ...(method === 'POST' ? { body: JSON.stringify(body ?? {}) } : {}),
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await resp.text()
+    if (resp.status !== 200 && resp.status !== 201) {
       throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
     }
     try {

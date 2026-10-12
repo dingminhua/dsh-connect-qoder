@@ -222,3 +222,85 @@ describe('sash usage credential (regression)', () => {
     expect(usage?.addOnQuota?.remaining).toBe(92)
   })
 })
+
+describe('每日签到（sash campaigns）', () => {
+  // 协议来自社区参考实现（L0NE-6/Qoder-Daily），已在本机 CN 账号实测通过。
+  // 路径里**没有**「签到」二字——它叫 campaigns（活动/权益），这正是早期把
+  // `checkinSupported` 写死成 false 的原因（照 checkin/signin/reward 猜了 13 个
+  // 路径全 404，于是误判成「Qoder 没有签到」）。
+  function stub(campaigns: unknown[], claimResponse: { status: number, body: unknown }): { calls: Array<{ url: string, method: string, auth: string | undefined }>, client: QoderUpstreamClient } {
+    const calls: Array<{ url: string, method: string, auth: string | undefined }> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      const h = new Headers(init?.headers ?? {})
+      calls.push({ url: u, method: init?.method ?? 'GET', auth: h.get('authorization') ?? undefined })
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-CHECKIN', refreshToken: 'jrt-x', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.endsWith('/claim')) {
+        return new Response(JSON.stringify(claimResponse.body), {
+          status: claimResponse.status, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ campaigns }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    return { calls, client: new QoderUpstreamClient('cn', { fetch: fetchImpl }) }
+  }
+
+  it('parses a claimable campaign with its reward and validity', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100, validity: { days: 30 } } },
+      { campaignId: 'c2', actionType: 'VIEW_DETAILS', claimStatus: 'CLAIMED' },
+    ], { status: 200, body: { status: 'CLAIMED' } })
+    const campaigns = await client.fetchCampaigns('pt-x')
+    expect(campaigns).toHaveLength(2)
+    expect(campaigns[0]).toMatchObject({ campaignId: 'c1', claimStatus: 'CLAIMABLE', amount: 100, validityDays: 30 })
+  })
+
+  it('claims the CLAIMABLE campaign and reports what was granted', async () => {
+    const { calls, client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100, validity: { days: 30 } } },
+    ], { status: 200, body: { status: 'CLAIMED' } })
+    const out = await client.claimDailyCredits('pt-x')
+    expect(out).toEqual({ status: 'claimed', amount: 100, validityDays: 30 })
+    // 领取打的是 /{campaignId}/claim，且用与用量同一套 jt- 令牌。
+    const claim = calls.find(c => c.url.endsWith('/claim'))
+    expect(claim?.url).toContain('/sash/api/v1/me/campaigns/c1/claim')
+    expect(claim?.method).toBe('POST')
+    expect(claim?.auth).toBe('Bearer jt-CHECKIN')
+  })
+
+  it('treats a CLAIMED campaign as already claimed (idempotent, not an error)', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED', benefit: { amount: 100 } },
+    ], { status: 200, body: {} })
+    expect(await client.claimDailyCredits('pt-x')).toEqual({ status: 'already-claimed' })
+  })
+
+  it('treats HTTP 409 on claim as already claimed', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE' },
+    ], { status: 409, body: { result: 'ALREADY_CLAIMED' } })
+    expect(await client.claimDailyCredits('pt-x')).toEqual({ status: 'already-claimed' })
+  })
+
+  it('reports unavailable when no benefit campaign is issued today', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'VIEW_DETAILS', claimStatus: 'CLAIMED' },
+    ], { status: 200, body: {} })
+    const out = await client.claimDailyCredits('pt-x')
+    expect(out.status).toBe('unavailable')
+  })
+
+  it('skips VIEW_DETAILS entries when picking what to claim', async () => {
+    const { calls, client } = stub([
+      { campaignId: 'detail', actionType: 'VIEW_DETAILS', claimStatus: 'CLAIMABLE' },
+      { campaignId: 'benefit', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100 } },
+    ], { status: 200, body: { status: 'CLAIMED' } })
+    await client.claimDailyCredits('pt-x')
+    expect(calls.find(c => c.url.endsWith('/claim'))?.url).toContain('/campaigns/benefit/claim')
+  })
+})
