@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
+import z from '@deepseek-ai/schemastery'
 import * as Qoder from '../src/index.ts'
 
 /**
@@ -63,6 +64,50 @@ beforeEach(() => {
 afterEach(async () => {
   await context?.fiber.dispose()
   context = undefined
+})
+
+describe('保存的模型目录会保留思考强度与上下文档位', () => {
+  // 用户实拍「拉取的思考模式又不见了」。根因：客户端**确实**把 thinkingEfforts /
+  // defaultThinkingEffort / contextTiers 写进了 payload，但宿主的 `modelConfig`
+  // 没有声明这三个字段，schemastery 解析时把它们**静默剥掉** —— 于是重启后模型
+  // 行不再显示档位选择器（`thinkingEfforts === undefined` → 卡片不渲染该项）。
+  // 声明齐全后，下面用真实的 region schema 验证「保存 → 读回」不再丢字段。
+  const regionShape = z.object({
+    lastCatalog: z.array(z.object({
+      key: z.string(),
+      displayName: z.string(),
+      priceFactor: z.number(),
+      contextWindow: z.number(),
+      maxOutputTokens: z.number(),
+      supportsImages: z.boolean(),
+      supportsThinking: z.boolean(),
+      canDisableThinking: z.boolean(),
+      isDefault: z.boolean(),
+      isFree: z.boolean(),
+      isNew: z.boolean(),
+      thinkingEfforts: z.array(z.string()).required(false),
+      defaultThinkingEffort: z.string().required(false),
+      contextTiers: z.array(z.number()).required(false),
+    })).default([]),
+  })
+
+  it('round-trips the three fields the card needs', () => {
+    const parsed = regionShape({
+      lastCatalog: [{
+        key: 'qfmodel', displayName: 'Qwen3.8-Flash', priceFactor: 0,
+        contextWindow: 200_000, maxOutputTokens: 32_768,
+        supportsImages: false, supportsThinking: true, canDisableThinking: false,
+        isDefault: false, isFree: true, isNew: false,
+        thinkingEfforts: ['low', 'medium', 'xhigh'],
+        defaultThinkingEffort: 'medium',
+        contextTiers: [200_000, 400_000, 1_000_000],
+      }],
+    } as never) as { lastCatalog: Array<Record<string, unknown>> }
+    const model = parsed.lastCatalog[0]!
+    expect(model.thinkingEfforts).toEqual(['low', 'medium', 'xhigh'])
+    expect(model.defaultThinkingEffort).toBe('medium')
+    expect(model.contextTiers).toEqual([200_000, 400_000, 1_000_000])
+  })
 })
 
 describe('Qoder provider registration', () => {

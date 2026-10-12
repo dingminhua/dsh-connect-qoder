@@ -121,6 +121,17 @@ const modelConfig = z.object({
   isDefault: z.boolean(),
   isFree: z.boolean(),
   isNew: z.boolean(),
+  /**
+   * 该模型声明的思考强度档位（`['xhigh','low','medium']` 之类，已按强度升序）。
+   *
+   * 必须在这里声明，否则 zod 解析保存的 `lastCatalog` 时会**静默剥掉**它 ——
+   * 客户端明明写进了 payload，宿主读回来却没有，思考强度选择器于是整个不渲染
+   * （用户实拍「拉取的思考模式又不见了」）。`contextTiers` 同理：它在客户端被
+   * 写入，但同样没被声明，于是上下文预算选择器也会随之失效。
+   */
+  thinkingEfforts: z.array(z.string()).required(false),
+  defaultThinkingEffort: z.string().required(false),
+  contextTiers: z.array(z.number()).required(false),
 })
 
 const poolConfig = z.object({
@@ -347,6 +358,13 @@ function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefin
     isFree: raw.isFree === true,
     isNew: raw.isNew === true,
     ...Array.isArray(raw.contextTiers) ? { contextTiers: (raw.contextTiers as unknown[]).filter((v): v is number => typeof v === 'number') } : {},
+    // 思考强度档位：从保存的目录里读回来，否则重启后模型行不再显示档位选择器。
+    ...Array.isArray(raw.thinkingEfforts) && raw.thinkingEfforts.length > 0
+      ? { thinkingEfforts: (raw.thinkingEfforts as unknown[]).filter((v): v is string => typeof v === 'string') }
+      : {},
+    ...typeof raw.defaultThinkingEffort === 'string' && raw.defaultThinkingEffort !== ''
+      ? { defaultThinkingEffort: raw.defaultThinkingEffort }
+      : {},
   }
 }
 

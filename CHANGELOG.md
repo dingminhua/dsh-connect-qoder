@@ -17,6 +17,13 @@
 - **tab 栏不再顶着上面的分隔线**（用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」）：`.dsm-plugin-card-body` 这条家族共享规则只有 `padding:0 0 8px`——**上内边距为 0**，所以正文的**首个元素必须自带顶部间距**。workbuddy 的 tab 栏正是被 `.dsm-workbuddy-usage`（`padding:16px 0 4px`）托住的；qoder 这边在上一轮删掉积分块时，把那层容器一并拆掉了，于是 tab 栏直接贴在分隔线上。现在用同一条规则 `.dsm-qoder-usage`（本就存在）恢复同样的 16px 呼吸空间——不是新加特例，是恢复与同族插件一致的结构。
 - **「在对话框显示积分」开关移到账号池标题行**（用户要求：「放到账号池这个标题旁边吧，节约点空间」）：它此前在卡片正文里独占一行，约 30px 高却只有一个勾选框。现在渲染在 `pool-head` 右端、排在「当前使用」芯片**之前**（可操作的控件在状态之前）。卡片仍然持有写权限与区域，所以由卡片构造这个节点、经 `creditsSwitch` prop 交给账号池安置（与 `accountTools` 同规）；原来那个只为它存在的 `.dsm-qoder-credits-row` 外壳随之删除。语义也更顺：它决定「积分怎么显示」，而积分明细正是下面那张表的内容。
 - **「在对话框显示积分」那行上移**（用户实拍：「红色的部分向上靠拢一些」）：额度明细移除后，那一行仍套着为明细列表准备的 `.dsm-qoder-usage`（`padding:16px 0 4px` + `gap:16px`），连同 `.dsm-qoder-credits-switch` 自己的 `margin:8px 0 2px` 与账号池区块的 `padding-top:16px`，三处叠加出约 19px 的空档。现在：这一行换成自己的外壳 `.dsm-qoder-credits-row`（`padding:12px 0 2px`）、开关的 margin 归零（间距由外壳统一负责）、账号池的 `padding-top` 收到 8px。分隔线之上只剩约 11px。
+- **修掉「拉取的思考模式又不见了」：保存的模型目录丢字段**（用户实拍）。
+  - 客户端**确实**把 `thinkingEfforts` / `defaultThinkingEffort` / `contextTiers` 写进了 payload（`buildModelsPayload` 里三个字段都在）。
+  - 但宿主的 `modelConfig` **没有声明**它们。schemastery 解析保存的 `lastCatalog` 时会**静默剥掉未声明的字段** —— 于是磁盘上根本没有这些字段，重启后 `thinkingEfforts === undefined`，卡片按「缺失就不渲染」的规则把整个档位选择器隐藏掉。
+  - `modelFromStored` 同样没有把这两项读回来。
+  - 修法：schema 里补上三个字段（`required(false)`，保持「缺失即不干预」），`modelFromStored` 把它们读回。
+  - 新增回归测试：用真实的 region schema 验证「保存 → 读回」三个字段都不丢。
+  - **教训**：这是同一类 bug 的第三例——「客户端写了，但读回时被丢弃」。写字段与读字段必须成对，且要有 round-trip 测试兜底。
 - **修掉「保存模型保存不了」：`__save` 路由没有按区域合并**（用户报告「现在保存模型保存不了是什么原因」）。
   - **客户端**只发它要写的那**一个**区域（`{ [region]: value }`）——它读不到另一侧的当前状态，无法自己做合并。
   - **宿主路由此前**把这个 body **整个**写进 settings（`deps.settings.set(field, body.value)`），于是**保存 cn 模型的这一次操作会静默删掉整个 global 槽位**。
