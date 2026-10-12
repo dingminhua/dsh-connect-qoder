@@ -92,6 +92,23 @@ describe('Qoder provider registration', () => {
     expect(globalModels.map(m => m.id)).toEqual(cnModels.map(m => m.id))
   })
 
+  it('DSH 选择器里的模型名带倍率（用户实拍「没有倍数显示」）', async () => {
+    // 卡片自己的选择器一直会画倍率，但 **DSH 内置的模型选择器**读的是适配器
+    // 交给它的 `name`。那里此前传的是裸名字（`info.displayName`），于是同一个
+    // 模型在两处显示得不一样。workbuddy 传的是 workBuddyDisplayName（带倍率）。
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await mountQoder(ctx, { regions: {} })
+
+    const models = await ctx.llm.listModels('qoder')
+    expect(models.length).toBeGreaterThan(0)
+    for (const model of models) {
+      expect(model.name).toMatch(/ · x\d+\.\d{2}$/)
+    }
+  })
+
   it('withdraws a disabled region and restores it on re-enable', async () => {
     const ctx = new Context()
     context = ctx
@@ -115,6 +132,36 @@ describe('Qoder provider registration', () => {
     })
     await waitFor(() => ctx.llm.listConfigurableProviders().some(p => p.provider === 'qoder-global'))
     await expect.poll(async () => (await ctx.llm.listModels('qoder-global')).length).toBeGreaterThan(0)
+  })
+
+  it('只把勾选的模型交给 DSH 选择器，卡片仍看得到完整目录', async () => {
+    // 这是「保存的模型还是那么多」的真正修法（workbuddy 同规）：
+    //   - 运行时目录（适配器 getModels 读它 → DSH 选择器）**按勾选过滤**；
+    //   - 卡片另走 displayModels()，拿到**完整**目录。
+    // 两者混为一谈时只有两种坏结果：要么选择器里一直是一整份目录（用户报的
+    // 症状），要么未勾选的模型从卡片里消失、用户再也勾不上。
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await mountQoder(ctx, { regions: {} })
+
+    // 兜底目录先可见（还没拿到实时目录时）。
+    const before = (await ctx.llm.listModels('qoder')).map(m => m.id)
+    expect(before.length).toBeGreaterThan(1)
+
+    // 只勾一个模型。
+    const only = before[0]!
+    volatileWrite(config => {
+      config.regions = { cn: { enabledModelKeys: [only] } }
+    })
+
+    // 选择器（运行时目录）收敛到只勾的那个。
+    await waitFor(() => {
+      const ids = ctx.llm.listProviders().length > 0
+      return ids
+    })
+    await expect.poll(async () => (await ctx.llm.listModels('qoder')).map(m => m.id)).toEqual([only])
   })
 
   it('region defaults are opt-out: absent enabled means on', () => {

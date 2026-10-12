@@ -441,6 +441,33 @@ export function apply(ctx: Context, config: Config): void {
    */
   const checkinState: Record<QoderRegion, Record<string, boolean>> = { cn: {}, global: {} }
 
+/**
+ * 卡片展示用的模型列表（workbuddy 的 `displayModels` 同规）。
+ *
+ * 与运行时目录（`stacks[region].catalog`）的区别只有一条，但它是关键：
+ * **运行时目录只含用户勾选的模型**（DSH 的选择器读它），而卡片必须看到**完整
+ * 目录**，否则未勾选的模型根本不出现在卡片里，用户再也勾不上它们。
+ *
+ * 三步优先序与 workbuddy 一致：上次保存的目录 → 实时目录 → 静态兜底。用保存的
+ * 快照优先，是为了让卡片重新读取的是**当前**目录而不是过期的旧快照（issue #32
+ * 的教训：保存槽位丢了目录时，必须显示实时目录，否则卡片会把用户正在用的模型
+ * 报成「已下架」）。
+ */
+function displayModels(
+  config: { regions?: Record<string, unknown> | null },
+  region: QoderRegion,
+): readonly QoderModelInfo[] {
+  const state = regionStateOf(config, region)
+  if (Array.isArray(state.lastCatalog) && state.lastCatalog.length > 0) {
+    const parsed = state.lastCatalog
+      .map(item => modelFromStored((item ?? {}) as Record<string, unknown>))
+      .filter((m): m is QoderModelInfo => m !== undefined)
+    if (parsed.length > 0) return parsed
+  }
+  const live = stacks[region].catalog.current()
+  return live.length > 0 ? live : QODER_FALLBACK_MODELS.map(fallbackModelInfo)
+}
+
   let invalidateCatalog = (): void => {}
 
   // 每个区域：上游客户端 + 回环 shim + vault store + 池运行期。
@@ -753,10 +780,12 @@ export function apply(ctx: Context, config: Config): void {
     const parsed = upstream.map(parseUpstreamModel)
     const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
     const stamped = stampRuntimeCatalog(config, region, withTiers)
-    // 运行时目录保持**完整**（不在这里按勾选过滤）：卡片要列出整份目录，用户才
-    // 勾得上「没勾的」模型；在这里过滤会让未勾选的模型从卡片里消失，再也勾不选。
-    // 「只把勾选的交给 DSH 选择器」发生在注册边界（registerModelDiscovery）。
-    stacks[region].catalog.set(stamped)
+    // 运行时目录 = **只含勾选的模型**（workbuddy 同规）。DSH 的选择器通过适配器的
+    // `getModels()` 读它，所以这里过滤才是「选择器只列出我勾的那些」真正生效的地方。
+    // 卡片另走 `displayModels()`（完整目录），否则未勾选的模型会从卡片里消失、
+    // 用户再也勾不上——两个视图分开正是 workbuddy 的做法。
+    const saved = new Set(enabledModelKeysOf(config, region))
+    stacks[region].catalog.set(deriveCatalog(stamped, saved))
     invalidateCatalog()
     return stamped
   }
@@ -822,9 +851,15 @@ export function apply(ctx: Context, config: Config): void {
 
   const applySelection = (value: Config): void => {
     for (const region of QODER_REGIONS) {
-      stacks[region].catalog.set(configuredModels(value, region, stacks[region].catalog.current()))
-      stacks[region].catalog.set(applyContextBudgets(stacks[region].catalog.current(), contextBudgetsOf(value, region)))
-      stacks[region].catalog.set(stampRuntimeCatalog(value, region, stacks[region].catalog.current()))
+      const full = configuredModels(value, region, stacks[region].catalog.current())
+      const withTiers = applyContextBudgets(full, contextBudgetsOf(value, region))
+      const stamped = stampRuntimeCatalog(value, region, withTiers)
+      // **必须在这里也过滤**：`applySelection` 在每次配置写入时跑，它若把完整
+      // 目录重新装回运行时目录，就会覆盖 refreshRegionCatalog 的过滤结果——
+      // 这正是「保存了模型，选择器里还是一整份」的原因（用户实拍两次）。
+      // 运行时目录只含勾选的；完整目录由 displayModels() 供卡片。
+      const saved = new Set(enabledModelKeysOf(value, region))
+      stacks[region].catalog.set(deriveCatalog(stamped, saved))
     }
     invalidateCatalog()
     syncRegionRegistration(value)
@@ -1055,7 +1090,11 @@ export function apply(ctx: Context, config: Config): void {
       store: accountDeps,
       credentialSources: sourcesOf,
       selectedAccountId: region => selectedAccountId(config, region),
-      catalogs: { cn: stacks.cn.catalog, global: stacks.global.catalog },
+      // 卡片读的是**完整目录**（displayModels），不是过滤后的运行时目录。
+      catalogs: {
+        cn: { current: () => [...displayModels(config, 'cn')] },
+        global: { current: () => [...displayModels(config, 'global')] },
+      },
       contextBudgets: region => contextBudgetsOf(config, region),
       thinkingEfforts: region => thinkingEffortsOf(config, region),
       offModelKeys: region => offModelKeysOf(config, region),

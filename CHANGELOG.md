@@ -17,6 +17,15 @@
 - **tab 栏不再顶着上面的分隔线**（用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」）：`.dsm-plugin-card-body` 这条家族共享规则只有 `padding:0 0 8px`——**上内边距为 0**，所以正文的**首个元素必须自带顶部间距**。workbuddy 的 tab 栏正是被 `.dsm-workbuddy-usage`（`padding:16px 0 4px`）托住的；qoder 这边在上一轮删掉积分块时，把那层容器一并拆掉了，于是 tab 栏直接贴在分隔线上。现在用同一条规则 `.dsm-qoder-usage`（本就存在）恢复同样的 16px 呼吸空间——不是新加特例，是恢复与同族插件一致的结构。
 - **「在对话框显示积分」开关移到账号池标题行**（用户要求：「放到账号池这个标题旁边吧，节约点空间」）：它此前在卡片正文里独占一行，约 30px 高却只有一个勾选框。现在渲染在 `pool-head` 右端、排在「当前使用」芯片**之前**（可操作的控件在状态之前）。卡片仍然持有写权限与区域，所以由卡片构造这个节点、经 `creditsSwitch` prop 交给账号池安置（与 `accountTools` 同规）；原来那个只为它存在的 `.dsm-qoder-credits-row` 外壳随之删除。语义也更顺：它决定「积分怎么显示」，而积分明细正是下面那张表的内容。
 - **「在对话框显示积分」那行上移**（用户实拍：「红色的部分向上靠拢一些」）：额度明细移除后，那一行仍套着为明细列表准备的 `.dsm-qoder-usage`（`padding:16px 0 4px` + `gap:16px`），连同 `.dsm-qoder-credits-switch` 自己的 `margin:8px 0 2px` 与账号池区块的 `padding-top:16px`，三处叠加出约 19px 的空档。现在：这一行换成自己的外壳 `.dsm-qoder-credits-row`（`padding:12px 0 2px`）、开关的 margin 归零（间距由外壳统一负责）、账号池的 `padding-top` 收到 8px。分隔线之上只剩约 11px。
+- **「保存的模型」终于真的生效了（第 2 次修，这次找到了架构层面的根因）**（用户实拍：「模型的保存还是不对」）。我上一次只改 `deriveCatalog` 本身，那是治标。真正的根因是**两个模型视图被我混成了一层** —— workbuddy 分得很清楚：
+  | 视图 | 数据源 | 是否按勾选过滤 | 谁在读 |
+  |---|---|---|---|
+  | 运行时目录 | `stacks[region].catalog` | **✅ 过滤** | 适配器 `getModels()` → **DSH 内置选择器** |
+  | 卡片显示 | `displayModels()` | ❌ 不过滤 | 卡片的模型列表（要能勾上未勾的） |
+  - 我此前把过滤放在 `registerModelDiscovery` 回调里，而 **DSH 的选择器读的是运行时目录**（经适配器 `getModels()`）—— 过滤根本没作用到用户看到的那份列表上。
+  - 更要命的是 `applySelection()`：它在**每次配置写入时**跑，把完整目录重新装回运行时目录，直接覆盖掉刷新时的过滤结果。这就是「保存了还是一整份」的直接原因。
+  - 现在：运行时目录在两处（刷新、配置写入）都按勾选过滤；卡片改走新增的 `displayModels()`（上次保存 → 实时目录 → 静态兜底，workbuddy 同规），所以未勾选的模型仍在卡片里可见、可勾。
+- **DSH 选择器里的模型名补上倍率**（用户实拍：「模型没有倍数」）。卡片自己的列表早已把倍率画在名字旁，但适配器交给 DSH 的 `name` 是裸名字（`info.displayName`），于是同一个模型在两处显示不一致。现在与 workbuddy 同规，`toPiModel` 用 `modelDisplayName(info)`，选择器里显示成 `Qwen3.7-Max · x1.00`。纯显示改动：DSH 侧所有关联都按模型 id 做（选择器当前项、会话事件、agent 默认模型、请求线上的 `model`）。
 - **接通每日签到（Qoder 确实有，此前是我误判为「没有」）**（用户指出「qoder有签到啊」——用户是对的）。我早期把 `checkinSupported` 写死为 false，注释还写着「网关没有签到端点」，那是**没实测就下的结论**：真实路径叫 `campaigns`（活动/权益），名字里没有「签到」二字，所以照着 checkin / signin / reward 猜必然 404（实测猜了 13 个）。以「我猜不到」论证「不存在」是方法论上的错误。
   - **协议**（社区参考实现 L0NE-6/Qoder-Daily，已在本机 CN 账号实测通过）：`GET {openapi}/sash/api/v1/me/campaigns?forceRefresh=true` 拉活动，`POST …/{campaignId}/claim` 领取；认证用与用量查询同一套 `jt-` 令牌，另需 `cosy-clienttype:10` 与 `user-agent:Qoder`。只有 `actionType=CLAIM_BENEFIT` 且 `claimStatus=CLAIMABLE` 的可领；重复领取（`CLAIMED` / 409 / `ALREADY_CLAIMED` / `replayed`）是幂等的「今日已领」，**不算失败**。实测你的账号返回 100 Credits / 30 天有效、状态 `CLAIMED`，与桌面端截图一致。
   - **`checkinSupported` 改为真实检测**：CN 为 true、国际版暂为 false（国际版同样有该活动，但需要本机 UMID 组件生成的设备风控头 `Cosy-MachineToken/MachineCode/MachineType`，未接通——字段保留，卡片按它隐藏整列）。

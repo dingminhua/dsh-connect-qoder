@@ -20,6 +20,7 @@ import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { QoderShim } from './shim.ts'
+import { modelDisplayName } from './catalog.ts'
 import type { QoderCatalog, QoderModelInfo } from './catalog.ts'
 import type { QoderRegion } from './upstream.ts'
 import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
@@ -133,7 +134,13 @@ function toPiModel(
   const thinkingLevelMap = qoderThinkingLevelMap(info)
   return {
     id: info.key,
-    name: info.displayName,
+    // DSH 面的显示名 = 模型名 + 上游倍率（workbuddy 的 workBuddyDisplayName 同规，
+    // 也就是 `GLM-5.3 · x0.79` 那种写法）。用户实拍「没有倍数显示」指的就是这里：
+    // 卡片自己的选择器早就会把倍率画在名字旁边，但 **DSH 内置的模型选择器**读的是
+    // 这一行 —— 它此前只拿到裸名字，于是同一个模型在两处显示得不一样。
+    // 纯显示用途：DSH 侧所有关联都按模型 id 做（选择器的当前项、会话事件、
+    // agent 默认模型设置、请求线上的 `model: <id>`），改名不会影响任何一处。
+    name: modelDisplayName(info),
     api: 'openai-completions',
     provider: providerId,
     baseUrl,
