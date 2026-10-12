@@ -31,6 +31,7 @@ import {
 import type {
   QoderWebPool,
   QoderWebPoolAccount,
+  QoderWebPoolCheckinRow,
   QoderWebPoolModel,
   QoderWebPoolTestRow,
   QoderWebProbeOutcome,
@@ -133,7 +134,10 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [actionError, setActionError] = useState<string | undefined>(undefined)
-  const [batchBusy, setBatchBusy] = useState(false)
+  /** 正在跑的批量动作（'checkin' | 'test'），undefined = 空闲。两者互斥。 */
+  const [batchAction, setBatchAction] = useState<'checkin' | 'test' | undefined>(undefined)
+  /** 任一批量动作在跑。两个按钮共用同一把锁，避免签到与测试交错。 */
+  const batchBusy = batchAction !== undefined
   const [removingId, setRemovingId] = useState<string | undefined>(undefined)
   // 日志种子来自模块级 logStore：折叠卡片/切换 tab 导致的 unmount 不再清空
   // 历史（workbuddy 同规）。两个区域各持一份，切 tab 是换历史而不是混历史。
@@ -193,6 +197,8 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       dirty,
     })
   const canEditPool = settingsScope !== undefined && canWrite && !siblingBusy
+  /** 该区域是否提供每日签到（决定整列与批量按钮是否出现）。 */
+  const checkinOn = pool?.checkinSupported === true
 
   /**
    * 幽灵成员自愈：名单里留有「凭据已被删除」的 id 时，静默把名单收敛为实际
@@ -271,6 +277,48 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     }
   }
 
+  /**
+   * 一键签到：对勾选的成员逐个领取当日 Credits。
+   *
+   * 与测试批次共用同一把锁（`batchAction`），两者不会交错。日志逐行写明每个
+   * 账号的结果——`claimed`（领到，带数额）、`already`（今天已领）、`failed`
+   * （失败原因）。「今天已领」是**正常**结果，不该显示成失败。
+   */
+  const runCheckinBatch = async (): Promise<void> => {
+    setActionError(undefined)
+    setBatchAction('checkin')
+    try {
+      const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, region, 'checkin'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+      })
+      const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+      if (!response.ok) {
+        const reason = typeof raw['reason'] === 'string' ? raw['reason'] : undefined
+        const error = typeof raw['error'] === 'string' ? raw['error'] : undefined
+        throw new Error(poolFailureText(t, { status: response.status, reason, error }))
+      }
+      if (raw['action'] === 'checkin' && Array.isArray(raw['rows'])) {
+        const rows = (raw['rows'] as unknown[]).map(parseCheckinRow).filter(row => row !== undefined)
+        appendLog({ atMs: Date.now(), text: t('row.poolLogCheckinStart', { count: rows.length }), tone: 'info' })
+        for (const row of rows) {
+          appendLog({
+            atMs: Date.now(),
+            text: checkinLogText(t, row),
+            tone: row.status === 'failed' ? 'warn' : 'ok',
+          })
+        }
+        if (rows.length > 0) appendLog({ atMs: Date.now(), text: t('row.poolLogCheckinDone'), tone: 'info' })
+      }
+      try { await onChanged?.() } catch { /* reconciled on the next poll */ }
+    } catch (error) {
+      if (mounted.current) setActionError(String((error as Error)?.message ?? error))
+    } finally {
+      if (mounted.current) setBatchAction(undefined)
+    }
+  }
+
   const appendLog = useCallback((entry: PoolLogEntry) => {
     setLog(entries => {
       const next = [entry, ...entries].slice(0, LOG_LIMIT)
@@ -281,7 +329,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
   const runTestBatch = async (): Promise<void> => {
     setActionError(undefined)
-    setBatchBusy(true)
+    setBatchAction('test')
     try {
       const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, region, 'test'), {
         method: 'POST',
@@ -315,7 +363,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     } catch (error) {
       if (mounted.current) setActionError(String((error as Error)?.message ?? error))
     } finally {
-      if (mounted.current) setBatchBusy(false)
+      if (mounted.current) setBatchAction(undefined)
     }
   }
 
@@ -351,7 +399,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     <section className="dsm-qoder-pool">
       <BusyOverlay
         visible={batchBusy || saving || removingId !== undefined}
-        message={batchBusy ? t('row.poolTesting') : t('row.poolSaving')}
+        message={batchAction === 'checkin' ? t('row.poolCheckingIn') : batchBusy ? t('row.poolTesting') : t('row.poolSaving')}
         hint={t('row.poolBusyHint')}
       />
 
@@ -376,6 +424,19 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
       <div className="dsm-qoder-pool-actions">
         <div className="dsm-qoder-pool-actions-group">
+          {/* 签到是这一行里唯一会**带来收益**的动作，所以用 primary 并且在最左
+              （workbuddy 同规：签到按钮在前、测试在后）。区域不支持签到时整个
+              按钮不渲染——空按钮会暗示「这里能签到，只是现在不行」。 */}
+          {pool?.checkinSupported !== true
+            ? null
+            : <button
+                type="button"
+                className="dsm-btn dsm-btn-primary"
+                disabled={!canEditPool || effective.length === 0 || batchBusy}
+                onClick={() => { void runCheckinBatch() }}
+              >
+                {batchAction === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll')}
+              </button>}
           <button
             type="button"
             className="dsm-btn dsm-btn-outline"
@@ -385,11 +446,11 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
               : pool?.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined}
             onClick={() => { void runTestBatch() }}
           >
-            {batchBusy ? t('row.poolTesting') : t('row.poolTestAll')}
+            {batchAction === 'test' ? t('row.poolTesting') : t('row.poolTestAll')}
           </button>
           {/* 批量测试期间说明「正在逐个处理」：宿主只在批量结束时一次性返回，
               没有逐行进度可报（workbuddy 同规）。 */}
-          {batchBusy ? <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span> : null}
+          {batchAction === 'test' ? <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span> : null}
         </div>
       </div>
 
@@ -419,12 +480,14 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={effective.length === 0 || !canEditPool} onClick={() => selectAll(false)}>{t('row.poolSelectNone')}</button>
           </div>
         </div>
-        {/* Pool table — no check-in column (checkinSupported is always false). */}
-        <div className="dsm-qoder-pool-table">
+        {/* 签到列只在区域真的支持签到时出现——空列会暗示「这个状态存在，只是
+            未知」（workbuddy 同规）。 */}
+        <div className={`dsm-qoder-pool-table${checkinOn ? ' dsm-qoder-pool-table-checkin' : ''}`}>
           <div className="dsm-qoder-pool-row dsm-qoder-pool-row-head">
             <span>{t('row.poolColumnAccount')}</span>
             <span>{t('row.poolColumnCredits')}</span>
             <span>{t('row.poolColumnProbe')}</span>
+            {checkinOn ? <span>{t('row.poolColumnCheckin')}</span> : null}
             <span />
           </div>
           {(pool?.accounts ?? []).map(account => {
@@ -494,6 +557,18 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                     </span>
                   )}
                 </span>
+                {/* 签到单元格（仅在有签到列时渲染）。三态，不是两态：还没读到
+                    的账号说「未知」而不是断言「未签到」——后者会与用户刚亲眼看到
+                    的领取结果矛盾。 */}
+                {checkinOn
+                  ? <span className="dsm-qoder-pool-checkin">
+                      {account.checkedInToday === undefined
+                        ? <span className="dsm-qoder-pool-unknown" title={t('row.poolNeverTested')}>{t('row.poolCheckinUnknown')}</span>
+                        : account.checkedInToday
+                          ? <span className="dsm-qoder-pool-checked">{t('row.poolCheckedIn')}</span>
+                          : t('row.poolNotCheckedIn')}
+                    </span>
+                  : null}
                 <span className="dsm-qoder-pool-row-actions">
                   <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch() }}>
                     {t('row.poolRowTest')}
@@ -727,6 +802,42 @@ function parseTestRow(value: unknown): QoderWebPoolTestRow | undefined {
   const result = row['result']
   if (accountId === undefined || accountName === undefined || typeof result !== 'object' || result === null) return undefined
   return { accountId, accountName, result: result as QoderWebProbeResult }
+}
+
+function parseCheckinRow(value: unknown): QoderWebPoolCheckinRow | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const row = value as Record<string, unknown>
+  const accountId = typeof row['accountId'] === 'string' ? row['accountId'] : undefined
+  const accountName = typeof row['accountName'] === 'string' ? row['accountName'] : undefined
+  const status = row['status']
+  if (accountId === undefined || accountName === undefined) return undefined
+  if (status !== 'claimed' && status !== 'already' && status !== 'failed') return undefined
+  return {
+    accountId,
+    accountName,
+    status,
+    ...(typeof row['credit'] === 'number' ? { credit: row['credit'] } : {}),
+    ...(typeof row['validityDays'] === 'number' ? { validityDays: row['validityDays'] } : {}),
+    ...(typeof row['message'] === 'string' ? { message: row['message'] } : {}),
+  }
+}
+
+/** 一行签到日志的文案（三态各说各的，`already` 不能写成失败）。 */
+function checkinLogText(t: Translate, row: QoderWebPoolCheckinRow): string {
+  if (row.status === 'claimed') {
+    return row.credit === undefined
+      ? t('row.poolLogCheckinClaimed', { accountName: row.accountName })
+      : t('row.poolLogCheckinClaimedAmount', { accountName: row.accountName, credit: String(row.credit) })
+  }
+  if (row.status === 'already') {
+    return t('row.poolLogCheckinAlready', { accountName: row.accountName })
+  }
+  // 失败原因理论上总有（上游错误消息）；万一没有就退回「未知」这个通用词，
+  // 而不是让整行显示成 `{message}`。
+  return t('row.poolLogCheckinFailed', {
+    accountName: row.accountName,
+    message: row.message ?? t('row.poolCheckinUnknown'),
+  })
 }
 
 function sameIds(a: readonly string[], b: readonly string[]): boolean {

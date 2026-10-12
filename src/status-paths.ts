@@ -163,16 +163,18 @@ export function regionOfStatusUrl(url: string): QoderWebRegion | undefined {
 export const QODER_ACTION_PARAM = 'action'
 
 /**
- * The pool actions. `remove` is per-account and never batch-wide. Qoder has
- * no daily check-in, so there is no `checkin` — the pool's
- * `checkinSupported` is always false and the card renders no such column.
+ * The pool actions. `remove` is per-account and never batch-wide; `checkin`
+ * 与 `test` 一样是批量动作（对勾选的成员逐个执行）。
+ *
+ * `checkin` 只在区域真的提供每日签到时才被路由接受（CN 有；国际版暂未接通，
+ * 因为需要 UMID 设备风控头）——见 `QoderWebPoolPreferences.checkinSupported`。
  */
-export type QoderPoolAction = 'test' | 'remove'
+export type QoderPoolAction = 'checkin' | 'test' | 'remove'
 
 /** Read the pool action off a request URL; unknown/absent means undefined. */
 export function poolActionOf(url: string): QoderPoolAction | undefined {
   const value = actionParamOf(url)
-  return value === 'test' || value === 'remove' ? value : undefined
+  return value === 'checkin' || value === 'test' || value === 'remove' ? value : undefined
 }
 
 /** The account mutation actions (see {@link QODER_ACCOUNTS_PATH}). */
@@ -571,6 +573,12 @@ export interface QoderWebPoolAccount {
     /** Why it failed, in the upstream's own redacted words. */
     message?: string
   }
+  /**
+   * 今天是否已签到。`undefined` = 还没读过（UI 说「未知」，而不是断言「未签到」
+   * ——那会与用户刚亲眼看到的领取结果矛盾）；只有真的读到了才给 true/false。
+   * 仅在 `checkinSupported` 为 true 的区域有意义。
+   */
+  checkedInToday?: boolean
   /** Set when this account cannot serve right now. */
   excludedBy?: QoderWebPoolExclusion
   /** Whether this is the account currently billing traffic for the region. */
@@ -604,11 +612,16 @@ export interface QoderWebPoolModel {
 export interface QoderWebPool {
   enabled: boolean
   /**
-   * Whether this region offers a daily check-in at all.
+   * Whether this region offers a daily check-in.
    *
-   * Always false on Qoder (the gateway has no check-in endpoint). Kept as a
-   * field — rather than dropped — so the card's family-shared pool section
-   * reads one shape: it hides the action entirely when false.
+   * **CN 为 true**（`GET /sash/api/v1/me/campaigns` 拉活动、POST `/{id}/claim`
+   * 领取，已实测）。早先这里写死 false 并注释「网关没有签到端点」——那是没实测
+   * 就下的结论：真实路径叫 `campaigns`（活动/权益），名字里没有「签到」二字，
+   * 所以照着 checkin / signin 猜必然 404。
+   *
+   * 国际版同样有该活动，但需要本机 UMID 组件生成的设备风控头
+   * （`Cosy-MachineToken` / `MachineCode` / `MachineType`），暂未接通，故为
+   * false —— 字段保留，卡片按它隐藏整个签到列与按钮。
    */
   checkinSupported: boolean
   /** The model a test would use right now; absent when none can be resolved. */
@@ -641,6 +654,28 @@ export interface QoderWebPool {
    * full roster in the same document.
    */
   catalog?: readonly QoderWebPoolModel[]
+}
+
+/** One account's check-in row, as the card renders it. */
+export interface QoderWebPoolCheckinRow {
+  accountId: string
+  accountName: string
+  /**
+   * `claimed` = 这次领到了；`already` = 今天已经领过（幂等，**不是**失败）；
+   * `failed` = 真的失败了（凭据被拒、上游报错）。
+   */
+  status: 'claimed' | 'already' | 'failed'
+  /** 本次领取到的 Credits 数（`claimed` 时）。 */
+  credit?: number
+  /** 有效天数（`claimed` 时），来自 `benefit.validity.days`。 */
+  validityDays?: number
+  message?: string
+}
+
+/** The pool endpoint's answer for `action=checkin`. */
+export interface QoderWebPoolCheckinAnswer {
+  action: 'checkin'
+  rows: readonly QoderWebPoolCheckinRow[]
 }
 
 /** One account's test row, as the card renders it. */

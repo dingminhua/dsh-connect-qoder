@@ -38,7 +38,7 @@ function poolFixture(): Record<string, unknown> {
     enabled: true,
     targetModelId: 'qwen3-coder',
     targetModelSource: 'preferred',
-    checkinSupported: false,
+    checkinSupported: true,
     memberAccountIds: ['a1', 'a2'],
     effectiveMemberAccountIds: ['a1', 'a2'],
     catalog: [{ id: 'qwen3-coder', name: 'Qwen3 Coder', creditMultiplier: 0.79, contextWindow: 262_144 }],
@@ -216,6 +216,59 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     } finally {
       await unmount()
     }
+  })
+
+  it('签到列与「一键签到」按钮随 checkinSupported 出现/消失', async () => {
+    // Qoder **确实有**每日签到（用户指出后实测确认：sash 的 campaigns 活动）。
+    // 此前 checkinSupported 写死 false，整个签到列与按钮都不存在。
+    {
+      const { container, unmount } = await mountPool()
+      try {
+        expect(container.querySelector('.dsm-qoder-pool-table')?.className)
+          .toContain('dsm-qoder-pool-table-checkin')
+        // 5 列：账号 / 积分 / 目标模型 / 签到 / 操作
+        expect(container.querySelectorAll('.dsm-qoder-pool-row-head > span')).toHaveLength(5)
+        expect(container.textContent).toContain('row.poolColumnCheckin')
+        // 「一键签到」按钮（primary）在批量动作里排最前。
+        expect(container.textContent).toContain('row.poolCheckinAll')
+      } finally {
+        await unmount()
+      }
+    }
+    // 区域不支持签到时：列与按钮都不该出现（空列会暗示「状态存在，只是未知」）。
+    {
+      const { container, unmount } = await mountPool({
+        pool: { ...poolFixture(), checkinSupported: false },
+      })
+      try {
+        expect(container.querySelector('.dsm-qoder-pool-table')?.className)
+          .not.toContain('dsm-qoder-pool-table-checkin')
+        expect(container.querySelectorAll('.dsm-qoder-pool-row-head > span')).toHaveLength(4)
+        expect(container.textContent).not.toContain('row.poolCheckinAll')
+      } finally {
+        await unmount()
+      }
+    }
+  })
+
+  it('签到单元格是三态：已签到 / 未签到 / 未知（没读到不能说「未签到」）', async () => {
+    // 「未知」很重要：账号还没被读过时说「未签到」，会与用户刚亲眼看到的领取
+    // 结果矛盾。
+    const withState = async (checkedInToday: boolean | undefined): Promise<string> => {
+      const base = (poolFixture().accounts as Array<Record<string, unknown>>)[0]!
+      const account = { ...base, ...(checkedInToday === undefined ? {} : { checkedInToday }) }
+      const { container, unmount } = await mountPool({
+        pool: { ...poolFixture(), accounts: [account] },
+      })
+      try {
+        return container.querySelector('.dsm-qoder-pool-checkin')?.textContent ?? ''
+      } finally {
+        await unmount()
+      }
+    }
+    expect(await withState(true)).toContain('row.poolCheckedIn')
+    expect(await withState(false)).toContain('row.poolNotCheckedIn')
+    expect(await withState(undefined)).toContain('row.poolCheckinUnknown')
   })
 
   it('积分开关紧挨标题同排，芯片靠 margin-left:auto 推右（workbuddy 同规）', async () => {

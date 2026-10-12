@@ -8,8 +8,10 @@
  * 写入要么走宿主 settings 服务，要么走本文件的 `__save` 回退。
  *
  * 改动（按 Qoder 上游）：
- *   - 没有 daily check-in：无 checkin 动作，`pool` 只处理 test / remove，且回报的
- *     `checkinSupported: false` 让卡片整体隐藏签到列；
+ *   - **有** daily check-in（CN）：`pool` 的 checkin 动作拉活动列表并领取每日
+ *     Credits（`sash/api/v1/me/campaigns`）。早先此处写着「没有 daily check-in」
+ *     并回报 `checkinSupported: false` —— 那是没实测就下的结论；真实路径叫
+ *     `campaigns`，名字里没有「签到」二字，所以照着 checkin/signin 猜必然 404；
  *   - 没有扫码 OAuth：账号增删走 `accounts` 路由的 add（PAT 粘贴，JobToken 交换
  *     验证并取显示名）/ remove（删 vault 条目）；
  *   - 没有桌面临终诊断 / markup 恢复：无 `diagnostics:write`；
@@ -48,6 +50,7 @@ import {
   type QoderWebModel,
   type QoderWebPool,
   type QoderWebPoolAccount,
+  type QoderWebPoolCheckinRow,
   type QoderWebPoolExclusion,
   type QoderWebPoolTestRow,
   type QoderWebProbeResult,
@@ -114,6 +117,18 @@ export interface QoderPoolDeps {
   probeOne(region: QoderRegion, credit: { pat: string, accountName: string }, modelId: string): Promise<QoderWebProbeResult>
   /** Issue a `test` batch for the region's members. OnRow for progress. */
   test(region: QoderRegion, modelId: string): Promise<QoderWebPoolTestRow[]>
+  /**
+   * 该区域是否提供每日签到。CN 为 true；国际版暂为 false（需要 UMID 设备
+   * 风控头）。路由据此在**到达上游之前**拒绝 checkin 动作。
+   */
+  checkinSupported(region: QoderRegion): boolean
+  /** Issue a `checkin` batch for the region's members (每个成员各领一次). */
+  checkin?(region: QoderRegion): Promise<QoderWebPoolCheckinRow[]>
+  /**
+   * 今日签到状态快照（成员 id → 是否已领）。由签到批次回写、成员表读取。
+   * 缺席的成员表示**还没读过**（UI 说「未知」），不是「未签到」。
+   */
+  checkinState?(region: QoderRegion): Readonly<Record<string, boolean>>
   /** Persist the batch's measurements back to the runtime store. */
   applyProbes(region: QoderRegion, probes: Record<string, QoderPoolProbe>): Promise<void>
   /** Drop one account's membership from the prefs. */
@@ -432,9 +447,24 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     const region = regionOf(res, req.url ?? '')
     if (region === undefined) return
     const action = poolActionOf(req.url ?? '')
-    if (action === undefined) return json(res, 400, { error: 'action is required (test|remove)' })
+    if (action === undefined) return json(res, 400, { error: 'action is required (checkin|test|remove)' })
     if (deps.pool === undefined) return json(res, 503, { reason: 'pool-unavailable', error: 'pool unavailable' })
     const pool = deps.pool
+
+    if (action === 'checkin') {
+      // 区域没有每日签到时**在到达上游之前**就拒绝：不值得为一个「这里没有」
+      // 花一次请求。作为能力拒绝（409 + reason）回报，而不是失败——调用方
+      // 要能分清「这里不提供」与「提供了但坏了」。卡片隐藏按钮是同一规则的
+      // UI 半边（workbuddy 同规）。
+      if (pool.checkinSupported(region) !== true) {
+        return json(res, 409, { reason: 'checkin-unsupported', error: 'this region does not offer a daily check-in' })
+      }
+      if (pool.checkin === undefined) {
+        return json(res, 503, { reason: 'pool-unavailable', error: 'pool check-in unavailable' })
+      }
+      const rows = await pool.checkin(region)
+      return json(res, 200, { action: 'checkin', rows })
+    }
 
     if (action === 'test') {
       const target = resolveTargetModel(pool.catalog(region).map(poolModelOf), pool.preferences(region).targetModelId)
@@ -662,6 +692,8 @@ async function buildPoolView(
   // target". It must come from the region's resolved serving credential
   // (`servingAccountId`), never from the target model id or a list position:
   // guessing it would make the card assert a switch that was never applied.
+  const checkinSupported = pool.checkinSupported(region)
+  const checkinSnapshot = pool.checkinState?.(region) ?? {}
   const effectiveIds: string[] = []
   const rows: QoderWebPoolAccount[] = []
   // 成员积分：卡片路由付费拉取（workbuddy 同规），失败降级为「—」而不是
@@ -695,6 +727,12 @@ async function buildPoolView(
         },
       }),
       ...(excludedBy === undefined ? {} : { excludedBy }),
+      // 今天是否已签到：从签到的活动状态推不出来（那需要每个账号一次请求），
+      // 所以由签到批次回写、这里读快照。`undefined` 表示还没读过——UI 说
+      // 「未知」而不是断言「未签到」（见 QoderWebPoolAccount.checkedInToday）。
+      ...(checkinSupported && checkinSnapshot[account.id] !== undefined
+        ? { checkedInToday: checkinSnapshot[account.id] }
+        : {}),
       current: isCurrent,
       member,
     })
@@ -702,7 +740,7 @@ async function buildPoolView(
 
   return {
     enabled: prefs.enabled,
-    checkinSupported: false,
+    checkinSupported: pool.checkinSupported(region),
     ...(target.modelId === undefined ? {} : { targetModelId: target.modelId }),
     ...(target.source === 'stale' && target.staleModelId !== undefined ? { staleTargetModelId: target.staleModelId } : {}),
     targetModelSource: target.source,

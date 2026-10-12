@@ -190,7 +190,8 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-error{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary,#ef4444);white-space:pre-line}
 .dsm-qoder-pool-table{border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-qoder-pool-row{display:grid;grid-template-columns:1.6fr 1fr 1.3fr .9fr .8fr;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-/* No check-in column (Qoder never supports check-in): the freed track goes to the actions. */
+/* 没有签到列时（国际版暂不通），把空出的轨道让给操作列。
+   CN 有签到，走上面那套 5 列默认值。 */
 .dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin) .dsm-qoder-pool-row{grid-template-columns:1.6fr 1fr 1.3fr 1.7fr}
 .dsm-qoder-pool-row:first-child{border-top:0}
 .dsm-qoder-pool-row-head{padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}

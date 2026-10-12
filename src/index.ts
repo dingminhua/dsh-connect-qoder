@@ -51,6 +51,7 @@ import {
   type QoderWebProbeResult,
   type QoderWebProbeOutcome,
   type QoderWebPoolTestRow,
+  type QoderWebPoolCheckinRow,
   type QoderWebCredits,
   type QoderWebCreditPackage,
   type QoderWebAccountCredit,
@@ -67,7 +68,7 @@ import {
   type QoderPoolMember,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
-import { testAllAccounts, type QoderPoolRunnerDeps } from './account-pool-run.ts'
+import { testAllAccounts, POOL_BATCH_GAP_MS, type QoderPoolRunnerDeps } from './account-pool-run.ts'
 import { resolveCredentialRecovery, createAccountUsabilityProbe, type QoderProbeStore } from './credential-recovery.ts'
 import { writeHostHeartbeat, clearHostHeartbeat } from './host-heartbeat.ts'
 
@@ -434,6 +435,12 @@ export function apply(ctx: Context, config: Config): void {
   const stacks = {} as Record<QoderRegion, QoderRegionStack>
   const usageCache: Partial<Record<QoderRegion, { usage: QoderUsage | undefined; atMs: number; error?: string }>> = {}
   const registration: Record<QoderRegion, { adapter?: AdapterRegistrationHandle, directory?: DirectoryRegistrationHandle }> = { cn: {}, global: {} }
+  /**
+   * 今日签到状态快照（区域 → 成员 id → 是否已领）。签到批次回写、成员表读取。
+   * 进程内即可：它描述的是「今天」，重启后由下一次签到重新写入。
+   */
+  const checkinState: Record<QoderRegion, Record<string, boolean>> = { cn: {}, global: {} }
+
   let invalidateCatalog = (): void => {}
 
   // 每个区域：上游客户端 + 回环 shim + vault store + 池运行期。
@@ -627,6 +634,61 @@ export function apply(ctx: Context, config: Config): void {
     })
   }
 
+  /**
+   * 对一个区域勾选的成员逐个签到（领取当日 Credits）。
+   *
+   * 与 `test` 批次同构：只跑**真的有凭据**的成员（幽灵 id 跳过，见 test 里那段
+   * 注释），逐个之间留间隔避免撞限流。每个成员独立成败——一个账号失败不影响
+   * 其余账号，结果逐行回报（workbuddy 的 checkin 批次同规）。
+   *
+   * 三种状态分得很清：`claimed`（这次领到）/ `already`（今天已领，幂等，
+   * **不是**失败）/ `failed`（真的失败：凭据被拒、上游报错）。
+   */
+  async function runCheckinBatch(region: QoderRegion): Promise<QoderWebPoolCheckinRow[]> {
+    const store = stacks[region].store
+    const prefs = poolPreferencesOf(config, region)
+    const client = stacks[region].upstream
+    const rows: QoderWebPoolCheckinRow[] = []
+    let first = true
+    for (const accountId of prefs.memberAccountIds) {
+      const credit = await store.credentialFor(accountId, sourcesOf(region))
+      if (credit === undefined) continue
+      if (!first) await new Promise(resolve => setTimeout(resolve, POOL_BATCH_GAP_MS))
+      first = false
+      const base = { accountId, accountName: credit.accountName }
+      try {
+        const outcome = await client.claimDailyCredits(credit.pat)
+        if (outcome.status === 'claimed') {
+          rows.push({
+            ...base,
+            status: 'claimed',
+            ...(outcome.amount === undefined ? {} : { credit: outcome.amount }),
+            ...(outcome.validityDays === undefined ? {} : { validityDays: outcome.validityDays }),
+          })
+        } else if (outcome.status === 'already-claimed') {
+          rows.push({ ...base, status: 'already' })
+        } else {
+          rows.push({ ...base, status: 'failed', message: outcome.message })
+        }
+      } catch (error: unknown) {
+        rows.push({ ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) })
+      }
+    }
+    // 把结果写进快照：成员表据此显示「已签到 / 未签到」。
+    // `claimed` 与 `already` 都算「今天已领」——两者的区别只对**本次操作**有意义
+    // （领到了 vs 早就领过），对「今天是否已签到」这个事实没有区别。
+    const next = { ...(checkinState[region] ?? {}) }
+    for (const row of rows) {
+      if (row.status === 'claimed' || row.status === 'already') next[row.accountId] = true
+      else if (row.status === 'failed') next[row.accountId] = false
+    }
+    checkinState[region] = next
+    // 签到会改变积分余额：把该区域的用量缓存作废，免得卡片继续显示领之前的
+    // 数字（下次读取会重新拉）。
+    delete usageCache[region]
+    return rows
+  }
+
   /** Cached usage read for one region. */
   function usageEntryOf(region: QoderRegion): { usage?: { credits: QoderWebCredits, atMs: number }, error?: string } | undefined {
     const entry = usageCache[region]
@@ -803,6 +865,10 @@ export function apply(ctx: Context, config: Config): void {
       poolProbes: reg => stacks[reg].poolRuntime,
       credentialFor: (reg, accountId) => store.credentialFor(accountId, sourcesOf(reg)),
       probeOne: (reg, credit, modelId) => probeThrough(reg, credit, modelId),
+      // CN 有每日签到（sash 的 campaigns 活动，已实测）；国际版同样有该活动，
+      // 但需要本机 UMID 组件生成的设备风控头，暂未接通。
+      checkinSupported: reg => reg === 'cn',
+      checkin: async reg => runCheckinBatch(reg),
       test: async reg => {
         const prefs = poolPreferencesOf(config, reg)
         const target = resolveTargetModel(poolModelsOf(reg), prefs.targetModelId)
@@ -851,6 +917,9 @@ export function apply(ctx: Context, config: Config): void {
       credentialFor: (region, accountId) => stacks[region].store.credentialFor(accountId, sourcesOf(region)),
       probeOne: (region, credit, modelId) => probeThrough(region, credit, modelId),
       test: (region, modelId) => poolFor(region).test(region, modelId),
+      checkinSupported: region => poolFor(region).checkinSupported(region),
+      checkin: region => poolFor(region).checkin!(region),
+      checkinState: region => checkinState[region],
       applyProbes: async (region, probes) => poolFor(region).applyProbes(region, probes),
       updateMembership: (region, memberAccountIds, enabled) => poolFor(region).updateMembership(region, memberAccountIds, enabled),
     }

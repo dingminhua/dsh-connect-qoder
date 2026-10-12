@@ -113,6 +113,7 @@ function deps(overrides: Partial<QoderWebRouteDeps> = {}): QoderWebRouteDeps {
 /** The pool deps a `test` and `remove` route need. */
 function poolDeps(overrides: Partial<QoderPoolDeps> = {}): QoderPoolDeps {
   return {
+    checkinSupported: () => true,
     preferences: () => ({ enabled: true, targetModelId: 'dfmodel', probeInputTokens: 0, memberAccountIds: ['pat-settings', 'pat-env'] }),
     catalog: () => [FREE_MODEL],
     poolProbes: () => ({} as Record<string, QoderPoolProbe>),
@@ -605,7 +606,9 @@ describe('buildWebUsage', () => {
     if (usage.status !== 'signed-in') throw new Error('expected signed-in')
     expect(usage.accounts).toHaveLength(2) // settings + env（初始 vault 为空）
     expect(usage.models.length).toBe(1)
-    expect(usage.pool?.checkinSupported).toBe(false)
+    // 签到：CN 支持（route 的 poolDeps 里 checkinSupported 返回 true），
+    // 文档如实回报。此前这里断言的是「恒为 false」——那正是被误判的功能。
+    expect(usage.pool?.checkinSupported).toBe(true)
     expect(usage.pool?.targetModelSource).toBe('preferred')
     // 倍率为 1 也必须透传（卡片渲染 `(1.00x)`）：webModelOf 曾把 1 当「无」
     // 丢掉，卡片上只剩没倍率的裸名字。
