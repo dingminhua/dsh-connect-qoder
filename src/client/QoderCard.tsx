@@ -30,15 +30,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import {
-  QODER_ACCOUNTS_PATH,
-  QODER_ACCOUNTS_REFRESH_PATH,
   QODER_GITHUB_URL,
   QODER_MODELS_REFRESH_PATH,
   QODER_PROBE_PATH,
   QODER_REGIONS,
   QODER_USAGE_PATH,
   withQoderRegion,
-  withQoderRouteAction,
 } from '../status-paths.ts'
 import type {
   QoderWebModel,
@@ -195,7 +192,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
    * 本插件没有第二来源可按，因此必须有一次确认）。这里用两步内联确认而不是
    * `window.confirm`：不阻塞、可被测试，且在禁用态下也能正确复位。
    */
-  const [confirmRemoveId, setConfirmRemoveId] = useState<string | undefined>(undefined)
   const [drafts, setDrafts] = useState<Record<string, QoderDraft | undefined>>({})
   const [revision, setRevision] = useState(0)
   const mounted = useRef(true)
@@ -378,22 +374,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     }
   }
 
-  const rescanAccounts = async (): Promise<void> => {
-    setSiblingBusy(true)
-    try {
-      const response = await fetch(withQoderRegion(QODER_ACCOUNTS_REFRESH_PATH, activeRegion), {
-        method: 'POST',
-        credentials: 'same-origin',
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-      await refresh(activeRegion, true)
-    } catch (error) {
-      if (mounted.current) setSaveError(String((error as Error)?.message ?? error))
-    } finally {
-      if (mounted.current) setSiblingBusy(false)
-    }
-  }
-
   const saveModels = async (): Promise<void> => {
     if (scope === undefined) return
     setSaving(true)
@@ -417,27 +397,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     setDrafts(prev => ({ ...prev, [activeRegion]: undefined }))
     setDirty(false)
     setSaveError(undefined)
-  }
-
-  const removeVaultAccount = async (accountId: string): Promise<void> => {
-    setSiblingBusy(true)
-    try {
-      const response = await fetch(withQoderRouteAction(QODER_ACCOUNTS_PATH, activeRegion, 'remove'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-        body: JSON.stringify({ accountId }),
-      })
-      if (!response.ok) {
-        const body = await response.json().catch(() => ({})) as { error?: string }
-        throw new Error(body.error ?? `HTTP ${response.status}`)
-      }
-      await refresh(activeRegion, true)
-    } catch (error) {
-      if (mounted.current) setSaveError(String((error as Error)?.message ?? error))
-    } finally {
-      if (mounted.current) setSiblingBusy(false)
-    }
   }
 
   const signIn = usage?.status === 'signed-in' ? usage : undefined
@@ -632,8 +591,8 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     const accounts = usage?.accounts ?? []
     // 同名账号必须还能分辨：同一个邮箱重新签发 PAT 会得到**两条**记录（id 由
     // PAT 推导，是不同的），两条都叫 REDACTED@example.invalid。只显示名字的话，
-    // 「移除哪一个」这个问题的答案是「看不出」。重名时补 id 尾号，并标出正在
-    // 计费的那条（用户实拍的就是这种两条同名、一条过期的情况）。
+    // 「我当前在用哪一条」这个问题的答案是「看不出」。重名时补 id 尾号，并标出
+    // 正在计费的那条（用户实拍的就是这种两条同名、一条过期的情况）。
     const nameCounts = new Map<string, number>()
     for (const account of accounts) {
       const key = account.accountName === '' ? '' : account.accountName
@@ -670,9 +629,8 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               }}
             >
               <option value="">{t('row.accountSelectAuto')}</option>
-              {/* 与删除按钮共用同一套标签：重名带 id 尾号、在用带「使用中」。
-                  两处各写一套的话，用户在下拉里选中一个、到按钮上又认不出
-                  是哪一个。 */}
+              {/* 标签必须能让用户分辨同名账号（重名带 id 尾号、在用带「使用中」）。
+                  账号行此前还有一个共用这套标签的「移除」按钮，已随本轮清理删除。 */}
               {accounts.map(account => (
                 <option key={account.id} value={account.id}>{accountLabel(account)}</option>
               ))}
@@ -680,49 +638,13 @@ export function QoderCard(props: QoderCardProps): ReactElement {
           </div>
         ) : null}
 
-        <div className="dsm-qoder-usage-account-actions">
-          <button type="button" className="dsm-btn dsm-btn-outline" disabled={siblingBusy} onClick={() => { void rescanAccounts() }}>
-            {t('row.accountsRescan')}
-          </button>
-          {accounts.filter(a => a.source === 'vault').map(a => (
-            confirmRemoveId === a.id ? (
-              <span key={a.id} className="dsm-qoder-account-confirm">
-                <span className="dsm-qoder-account-confirm-text">{t('row.accountRemoveConfirm', { accountName: accountLabel(a) })}</span>
-                <button
-                  type="button"
-                  className="dsm-btn dsm-btn-primary"
-                  disabled={siblingBusy}
-                  onClick={() => { setConfirmRemoveId(undefined); void removeVaultAccount(a.id) }}
-                >
-                  {t('row.accountRemoveConfirmYes')}
-                </button>
-                <button
-                  type="button"
-                  className="dsm-btn dsm-btn-outline"
-                  onClick={() => setConfirmRemoveId(undefined)}
-                >
-                  {t('row.accountRemoveConfirmNo')}
-                </button>
-              </span>
-            ) : (
-              <button
-                key={a.id}
-                type="button"
-                className="dsm-btn dsm-btn-outline"
-                title={t('row.accountRemoveHint')}
-                aria-label={t('row.accountRemoveAria', { accountName: accountLabel(a) })}
-                disabled={siblingBusy}
-                onClick={() => setConfirmRemoveId(a.id)}
-              >
-                {/* 按钮文字必须是短标签：这里原来渲染 `accountRemoveHint`——
-                    那是一整句说明（「把这个账号的 PAT 从插件保险库移除。设置中
-                    的 PAT……」），按钮因此撑成一大块，两个同名账号的按钮挤在一
-                    起完全读不出是干什么的。整句说明留在 `title` 上继续可达。 */}
-                {t('row.accountRemoveShort')} · {accountLabel(a)}
-              </button>
-            )
-          ))}
-        </div>
+        {/* 这一行原本还有两个按钮，都已删除（用户实拍：「我截图的部分不用了」）：
+            - 「重新读取账号」：它做的事（重读快照 + 刷新）现在由账号池的测试/
+              添加等操作自动完成；「重新读取授权文件」这个语义也早已过时——凭据
+              走 PAT，不再依赖授权文件。
+            - 「移除 · <账号>」：删的是保险库里的 PAT 记录，而账号池表格的
+              「移除」是移出池成员——两个不同操作确实让人困惑，用户选择只保留
+              池里的那一个。真正要删凭据时用 `dsh-connect-qoder logout`。 */}
       </div>
     )
   }

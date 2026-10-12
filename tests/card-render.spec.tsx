@@ -406,11 +406,13 @@ describe('QoderCard render', () => {
       expect(options.some(text => text.includes('2d10'))).toBe(true)
       expect(options.some(text => text.includes('9f87') && text.includes('row.poolCurrentBadge'))).toBe(true)
 
-      // 移除按钮用同一套标签，否则用户在下拉里选中一个、到按钮上又认不出。
-      const removeButtons = Array.from(container.querySelectorAll('button'))
-        .filter(b => (b.textContent ?? '').startsWith('row.accountRemoveShort'))
-      expect(removeButtons).toHaveLength(2)
-      expect(removeButtons.some(b => (b.textContent ?? '').includes('2d10'))).toBe(true)
+      // 账号行里那两个按钮（重新读取账号 / 移除）已删除（用户实拍要求）：
+      // 前者做的事现在自动发生、且「重新读取授权文件」的语义早已过时；后者
+      // 与账号池里的「移除」语义不同（删保险库记录 vs 移出池成员），容易混淆。
+      const row = container.querySelector('.dsm-qoder-usage-account-actions')
+      expect(row).toBeNull()
+      expect(container.textContent).not.toContain('row.accountsRescan')
+      expect(container.textContent).not.toContain('row.accountRemoveShort')
     } finally {
       await unmount()
     }
