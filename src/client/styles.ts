@@ -45,7 +45,15 @@ export const QODER_CARD_CSS = `
 .dsm-btn-outline:hover:not(:disabled){color:var(--dsw-alias-label-primary);border-color:var(--dsw-alias-label-dimmed);background:rgba(255,255,255,.04)}
 .dsm-btn-primary{background:var(--dsw-alias-label-primary);color:var(--dsw-alias-bg-layer-3)}
 .dsm-btn-primary:hover:not(:disabled){opacity:.9}
-.dsm-qoder-usage{display:flex;flex-direction:column;gap:16px;margin:0;padding:16px 0 4px}
+/*
+ * 卡片正文的第一块（tab 栏 + 说明行）。padding-top 提供与上方分隔线的间距，
+ * gap 提供 tab 栏与说明行之间的间距。用户实拍「两个间隔都小点」指的就是这两处：
+ * 它们原本各是 16px（与 workbuddy 一致）。
+ *   - 上：16px → 10px（仍明显离开分隔线，只是不再空一大截）；
+ *   - 中：gap 16px → 10px。
+ * 下侧 4px 保持：说明行与账号池之间还隔着账号池自己的 padding-top 与边框。
+ */
+.dsm-qoder-usage{display:flex;flex-direction:column;gap:10px;margin:0;padding:10px 0 4px}
 .dsm-qoder-tabs{display:flex;gap:6px;padding:4px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
 .dsm-qoder-tab{appearance:none;font:inherit;cursor:pointer;flex:1;border:0;border-radius:7px;padding:7px 10px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:500;line-height:18px;background:transparent;transition:color .15s,background .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsm-qoder-tab:hover:not(:disabled):not(.dsm-qoder-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
@@ -174,7 +182,7 @@ export const QODER_CARD_CSS = `
 /* ---- Account pool ---- */
 /* 区块分隔线之上只留 8px：上方的「在对话框显示积分」勾选框只有一行，
    16px 会让这截空档看着像丢了内容（用户实拍：「红色的部分向上靠拢一些」）。 */
-.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:8px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:6px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-qoder-pool-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 /* 积分开关的壳：紧挨标题（workbuddy 的 pool-head-extra 同规）。 */
 .dsm-qoder-pool-head-extra{display:inline-flex;align-items:center}

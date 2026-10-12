@@ -39,6 +39,18 @@ describe('QODER_CARD_CSS', () => {
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-inline-select option')).toContain('background')
   })
 
+  it('tab 栏与说明行的两个间隔都收紧了（用户实拍「两个间隔都小点」）', () => {
+    // 用户圈出的两处：tab 栏 → 说明行 → 账号池分隔线。
+    // 原来是各 16px（与 workbuddy 一致）；收紧到 10px/6px。
+    const usage = ruleOf(QODER_CARD_CSS, 'dsm-qoder-usage') ?? ''
+    // 上：与上方分隔线的间距（padding-top）
+    expect(usage).toMatch(/padding:10px 0 4px/)
+    // 中：tab 栏与说明行之间（gap）
+    expect(usage).toMatch(/gap:10px/)
+    // 下：账号池自己的 padding-top（说明行与账号池标题之间）
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool')).toMatch(/padding:6px 0 4px/)
+  })
+
   it('积分开关与标题同行（workbuddy 的 pool-head-extra 同规）', () => {
     // 它原本在卡片正文里独占一行、套着为「积分明细列表」准备的 .dsm-qoder-usage
     // （padding:16px 0 4px + gap:16px）；明细移到账号池表格后，那层留白就成了
