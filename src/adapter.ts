@@ -108,19 +108,28 @@ export function qoderModelInput(info: QoderModelInfo): ('text' | 'image')[] {
 /**
  * The DSH-facing thinking level map for one Qoder model.
  *
- * Qoder's reasoning wire is a BOOLEAN (`model_config.is_reasoning`), not an
- * effort scale, so exactly one level is expressible: `off`. A model whose
- * upstream says thinking can be disabled (`canDisableThinking`) gets `off`
- * offered; one that cannot be disabled offers nothing (the map is still
- * DEFINED so the model is advertised as reasoning-capable, with the picker
- * left at its native default-on state). A non-reasoning model has no map at
- * all. Every effort level (minimal…max) maps to `null` — the gateway cannot
- * express a half-effort.
+ * **只映射上游真正声明的档位**（workbuddy 的 `workBuddyThinkingLevelMap` 同规）。
+ * Qoder 的 `thinking_config.enabled.efforts` 会逐模型声明档位，且**不统一**：
+ * Qwen 系是 `xhigh / low / medium`，DeepSeek/GLM 系是 `high / low / max`。
+ * 把六个 DSH 档位全部置 null 会让 DSH 的模型设置里出现一排「可选但无效」的
+ * 档位 —— 用户选了也不起作用。正确做法是：声明了的档位映射到**同名**的真实档位，
+ * 没声明的映射为 `null`（DSH 据此不提供该档）。
+ *
+ * 上游声明可以关闭思考时额外提供 `off`；不能关闭则 `off` 映射为 null（DSH
+ * 不提供「关闭」）。非推理模型没有 map。
+ *
+ * 注意：这与「请求线怎么带档位」是两件事 —— shim 侧按
+ * `reasoningEffort` + `parameters.reasoning_effort` 发送（见 shim.ts）。
  */
 export function qoderThinkingLevelMap(info: QoderModelInfo): QoderThinkingLevelMap | undefined {
   if (!info.supportsThinking) return undefined
+  const declared = info.thinkingEfforts ?? []
+  const supported = THINKING_LEVELS.filter(level =>
+    (declared as readonly string[]).includes(level))
+  // 上游声明的档位与 DSH 的档位名没有交集时，仍然要给出 map（模型是推理模型），
+  // 但全部置 null —— 此时 DSH 的设置里不出现任何可选档位，而不是给出无效项。
   const map: QoderThinkingLevelMap = {}
-  for (const level of THINKING_LEVELS) map[level] = null
+  for (const level of THINKING_LEVELS) map[level] = supported.includes(level) ? level : null
   if (info.canDisableThinking === true) map.off = 'off'
   return map
 }

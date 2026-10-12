@@ -17,6 +17,13 @@
 - **tab 栏不再顶着上面的分隔线**（用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」）：`.dsm-plugin-card-body` 这条家族共享规则只有 `padding:0 0 8px`——**上内边距为 0**，所以正文的**首个元素必须自带顶部间距**。workbuddy 的 tab 栏正是被 `.dsm-workbuddy-usage`（`padding:16px 0 4px`）托住的；qoder 这边在上一轮删掉积分块时，把那层容器一并拆掉了，于是 tab 栏直接贴在分隔线上。现在用同一条规则 `.dsm-qoder-usage`（本就存在）恢复同样的 16px 呼吸空间——不是新加特例，是恢复与同族插件一致的结构。
 - **「在对话框显示积分」开关移到账号池标题行**（用户要求：「放到账号池这个标题旁边吧，节约点空间」）：它此前在卡片正文里独占一行，约 30px 高却只有一个勾选框。现在渲染在 `pool-head` 右端、排在「当前使用」芯片**之前**（可操作的控件在状态之前）。卡片仍然持有写权限与区域，所以由卡片构造这个节点、经 `creditsSwitch` prop 交给账号池安置（与 `accountTools` 同规）；原来那个只为它存在的 `.dsm-qoder-credits-row` 外壳随之删除。语义也更顺：它决定「积分怎么显示」，而积分明细正是下面那张表的内容。
 - **「在对话框显示积分」那行上移**（用户实拍：「红色的部分向上靠拢一些」）：额度明细移除后，那一行仍套着为明细列表准备的 `.dsm-qoder-usage`（`padding:16px 0 4px` + `gap:16px`），连同 `.dsm-qoder-credits-switch` 自己的 `margin:8px 0 2px` 与账号池区块的 `padding-top:16px`，三处叠加出约 19px 的空档。现在：这一行换成自己的外壳 `.dsm-qoder-credits-row`（`padding:12px 0 2px`）、开关的 margin 归零（间距由外壳统一负责）、账号池的 `padding-top` 收到 8px。分隔线之上只剩约 11px。
+- **思考档位改为只映射上游**真正声明的档位**（用户要求：「学习 workbuddy 一样，显示可以选择的档位，然后保存到 DSH 自己的模型设置里」）。
+  - 对照 workbuddy 发现两处关键差异：
+    1. **workbuddy 的档位是「只显示」的纯文本**（`model.reasoning.supportedEfforts.join(' / ')`），它不保存用户选择；用户要的是**可选 + 存到 DSH**，所以保留 qoder 已有的可保存选择，只对齐它「显示哪些档位」的判断。
+    2. **workbuddy 的 `workBuddyThinkingLevelMap` 只映射上游声明过的档位**（`supported.includes(level) ? level : null`）——DSH 的模型设置里因此只出现真实存在的档位。而 qoder 此前把六个档位**全部**置 `null`，只在 `off` 上有效：我当时的结论是「Qoder 的线是布尔 `is_reasoning`，表达不了半档」。**那个结论是错的** —— `thinking_config.enabled.efforts` 逐模型声明了真实档位，且不统一（Qwen 系 `xhigh/low/medium`，DeepSeek/GLM 系 `high/low/max`）。
+  - 修法：`qoderThinkingLevelMap` 按声明映射**同名**档位，未声明的置 `null`；上游声明可关闭时额外给 `off`。上游没声明任何档位时仍给出 map（全 `null`），因为模型确实是推理模型 —— DSH 据此知道它支持推理，只是没有可选项。
+  - 请求线不变：shim 侧仍按 `reasoning_effort` → 顶层 `reasoningEffort` + `parameters.reasoning_effort` 发送。
+  - 实测效果：DSH 模型设置里 `Qwen3.8-Flash` 出现 low/medium/xhigh，`DeepSeek-V4-Pro` 出现 high/max（+可关闭）。
 - **卡片改读实时目录，思考档位这才真正出得来**（用户实拍「还是没有思考强度」——即使刚点过「从 Qoder 刷新」）。
   - 上一个提交只修了 schema（字段不再被剥掉），但**没有解决「卡片读的是哪份目录」**。
   - `displayModels()` 的优先序是「保存的 lastCatalog → 实时目录 → 静态兜底」，而卡片读的就是它。`lastCatalog` 是**上一次保存时的快照**：上游后来声明的档位（`thinking_config`）只存在于实时目录里，快照里没有 → 卡片永远不渲染档位选择器。更糟的是旧 schema 已把档位从快照里剥掉，于是那份快照**永远不会**再有档位。

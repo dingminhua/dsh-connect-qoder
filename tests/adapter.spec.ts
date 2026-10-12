@@ -46,18 +46,44 @@ describe('qoderModelInput', () => {
 })
 
 describe('qoderThinkingLevelMap', () => {
-  it('maps every effort level to null and offers `off` only when thinking can be disabled', () => {
-    const map = qoderThinkingLevelMap(MODEL)
-    expect(map?.off).toBe('off')
+  // Qoder 的 thinking_config.enabled.efforts **逐模型**声明档位，且不统一：
+  // Qwen 系 xhigh/low/medium，DeepSeek/GLM 系 high/low/max。DSH 的模型设置里
+  // 应当只出现**真实存在**的档位——把六个档位全置 null 会给用户一排「可选但
+  // 无效」的选项（workbuddy 的 workBuddyThinkingLevelMap 正是按声明映射）。
+  it('maps exactly the efforts the upstream declares, same name', () => {
+    const map = qoderThinkingLevelMap({ ...MODEL, thinkingEfforts: ['xhigh', 'low', 'medium'] })
+    expect(map?.low).toBe('low')
+    expect(map?.medium).toBe('medium')
+    expect(map?.xhigh).toBe('xhigh')
+    // 上游没声明的档位必须是 null（DSH 不提供它）
     expect(map?.minimal).toBeNull()
+    expect(map?.high).toBeNull()
     expect(map?.max).toBeNull()
   })
 
-  it('offers no `off` when the upstream says thinking cannot be disabled', () => {
-    const map = qoderThinkingLevelMap({ ...MODEL, canDisableThinking: false })
+  it('honours a different upstream scale (DeepSeek: high / max)', () => {
+    const map = qoderThinkingLevelMap({ ...MODEL, thinkingEfforts: ['high', 'max'], canDisableThinking: true })
+    expect(map?.high).toBe('high')
+    expect(map?.max).toBe('max')
+    expect(map?.low).toBeNull()
+    expect(map?.off).toBe('off')
+  })
+
+  it('offers `off` only when thinking can be disabled', () => {
+    const map = qoderThinkingLevelMap({ ...MODEL, thinkingEfforts: ['high'], canDisableThinking: true })
+    expect(map?.off).toBe('off')
+    const noOff = qoderThinkingLevelMap({ ...MODEL, thinkingEfforts: ['high'], canDisableThinking: false })
+    expect(noOff?.off).toBeUndefined()
+  })
+
+  it('still defines a map (all null) when the upstream declares no scale', () => {
+    // 模型是推理模型，所以 map 存在 → DSH 知道它支持推理；但没有真实档位时
+    // 不给出任何可选项，而不是给出无效项。
+    const map = qoderThinkingLevelMap({ ...MODEL, canDisableThinking: true })
     expect(map).toBeDefined()
-    expect(map?.off).toBeUndefined()
-    expect(map?.high).toBeNull()
+    expect(map?.minimal).toBeNull()
+    expect(map?.max).toBeNull()
+    expect(map?.off).toBe('off')
   })
 
   it('returns undefined for a non-reasoning model (no map at all)', () => {
