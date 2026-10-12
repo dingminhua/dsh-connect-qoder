@@ -16,8 +16,9 @@
 
 | 项目 | 仓库 | 参考内容 | 许可证 |
 | --- | --- | --- | --- |
-| `qoder2api`（Go） | <https://github.com/Zhengyuuuui/qoder2api> | cosy 协议 wire behavior 的参照实现：自定义 Base64 编码与重排、MD5 签名（`cosy&<SECRET>&<date>`）、RSA/AES 会话封装、指纹派生、jobToken 交换、SSE 信封与增量形状、错误分类、签到端点。本项目**未复制其源码**，按其文档与运行行为独立实现为 TypeScript（`src/cosy.ts` / `src/upstream.ts`） | 仓库未附独立 LICENSE，README 声明其源自 `wangtufly/QCCG`（**GPL-3.0**，见下） |
+| `qoder2api`（Go） | <https://github.com/Zhengyuuuui/qoder2api> | cosy 协议 wire behavior 的参照实现：自定义 Base64 编码与重排、MD5 签名（`cosy&<SECRET>&<date>`）、RSA/AES 会话封装、指纹派生、jobToken 交换、SSE 信封与增量形状、错误分类。本项目**未复制其源码**，按其文档与运行行为独立实现为 TypeScript（`src/cosy.ts` / `src/upstream.ts`） | 仓库未附独立 LICENSE，README 声明其源自 `wangtufly/QCCG`（**GPL-3.0**，见下） |
 | `QCCG`（qoder2api 的上游） | <https://github.com/wangtufly/QCCG> | qoder2api 声明的协议源头。本项目仅经 qoder2api 了解协议行为，未接触其源码 | **GPL-3.0** |
+| `Qoder-Daily`（青龙脚本） | <https://github.com/L0NE-6/Qoder-Daily> | **每日签到**的协议参照：`sash/api/v1/me/campaigns` 拉活动 + `…/{campaignId}/claim` 领取的请求形状、`jt-` 令牌与 `cosy-clienttype` 头、幂等判定（`CLAIMED` / 409 / `replayed`），以及国际版所需设备风控三件套（`Cosy-MachineToken` / `MachineCode` / `MachineType`）由本机 UMID 组件产出的思路。本项目**未复制其源码**，按其文档与本机实测行为独立实现为 TypeScript（`src/upstream.ts` 的签到部分 / `src/device-risk.ts`），并补了它没有的两点：逐账号「先查后领」的幂等，以及取不到设备身份时**如实报错**而不是静默降级成「今天没有活动」 | **MIT** |
 | Qoder 官方 SDK（agent 启动器） | 厂商随 IDE 分发的 TypeScript 类型定义（本地 `/tmp/sdk`） | 仅用于**类型核对**（usage 形状、cosy 头字段名），未复制其实现 | 厂商内部许可（不随本项目分发） |
 
 > **GPL-3.0 合规说明**：本项目与 `QCCG`（GPL-3.0）之间**没有源码级衍生关系**——cosy 协议是公开的请求/响应行为（可通过抓包与文档观察），本项目按该行为**独立实现**全部加解密、签名与会话逻辑，不复制、不修改、不链接其任何源码。GPL 的传染性不适用于「仅参照协议行为、clean-room 独立实现」的作品；本项目自身以 MIT 发布，与之不存在再分发冲突。若你对这一判断有异议或发现任何源码级相似，请提交 issue。
@@ -48,17 +49,11 @@
 
 ## 五、图标来源与商标说明
 
-本项目的插件图标（`icons/dsh-connect-qoder-128.png`、`icons/dsh-connect-qoder-64.png`，以及 `src/client/icon.ts` 中内联的 base64 副本）**不是本项目原创的美术作品**，而是取自**本机安装的 Qoder 桌面客户端**自身的应用图标：
+本项目的插件图标（`icons/dsh-connect-qoder-128.png`、`icons/dsh-connect-qoder-64.png`，以及 `src/client/icon.ts` 中内联的 base64 副本）是 **LaoDing 插件家族通用的 LD 品牌标**（蓝紫渐变圆角磁贴 + 白色字标），与 `dsh-connect-trae` / `dsh-connect-workbuddy` 的图标**字节一致**——家族约定：图标标识「这是同一家族的插件」，产品区分由卡片标题、描述与配色承载。该美术作品由本作者原创，随本项目 MIT 许可分发。
 
-| 来源 | 路径 | 处理 |
-| --- | --- | --- |
-| Qoder 桌面版（国际版）应用图标 | `/Applications/Qoder.app/Contents/Resources/application-icons/qoder-dark.png`（1024×1024，深色磁贴 + 白色 Q 字标） | 按 alpha 包围盒裁掉四周透明边，降采样为 128px / 64px |
-
-选择 `qoder-dark`（而非 `qoder-light`，即透明底黑 Q）的原因：DSH 的设置卡片为深色背景，透明底黑 Q 在该背景下不可辨；深色磁贴自带底色，深浅主题下均可读，且与同作者其他插件「自带底色的磁贴」外观一致。
-
-- **使用性质**：**指示性使用（nominative use）**——本插件是第三方客户端，图标用于**标识它所连接的服务**，不表示 Qoder 官方出品、背书或授权。
-- **权利归属**：`Qoder` 名称与图标是厂商的商标，图标美术作品的版权归厂商所有，**不适用本项目的 MIT 许可**；本项目仅随包分发该图标以标识所连接的服务。
-- **可替换性**：若厂商对上述使用有异议，替换图标只需重新生成 `icons/` 下两个 PNG 并重跑一次 `src/client/icon.ts` 的生成脚本（见该文件头部注释），不影响任何代码逻辑。
+- **0.2.0 曾用过 Qoder 桌面客户端的应用图标本体**（从 `/Applications/Qoder.app/…/application-icons/qoder-dark.png` 降采样），属**指示性使用**；0.3.0 起已改回家族 LD 标，**不再随包分发任何第三方美术作品**。
+- **商标**：`Qoder`、`通义灵码` 名称与各自图标是厂商的商标，本项目仅在描述兼容关系的意义上使用其名称，不表示 Qoder 官方出品、背书或授权；相关权利归各自所有。
+- **可替换性**：替换图标只需重新生成 `icons/` 下两个 PNG 并同步 `src/client/icon.ts` 的 data URI（见该文件头部注释），不影响任何代码逻辑。
 
 ## 六、随包分发
 

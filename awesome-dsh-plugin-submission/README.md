@@ -4,13 +4,24 @@
 
 ## 当前状态
 
-- **正式提交**：尚未提交（待插件发布后提交 PR `data/plugins/dingminhua__dsh-connect-qoder.yml`）
+- **正式提交**：尚未提交（发布 0.3.0 后提 PR `data/plugins/dingminhua__dsh-connect-qoder.yml`）
+- **npm 包名**：`@dmh2002/dsh-connect-qoder`。**注意**：无作用域的 `dsh-connect-qoder` 已被他人占用（发布者 `gghskl`，仓库 `hdhgsysh/dsh-connect-qoder`，实为 `eghrhegpe` 那份「读本机登录」的实现，已在注册表内）。本项目是**另一条技术路线**（用户自备 PAT + cosy 网关），因此发布在作用域名下；仓库名与插件在 DSH 内的标识（settings 命名空间、`/plugins/dsh-connect-qoder/…` 路由、CLI 程序名）**不变**。
 - **前置要求**（依据 [contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)）：
   - [x] 仓库 `package.json` 声明 `dsh.bundle` manifest（`dsh.bundle.patch: ./cordis.patch.yml`）
-  - [ ] 仓库打 `dsh-plugin` topic（在 GitHub 仓库 Settings → Topics 添加）
-  - [ ] 仓库满 1 天、提交数 ≥ 10（CI 自动检查）
-  - [ ] 插件已发布到 npm（注册表以 npm 包为准）
-- **截图**：声明在**本项目自己仓库**的 `screenshots.json`（目前未建——发布安装后截图补齐）
+  - [x] 已发布到 npm（映射由 registry 从包的 `repository` 字段自动采集，**条目里不要手写 `npm:` 键，会被校验拒绝**）
+  - [ ] 仓库打 `dsh-plugin` topic（GitHub → Settings → Topics）
+  - [x] 仓库创建满 1 天（2026-10-11 创建。现行规则**没有**提交数门槛——历史长短反映开发习惯而非质量，见 contributing 的说明）
+- **截图**：声明在**本项目自己仓库**根目录的 [`screenshots.json`](../screenshots.json)（四张实机图：设置卡片 / 模型管理 / composer 积分 / 模型选择器）
+
+## 与已有同名条目的区别（提 PR 时主动写进描述）
+
+注册表里已有 `eghrhegpe/dsh-connect-qoder`（npm `@eghrhegpe/dsh-connect-qoder`），它读**本机 Qoder 桌面端登录态**、零配置。本项目：
+
+- 凭据走**官方 PAT**（`pt-…` → jobToken → cosy 签名会话），**不读不写**桌面端本地登录文件；
+- 多账号池（PAT vault）+ 一键签到 + 一键测试 + 自动换号；
+- 逐模型的上游思考档位与上下文档位选择，能力只按上游明确公布的给（未核实一律不预勾）。
+
+评审对重复条目的规则是「谁更好」而非先来后到；两条描述不同、实现路线不同——提 PR 时把这段差异写清楚即可。
 
 ## 收录目录规范
 
@@ -21,6 +32,9 @@
   - `category`：有效值之一（本项目为 `model`）
   - `description.en`：必填，一行，以句号结尾；含 `: ` 必须加引号
   - `description.zh`：可选，维护者会补
+- **描述必须属实**：它会被当作对插件的声明，与代码逐条核对（写「46 个工具」就得真有 46 个）。只说功能，不带最高级形容词与营销词——夸大是让好插件被打回的头号原因。
+- 硬性要求：`dsh.bundle` manifest（**只声明 `dsh.client` 会被直接打回**）、仓库有真实可用的代码、创建满 1 天、活跃维护、带 `dsh-plugin` topic。
+- 红线：纯聚合包不收（收插件不收 bundle）；依赖必须解析到原作者仓库或其 npm 包；PR 不得动别人的条目。
 - README（`README.md` / `README.zh.md`）由脚本生成，**不要手工编辑**；改 YAML 后执行：
   ```sh
   npm ci

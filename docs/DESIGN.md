@@ -20,8 +20,11 @@
 
 - **凭据**：workbuddy 读桌面端本地加密凭据（`auth.ts` / `at-rest.ts` / `oauth.ts`）；
   本插件用用户自备的 PAT（`credentials.ts`）+ 本地 vault（`accounts.ts`）。
-- **签到**：WorkBuddy 有每日签到端点；Qoder **没有**，故 `pool.checkinSupported`
-  恒为 `false`，卡片不渲染签到列。
+- **签到**：两边都有每日签到，但端点不同——WorkBuddy 有专用 checkin 端点，Qoder
+  的签到藏在 `sash/api/v1/me/campaigns`（活动/权益）+ `…/{campaignId}/claim` 里，
+  名字没有「签到」二字，照 checkin / signin / reward 猜路径一律 404（早期据此
+  误判为「没有签到」，已修正）。国际版的活动只下发给带设备风控头的请求，
+  三件套由 `device-risk.ts` 读本机 Qoder 客户端的 UMID 组件产出。
 - **工具调用恢复**：workbuddy 需要 `dsml-recovery.ts` / `markup-diagnosis.ts`，
   因为其上游**不**发原生 tool_calls；Qoder 上游**原生**发 `delta.tool_calls`
   （见 `src/upstream.ts` 的解析与 `src/shim.ts` 的直写），故不需要这两个模块。
@@ -73,7 +76,9 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 （可用性 → 额度从高到低 → 到期最近 → id）自动换账号。首字节之后绝不换账号
 （那会让用户看到两个人拼出来的回答）。
 
-**没有每日签到**，所以池只有 `test` / `remove` 两个动作。
+**每日签到已接通**（CN 与国际版），所以池的批量动作是 `checkin` / `test` 两个，
+另有逐账号的 `remove`。签到**先查状态再领取**（幂等），且只在你点按钮时执行——
+不提供自动签到。
 
 ---
 

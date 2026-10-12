@@ -2,12 +2,33 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## Unreleased
+## 0.3.0 (2026-10-12)
 
-本轮为「与 dsh-connect-workbuddy 逐模块对等审计」的修复轮：以下各项均以 workbuddy 的已验证行为为基准，并对照 pi-ai / DSH 宿主源码逐条核实后修复。
+三条主线：**每日签到真的接通了**（我早期把它判成「Qoder 没有签到」，那是没实测就下的结论）、**与 dsh-connect-workbuddy 的逐模块对等审计**，以及收尾的**国际版（global）对等审计**（结论见 [`docs/audit/AUDIT-REPORT.md`](docs/audit/AUDIT-REPORT.md)）。对等审计的每条都以 workbuddy 的已验证行为为基准，并对照 pi-ai / DSH 宿主源码逐条核实。
+
+国际版审计最重要的结论**不是**国际版缺代码：一是它此前从未被执行过（`~/.dsh` 下没有 `.qoder-accounts.global.json` / `.qoder-pool.global.json`，CLI `doctor` 实测 `global: vault=0`），二是审计顺带挖出两个**双区域都受影响**的功能性 bug（账号转移的导出/导入往返、CLI 子命令分发）——见下面的 Fixed。
+
+### Features
+
+本版新增的用户可见能力（详细经过记在下面的 Fixed / Changed 里）：
+
+- **每日签到（CN + 国际版）** —— 「一键签到所有账号」+ 池表格的「签到」列；先查状态再领取（幂等），国际版按区域读取本机 Qoder 客户端的 UMID 设备身份组件产出风控头，取不到时如实报错。
+- **思考强度可选且真的发得出去** —— 卡片按模型只列上游声明过的档位，选定即保存、每个请求带上（顶层 `reasoningEffort` + `parameters.reasoning_effort` 双写，与官方客户端一致）。
+- **「在对话框显示积分」开关移进账号池标题行**，少占一整行。
 
 ### Fixed
 
+- **国际版 tab「还是缺少账号池这些功能」—— 同一处区域分发上的两个独立缺陷**（用户实拍，接在「国际版看起来就是空的」那轮之后）。
+  - **为什么「cn 一切正常」查不出来**：两个缺陷都只伤**非 cn** 的那个 tab，cn 自己完全不受影响。上一轮修的是「signed-out 时账号池不渲染」（`renderPool` 读 `signIn`），那个确实修好了；但只要 usage 文档**根本没落地**，卡片仍然什么都不渲染 —— 症状看起来一样，根因完全不同。
+  - **缺陷 1：挂载时只读 `cn`。** `useEffect` 里只有 `void refresh('cn')`，另一个区域要等 **60 秒**轮询才第一次有数据。切到国际版就是一片空白（连账号池与「添加 PAT」一起），要自己等一分钟才长出来。现在挂载即读**两个**区域，并在切 tab 时若该区域还没读过就立刻补读一次（不依赖轮询时机）。
+  - **缺陷 2：两个区域共用一个 `AbortController`。** `refresh()` 第一行 `controllers.current?.abort()` 取消的是「上一次发起的那个请求」，而那个请求可能属于**另一个区域**：轮询里 `for (const region of QODER_REGIONS) void refresh(region)` 背靠背连发两次，cn 的请求刚建好就被 global 那次取消（反之亦然）。**同一时刻只有一个区域的 usage 能落地。** 现在每区域一个 controller：取消只用于「同区域连续刷新只认最后一次」，跨区域互不干涉。
+  - **测试**（`tests/card-render.spec.tsx`，+4 条）：用**同一份 signed-in 文档**渲染两个 tab 并逐项比对池/成员行/模型行/签到/测试/添加 PAT/导出导入/签到列；挂载时两个区域都被读到；**推进 60 秒轮询断言两区刷新互不取消**；两 tab 渲染清单完全相等。
+  - 每条都做过变异测试：还原「只读 cn」/「共享 controller」/「`renderPool` 读 `signIn`」各自被对应测试接住。其中共享 controller 那条**只在轮询路径上可测** —— 挂载读修好之后它被掩盖了，第一版挂在挂载路径上，变异后仍然通过（说明那条断言是空的），已改成推进轮询后配对「被取消的请求之后是否还有同区域的请求」。
+- **领了签到积分，卡片上的积分不刷新**（用户实拍：「我领了积分，但是积分没刷新」）。
+  - **根因**：`runCheckinBatch` 收尾只 `delete usageCache[region]` —— **作废**了缓存，却没有任何人去重新填充它。于是积分停在签到前的数字，直到某个**与签到无关**的动作（改配置 / 点「从 Qoder 刷新」）顺带触发 `refreshUsage`。等于把「读到新值」推给了一个不会到来的下一次无关动作。
+  - **修法**：签到后直接 `await refreshUsage(region)`。
+  - **必须 await 而不是 fire-and-forget**：客户端收到签到响应后**立刻**调 `onChanged()` 重新读一次 usage（`AccountPool.runCheckinBatch` 末尾）。宿主若不等待，这次重读会发生在上游返回之前、读到刚被作废的空缓存 —— 那是竞态，不是修复。
+  - 测试（`tests/index.spec.ts`）挂一个假 `webServer` 把路由抓下来，**真的调那条 checkin 路由**，断言签到之后 usage **被再读了一次**。断言基线取在挂载期的读取**全部落定之后** —— 第一版取早了，一次迟到的挂载期读取混进来，断言就假通过了（这正是它一度在 bug 还在时仍然通过的原因）。变异测试确认：换回 `delete usageCache` 立刻失败。
 - **账号池标题行整体对齐 workbuddy**（用户要求：「这部分区域的样式整体对齐 workbuddy」）：做了一次机械对比，而不是逐处猜。结论是**样式层已经高度一致**——表格 21 条同名规则逐字相同、DOM 类名顺序也完全一致；账号工具框与设置区 9 条同样一致。本轮真正修掉的是标题行：
   - `.dsm-qoder-pool-head`：`gap` 12px → **10px**、去掉 `justify-content:space-between`（workbuddy 同规）。
   - 积分开关改为 workbuddy 的 `pool-head-extra` 形态：**紧挨标题**的直接子项，而不是我上一轮自创的 `.dsm-qoder-pool-head-right` 分组（那多包一层、还改了换行与间距行为）。那个自创类已删除。
@@ -204,13 +225,71 @@
   - 标签「上下文」也一并去掉（上一轮刚从「DSH 上下文预算」缩短而来）：它紧挨着模型自己的上下文信息（`最大上下文 200,000`），下拉里的 200K / 400K / 1M 已经说明在选什么。可见文字去掉，无障碍名 `aria-label` 保留——读屏用户不能因此失去这一行的含义。
   - **字体样式突兀**（用户实拍）：两个选择器此前复用了账号池表格的 `dsm-qoder-pool-num`——13px、74px 宽、8px 圆角的**实心方块**，放进 11px 的模型行（meta 行与头部控件行）里格外扎眼。改为新的 `.dsm-qoder-inline-select`：无边框、无底色、字号与所在行一致（11px / 16px 行高），读起来像这一行的文字而不是表单控件；箭头由外层 `.dsm-qoder-inline` 的 `::after` 绘制（原生箭头在暗色主题下不可控），hover 才提亮、focus 才出现焦点环。选项列表单独给背景色——系统绘制的下拉不继承行内样式，不加会渲染成一列透明文字。
 
+- **国际版（零凭据区域）整块空白，连「添加 PAT」入口都没有**（用户实拍：「国际版看起来就是空的」）。
+  - **根因**：`QoderCard.renderPool()` 第一行是 `if (signIn?.pool === undefined) return <span />`，而 `signIn` 只在 `status === 'signed-in'` 时存在。一个 PAT 都没有的区域**永远**拿到 `signed-out`，于是账号池整块不渲染 —— 连同由它渲染的「添加 PAT / 导出 / 导入账号」一起消失。**最需要添加第一个账号的页面，恰恰没有任何添加账号的入口。**
+  - **为什么之前没查出来**：上一轮修的是同一件事的**宿主那一半**（`buildWebUsage` 的 `signed-out` 支不再提前返回，现在也带上 `pool`），宿主侧单测也确实过了。但客户端还锁在 `signIn` 上 —— 两侧必须同时改，零凭据的区域才会既能看到「这里还没有账号」的说法，又拿得到添加入口。这是**一次只修一半**留下的坑。
+  - **修法**：`renderPool` 改读 `usage`（`status === 'error'` 仍排除：那份文档没读成，它的 `pool` 字段根本不存在，渲染空壳只会把错误行挤到下面，与 workbuddy 同规）。`AccountTransfer` 的账号列表同步改读 `doc.accounts`。
+  - 新增 4 条卡片级回归测试（`tests/card-render.spec.tsx`）：零凭据时账号池渲染 / 「添加 PAT」与导出导入入口都在 / 空池说「还没有账号」而非「成员限流」/ `status=error` 时不渲染空壳。**做过变异测试**：把 `renderPool` 改回读 `signIn`（即还原这个 bug），3 条立刻失败。
+  - 审计报告 `docs/audit/AUDIT-REPORT.md` 的结论「国际版代码无缺失、只是从未配置」需要修正为：**代码曾经缺失一个客户端渲染门槛**，零凭据区域因此不可配置。本条即其修复。
+- **行内那个「移除」根本不是删除 —— 移出池与彻底删除此前是同一颗按钮**（用户实拍：「我国内版本，删除唯一的号，但是号并没有删除干净」）。
+  - **根因**：`POST /pool?action=remove` 这一支只做了 `updateMembership(...)`，也就是**把 id 从 `memberAccountIds` 里剔掉**——凭据（`~/.dsh/.qoder-accounts.<region>.json`）一行都没动。UI 上按钮却写着「移除」，和账号行里另一个已删掉的「移除 · <账号>」（那个是真删 vault 的）共用同一套文案，读起来就是删除。实测磁盘：点完之后 vault 里那条记录（`pat-5d76517ac7699f87`）原封不动，配置里 `accountId` 也还指着它；下一次「全选」又能勾回来。这就是「删不掉」的完整机制。
+  - **修法**：按 workbuddy 的划分把两件事彻底分开 ——
+    - **移出池 = 取消勾选并保存**。行内不再有任何「移出池」按钮：勾选框已经在表达「是不是成员」，再给一个只改同一件事的控件，两处迟早会不一致（这次的 bug 就是这么来的）。
+    - **彻底删除 = 行内「删除」按钮 + 两步内联二次确认**。宿主侧删掉 vault 条目，并**连带收掉配置里指向它的两处残骸**：区域的 `accountId`（否则卡片会一直说「所选账号已不存在」）与 `memberAccountIds`（否则留下一条勾不上的幽灵 id）。
+  - **settings / env 的 PAT 明确拒绝**（409 + `account-not-deletable`）而不是回一个「其实没删掉什么」的 200：那类凭据由插件之外管理，删 vault 条目对它无效；卡片据 `source` 直接不给那些行显示删除按钮。id 先按 `isQoderAccountId` 的形状校验（400），不让畸形值走到宿主内部。
+  - **危险动作才配危险样式**：静止态的「删除」保持中性 outline（它和「测试」并排，每次看都要重新判断哪个会丢数据）；红色留给确认条里那颗「彻底删除」，也就是用户已经明确表达意图的那一刻。确认条就地展开在那一行的操作格里，不弹窗——确认的是什么必须和被确认的行在同一视线内。
+  - 新增 11 条测试：宿主侧 6 条（真删 vault 条目、配置残骸两处都收、删 A 不动 B 的选择、settings/env 被拒、畸形 id 400、缺 id 400），客户端侧 5 条（没有「移除」按钮、点第一下不发请求、确认才发且带对路由与 id、「保留」能撤掉、settings/env 行无删除按钮、失败时翻出结构化文案）。全部做过变异测试：去掉真删 / 去掉残留清理 / 去掉确认闸门 / 无视 `source` 四种改法各自被对应的测试接住。
+- **一个账号都没有时，账号池整段不渲染 —— 于是没有地方添加账号**（用户实拍：「没有账号的时候显示的不对，账号池这个功能也要有，否则没地方添加账号」）。
+  - **根因**：`buildWebUsage` 在 `serving === undefined`（没有任何可用凭据）时**提前返回**，那一支刻意不带 `pool` 字段，理由是「不出现 pool 段就等于没有任何账号正在使用」。而客户端的 `renderPool()` 在 `pool === undefined` 时直接返回空 `<span/>` —— **「添加 PAT / 导入账号」这两件工具恰好由账号池区渲染**。于是「一个账号都没有」这个最需要添加入口的状态，反而完全没有添加入口。原来的单元测试还把这条行为写成了断言（`signed-out 时不出现 pool 段`），所以改动前一直没人发现。
+  - **修法**：signed-out 支也构建并带上账号池视图（`servingAccountId` 传 `undefined`，`current` 自然全为 false）。「当前没有正在计费的账号」改由**每一行的 `current`** 表达，不再靠整段缺席来暗示。`QoderWebUsage` 的 signed-out 变体相应加上可选 `pool`。
+  - 顺手修掉一处**误导文案**：`poolNoCandidate`（「成员要么限流、要么积分耗尽……」）此前不判断有没有账号，空池也会显示，读起来像账号出了问题而不是还没添加。现在只在**真的有账号但都不可用**时才说，空池改为新的空状态 `row.poolEmptyHint`（中英双语，指向「添加 PAT」与「导出 / 导入账号」）。
+  - 新增 4 条测试：宿主侧「零账号仍然给出 pool 视图、且没有任何一行 `current`」与反向的「没有 pool dep 时不凭空造池」；客户端侧「零账号仍渲染账号池 + 空状态 + 添加账号入口，且不说 poolNoCandidate」与「有账号但都不可用才显示警告」。宿主侧那条做过变异测试（去掉 pool 即失败）。
+- **客户端 bundle 的模块 id 必须等于包名 —— 改包名把插件整个搞挂过。** 包名从 `dsh-connect-qoder` 改成带 scope 的 `@dmh2002/dsh-connect-qoder` 后，插件在设置页报「启用失败 … failed to import」，渲染进程控制台的真实错误是：
+  `client-modules: duplicate factory registration for "dsh-connect-qoder" (bundle executed twice without invalidate?)`。
+  - **根因**：`tsdown.config.ts` 里 `PLUGIN_ID` 是**硬编码**的旧名，而 shell 的客户端模块花名册是按**包名**给每一行建键的（`resolveMeta` → `packageName`，取自 package.json 的 `name`）；模块加载器又靠「bundle 声明的 id ↔ 花名册行的 id」配对来记录 revision 并在重建时 invalidate（`graphRows` / `reloadTargets` 都以它建键）。两者一旦不等，注册就永远挂不到自己那一行上、**永远不会被 invalidate**，bundle 第二次执行即抛 duplicate。
+  - **修法**：`PLUGIN_ID` 改为从 `package.json` 的 `name` **推导**（与 `PACKAGE_VERSION` 同源），从此改包名不可能再把 id 落下。已核对同 profile 里两个正常工作的 scoped 插件（`@linxin666/dsh-client-ui-git-graph`、`@changfenhuang/dsh-genui`）——它们的 bundle id 都等于自己的 scoped 包名，本项目此前是唯一的例外。
+  - 新增 `tests/plugin-id.spec.ts` 守卫（含一条「旧写法必然失败」的回归断言，并校验 `lib/client.js` 里真的声明了这个 id）：单元测试此前完全看不见这个 bug（全绿），只有真机激活才暴露，所以用构建配置层的断言钉住它。
+  - 注意 `cordis.patch.yml` 的 entry `id`（`dsh-connect-qoder`）**故意保持不带 scope**：它承担设置命名空间与 `/plugins/<id>/…` 路由，改名会孤儿化老配置。那是**另一个**标识，不是这个模块 id。
+  - **另外还需要在 profile 侧修一处**（不随包发布，故不在本仓库改动范围内）：本地是 `"dsh-connect-qoder": "link:…"`（unscoped key），`node_modules` 下只有 unscoped 软链；而 `cordis.patch.yml` 的 `name` 是 scoped 的，`@dmh2002/dsh-connect-qoder` 因此 `ERR_MODULE_NOT_FOUND`。需要把 profile 的依赖键与 `dsh.profile.bundles` 一并对齐成 scoped 名并重装（或改用插件管理器的「安装本地 bundle」重新登记），详见本次排障结论。
+- **配置卡片正文整片消失（用户报「之前做的功能菜单都没了」）—— 槽位 key 同样按包名建，这是同一身份漂移的第二处。**
+  改包名后，插件管理页里插件仍显示**运行中**、图标 / 描述 / 组件行都在，但**配置卡片正文什么都不渲染**（国内版/国际版 tab、模型管理、账号池、积分整片空白），而且**没有任何报错**。
+  - **根因**：DSH 的插件配置页把槽位按**包标识**建键 —— `plugins.bundle.config` 用**裸包名**，`plugins.row.config` 用 **`<包名>#<行 id>`**（行 id 就是 bundle patch 里声明的 entry `id`）。而 `src/client/index.tsx` 把这两个 key **硬编码**成旧的 unscoped 名（`dsh-connect-qoder` / `dsh-connect-qoder#dsh-connect-qoder`）。包名改成 `@dmh2002/dsh-connect-qoder` 后 key 对不上，槽位注册**静默失配** —— 它包在 try/catch 里，所以连 console 都不会红。
+  - **修法**：包名改为**构建期注入**（`__DSH_QODER_PACKAGE_NAME__`，与 `__DSH_QODER_VERSION__` 同源、都取自 package.json）；新增 `src/client/slot-keys.ts`（无 React 依赖的纯函数 `qoderCardSlotKeys(packageName, rowId)`）供卡片注册使用；`vitest.config.ts` 镜像同一组 define，让测试看到真实包名。
+  - 新增 5 条测试（`tests/plugin-id.spec.ts`）：key 格式、bundle key 等于真实包名、row key 等于 `<包名>#<entry id>`、**「旧硬编码 key 必然失配」的回归断言**，以及「构建产物真的用这组 key 注册」的产物断言。该产物断言在 `lib/` 不存在时**跳过而非抛错**（`lib/` 是 gitignore 的，且 `pnpm run check` 先跑测试、后跑构建）。
+  - 已做变异测试：把 `index.tsx` 改回硬编码旧 key，产物断言即失败。
+- **账号转移的导出/导入往返彻底修好（双区域都坏过）**：`exportAccounts` 此前直接吐 vault 内部字段 `{ pat, accountName, id }`——**既不调用 `transferRecordOf`，也就没有 `domain` 字段，字段名也不是 snake_case**。而导入侧的区域门只认 `domain`，于是用户导出的文件再导入时**全判 skipped（导出即导入 = 0 条成功）**，功能等于不可用。
+  - 修法：导出改走 `transferRecordsFor(region, accounts)`（新增于 `src/transfer.ts`，`access_token` / `uid` / `nickname` / `domain` 四字段齐全，domain 由 `QODER_REGION_TRANSFER_DOMAIN` 按区域给出）。
+  - `QoderTransferDeps.exportAccounts` 的返回类型从「vault 形状」收紧为 `QoderTransferRecord[]`，**从类型上**挡住这种形状回退——原类型本身就是这个 bug 的共谋。
+  - `QODER_REGION_TRANSFER_DOMAIN` 由既有的 `knownQoderRegionOfDomain` **推导**而来（而不是手抄第二份域名表），两处不可能再漂移；漏登记某区域会在模块加载即抛错。
+  - **补了往返回归测试**（`tests/transfer.spec.ts` 的 `export → import round trip`）：导出 → 原样喂回导入 → 断言 `imported === 导出条数`，cn 与 global 各一条，外加交叉导入必须跳过。
+  - 这个 bug 之前能存活，是因为两侧的单元测试各自都是绿的：`transferRecordOf` 单独测（对）、区域门单独测（对），但**没有任何测试把真实导出路径接到导入路径上**。往返测试就是为堵住这条接缝。
+- **CLI 三条子命令从未真正跑起来**：`main()` 过滤 argv 的末项写成了 `REGION_KEYS.includes(arg)`（只保留 `cn` / `global`），于是**命令词自己被过滤掉**，`command` 恒为 `undefined`，`doctor` / `status` / `logout` 全部只会打印 usage 后退出。`src/bin.ts` 此前没有任何测试文件，所以一路无人发现。
+  - 修法：语义改正为「保留**不是** flag、**不是**区域名的实参」，并抽成纯函数 `commandArgOf()`（分发规则的唯一实现）。
+  - 新增 `tests/bin.spec.ts`：覆盖命令词、`--json` 任意位置、`--region` 及其实参、纯 flag 输入，以及一条**回归断言**（旧写法的等价实现对 `['doctor']` 返回 `undefined`，新实现返回 `'doctor'`）。
+  - 实测（`node lib/bin.js doctor --json`）现在真的输出两区域状态，其中 `global: vault=0` —— 这条输出也正是「国际版从未被执行」的直接证据。
+- **国际版的用量/积分查询补发设备风控头**：`requiresDeviceRisk` 的语义是「该区域的 sash 请求都要带 `Cosy-MachineToken/Code/Type`」，但它只被签到路径（`sashRequest`）消费；用量走的 `jobTokenGet` 与直连回退 `fetchUsageDirect` 都只发 `accept` + `authorization`。已用注入 fetch 实测证实：修复前 global 的 `/sash/api/v2/me/usage` 请求**零个** machine 头。现在两条路径都按区域附加（国内版仍不带，不多发噪音）。
+  - 补 3 条回归测试：国际版用量带齐三件套、国内版不带、**回退路径也带**（迫使主路径 401 走回退后断言两次请求都带头）。
+  - 这三条都做了变异测试：单独还原任一处的修复，对应测试即失败。
+
 ### Changed
 
 - **插件图标改回 LaoDing 插件家族通用的 LD 品牌标**：`icons/dsh-connect-qoder-{128,64}.png` 与卡片头部内联 data URI 均与 dsh-connect-trae / dsh-connect-workbuddy 字节一致（家族约定：图标标识「同一家族的插件」，产品区分由标题与描述承载）。取代 0.2.0 的 Qoder 品牌紫白 Q 磁贴。
+- `src/upstream.ts` 文件头注释此前称国际版的 models 走 `api2.qoder.sh`、jobToken 走 `center.qoder.sh`，而代码三个端点都指向 `api1.qoder.sh`。实测（2026-10）三者对本插件用到的端点**完全等效**（对同一假 PAT 都回 `401 personal token is invalid` 而非 `Signature invalid`），故统一为单网关主机并写进注释；将来若要按端点分流，应改 `QODER_REGIONS` 配置表而非只改注释。
+- `src/index.ts` 的 `registration.cn.directory` 单句柄（一次 `registerConfigurableProviders` 登记两侧）补了说明注释，避免读成「global 漏了 directory 句柄」。
+- **npm 包名改为 `@dmh2002/dsh-connect-qoder`** —— 无作用域的 `dsh-connect-qoder` 已被他人占用（发布者 `gghskl`，仓库 `hdhgsysh/dsh-connect-qoder`，实为 `eghrhegpe` 那份「读本机登录、零配置」的实现，已在注册表内），本项目的 PAT 路线发不到那个名字下。**插件在 DSH 内的标识不变**：`cordis.patch.yml` 的 entry `id`、设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与 CLI 程序名仍是 `dsh-connect-qoder`，老用户升级后配置照旧生效；随包改变的只有 `name` 与安装命令。
 
 ### Docs
 
 - 新增 [`docs/PAT.md`](docs/PAT.md)：PAT 是什么、从控制台哪里签发（国内版/国际版各自入口）、卡片粘贴与环境变量两条配置路径、优先级与常见问题；README 的 PAT 段落改为指向它并补上发证入口。`package.json` 的 `files` 由 `docs/assets` 改为 `docs`，使 `docs/*.md` 随包发布（此前 README 与包内的 DESIGN 文档链接在 npm 页面上是死链）。
+- **README 双语全面重写并配图** —— 顶部改为设置卡片实机截图，功能特性区补入模型选择器、模型管理、composer 积分面板三张图；新增「账号池」章节（自动换号规则、那个开关到底控制什么、排序规则、两个批量动作）与「市场收录与展示」「已知限制」「免责声明」三节。同时修掉一批过时描述：Qoder **有**每日签到（此前写「没有」）、按钮叫「测试」而非「测一测」、积分逐账号显示在账号池里、倍率的 `(0.50x)` 形态与模型名示例。
+- `screenshots.json` 与 `docs/assets/` 落地四张实机截图（设置卡片 / 模型管理 / composer 积分 / 模型选择器），供 GitHub 展示与插件市场审核读取。
+- `THIRD_PARTY_NOTICES.md` 补 `L0NE-6/Qoder-Daily`（MIT）条目：每日签到的协议参照，并写明本项目独立实现的两点差异（逐账号「先查后领」的幂等、取不到设备身份时如实报错而不是静默降级）。
+- `docs/PAT.md` 补「每日签到（实测协议）」一节，并修掉一处标题粘连导致的排版错误。
+- `docs/DESIGN.md` 与 `src/*/` 头部注释里「Qoder 没有每日签到」的过时结论全部改正（`status-paths.ts` / `account-pool.ts` / `web-status.ts` / `client/AccountPool.tsx` / `client/locales.ts` / `client/QoderCard.tsx`）。
+- **`RELEASING.md` 与 `package.json` 的包名一并对齐到作用域名**：验证命令、`npm view` / registry 直连核验、打包内容清单与暂存发布判据里的包名全部改为 `@dmh2002/dsh-connect-qoder`（registry 路径用 `%2f` 编码作用域斜杠），并新增一步「发布后核对 profile 侧的 scoped 依赖键」——本轮改名的两处静默故障（bundle 模块 id、配置槽位 key）都源于「包名改了但别处没跟上」，流程里必须留一道闸。
+- 收录草稿 `awesome-dsh-plugin-submission/`：描述按现行能力重写（补多账号池 / 签到 / 自动换号），并记下与注册表内同名条目（`eghrhegpe/dsh-connect-qoder`，读本机登录路线）的差异，提 PR 时直接引用；同时改正两处过时前置说明（现行规则**没有**提交数门槛；npm 映射由 registry 自动采集，**条目里手写 `npm:` 会被拒**）。
+- **命令行诊断的调用方式改写为实测结果**：README 双语原先写 `dsh plugin --profile desktop exec …`，本机跑不通的原因是 PATH 里的 `dsh` 包装脚本仍指向一个已不存在的 app 路径（与插件无关）；改为主张「进入 profile 目录用 `pnpm exec dsh-connect-qoder …`」，并写明两条实测边界——裸路径 `node node_modules/dsh-connect-qoder/lib/bin.js` 在改名后必然 `MODULE_NOT_FOUND`（软链已搬到 `@dmh2002/` 下，缺的是入口文件不是 peer），以及 CLI 所需的宿主 peer（`dsh-atomic-write` / `dsh-home-paths`）由 pnpm 随包装进 profile、`auto-install-peers` 关掉时才会缺。「从 npm 装的副本在宿主之外跑 CLI 必然失败」这一原先写进 README 的结论**经实测不成立**，已删除；「已知限制」同步改写（英文版补上对应条目，此前中英不对称）。
+- `THIRD_PARTY_NOTICES.md` 的图标一节改对了：0.3.0 起图标是**本作者原创**的家族 LD 标，不再随包分发任何第三方美术作品（0.2.0 曾用过 Qoder 客户端图标本体）。
 
 ### Tests
 

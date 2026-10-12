@@ -94,11 +94,20 @@ npm publish
 
 > ⚠️ **`npm publish` 成功退出（exit 0）不等于版本已上线。** 本账号/包可能走 npm 的**暂存发布（staged publishing）**：此时 registry 返回 **`202 Accepted`**，npm 把它当成功（打印 `info ok`、退出码 0），但版本只是进了**暂存区**，**公开的 packument 里看不到**，用户也装不到。
 >
-> **判据**：`npm publish` 只报 `PUT 202` / `info ok`（**没有** `+ dsh-connect-qoder@X.Y.Z` 那一行），且第 8 步直连核验里 `latest` 仍是旧版本 —— 那就是**待批准**，不是失败。
+> **判据**：`npm publish` 只报 `PUT 202` / `info ok`（**没有** `+ @dmh2002/dsh-connect-qoder@X.Y.Z` 那一行），且第 8 步直连核验里 `latest` 仍是旧版本 —— 那就是**待批准**，不是失败。
 >
 > **必须再由维护者用 2FA 批准**：到 npmjs.com 的 **Staged Packages** 标签页点 **Approve**；或在 npm CLI **≥ 11.15.0** 下用 `npm stage approve <stage-id>`。
 
-**打包内容**：`package.json` 的 `files` 字段已限定只发布 `lib/`、`icons/`、`cordis.patch.yml`、`README.md`、`README.en.md`、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`，`tests/` 和 `node_modules/` 不会进入发布包。
+**作用域包**：`package.json` 的 `name` 是 `@dmh2002/dsh-connect-qoder`，且带 `publishConfig.access: "public"`——**没有这一项，`npm publish` 会按 restricted 报价并可能失败**。发布名与插件在 DSH 内的标识是两件事：`cordis.patch.yml` 的 entry `id`、设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与 CLI 程序名**故意保持不带作用域**（改名会孤儿化老配置）。
+
+**打包内容**：`package.json` 的 `files` 字段限定只发布 `lib/`、`icons/`、`docs/assets/`、`docs/PAT.md`、`docs/DESIGN.md`、`screenshots.json`、`cordis.patch.yml`、README 双语、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`。`tests/`、`scripts/`、`docs/audit/` 与 `node_modules/` 不会进入发布包——`npm pack --dry-run` 的输出里若出现它们（或任何 `pt-` 样式的字符串），先修再发。
+
+> **改包名时必须同时核对的三处身份**（0.3.0 在这上面栽过两次，都是**静默**的）：
+> 1. `tsdown.config.ts` 的 `PLUGIN_ID` —— 客户端 bundle 在 `window.__ModuleLoader__` 声明的模块 id **必须等于包名**，否则花名册配不上行、永不 invalidate，第二次执行抛 `duplicate factory registration`（插件「启用失败」）。
+> 2. `src/client/slot-keys.ts` —— 配置卡片槽位按**包名**建键（`plugins.bundle.config` 用裸包名、`plugins.row.config` 用 `<包名>#<entry id>`），硬编码旧名会让卡片正文**整片空白且不报错**。
+> 3. profile 侧的依赖键与 `dsh.profile.bundles` —— 本地 `link:` 安装的键名也要跟着改成 scoped，否则 patch 里的 `name` 解析不到（`ERR_MODULE_NOT_FOUND`）。
+>
+> 前两处由 `tests/plugin-id.spec.ts` 钉住（含「旧写法必然失败」的回归断言与构建产物断言）；第三处见第 10 步。
 
 **发布前检查**（可选但推荐）：
 
@@ -117,14 +126,14 @@ npm pack --dry-run
 ### 8. 验证发布成功
 
 ```bash
-npm view dsh-connect-qoder --prefer-online version            # 应显示 X.Y.Z
-npm view dsh-connect-qoder --prefer-online dist-tags.latest   # 应为 X.Y.Z
+npm view @dmh2002/dsh-connect-qoder --prefer-online version            # 应显示 X.Y.Z
+npm view @dmh2002/dsh-connect-qoder --prefer-online dist-tags.latest   # 应为 X.Y.Z
 ```
 
-**权威验证（必须用这条，绕开本机代理缓存）**：
+**权威验证（必须用这条，绕开本机代理缓存）**——作用域在 registry 路径里要写成 `%2f`：
 
 ```bash
-curl -s --noproxy '*' -H "Cache-Control: no-cache" https://registry.npmjs.org/dsh-connect-qoder \
+curl -s --noproxy '*' -H "Cache-Control: no-cache" https://registry.npmjs.org/@dmh2002%2Fdsh-connect-qoder \
   | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);console.log('latest:',j['dist-tags'].latest);console.log('has X.Y.Z:',!!j.versions['X.Y.Z']);console.log('published:',j.time['X.Y.Z'])})"
 ```
 

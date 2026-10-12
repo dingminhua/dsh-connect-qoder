@@ -112,6 +112,7 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 
 因此：卡片上积分显示「—」而对话能正常用，属于「积分端点读不到」，不等于
 「令牌坏了」。判断令牌真实状态应看对话能否发送，或按上表用 Cloud Agents 端点核对。
+（本插件现在的积分查询已改用 jobToken 的 `jt-` 令牌，实测 200；PAT 直连只作兜底。）
 
 **模型列表是空的，但令牌看着没问题**
 未配置 PAT 的区域**不会列出任何模型**——一个请求都发不出去，列出来只会点到就失败。确认「从 Qoder 刷新」执行过。
@@ -120,7 +121,9 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 把令牌在 Qoder 控制台里删掉即可；本插件侧用 `dsh-connect-qoder logout [--region cn|global]` 清除本地 vault 账号。
 
 **能不能像 WorkBuddy 那样直接读本机登录？**
-不能。WorkBuddy 桌面端把登录态存在固定路径的明文/可解密文件里，插件可以直接扫描复用；Qoder 桌面端把凭据加密后存进系统钥匙串相关的封装文件，且 CLI 侧的 `.auth/user` 只有登录过 Qoder CLI 才会生成（大多数用户不会）。所以 Qoder 这边只有官方 PAT 这一条稳妥路径——所有第三方 Qoder 接入工具都是这么做的。## Qoder 每日签到（实测协议，2026-10）
+不能。WorkBuddy 桌面端把登录态存在固定路径的明文/可解密文件里，插件可以直接扫描复用；Qoder 桌面端把凭据加密后存进系统钥匙串相关的封装文件，且 CLI 侧的 `.auth/user` 只有登录过 Qoder CLI 才会生成（大多数用户不会）。所以 Qoder 这边只有官方 PAT 这一条稳妥路径——所有第三方 Qoder 接入工具都是这么做的。
+
+## 五、Qoder 每日签到（实测协议，2026-10）
 
 **参考实现**：https://github.com/L0NE-6/Qoder-Daily （青龙脚本，CN + Global）
 **官方规则**：https://help.aliyun.com/zh/lingma/daily-check-in-100-credits-reward-program-terms

@@ -451,7 +451,7 @@ export function apply(ctx) {
 | `.../models/refresh` | 从上游刷新目录（草稿，不直接生效） |
 | `.../accounts/refresh` | 重新扫描本机登录 |
 | `.../probe` | 对指定模型做真实体积探测 |
-| `.../pool` + `?action=…&accountId=…` | 账号池批量签到/测试/移除 |
+| `.../pool` + `?action=…&accountId=…` | 账号池批量签到/测试，或彻底删除一个 vault 账号（移出池由客户端勾选框 + 保存表达，不走这条路由） |
 | `.../oauth` | 扫码登录 start/poll |
 | `.../transfer` | 批量导出/导入 |
 
