@@ -39,15 +39,19 @@ describe('QODER_CARD_CSS', () => {
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-inline-select option')).toContain('background')
   })
 
-  it('积分开关移到账号池标题行，不再独占一行撑出空白', () => {
+  it('积分开关与标题同行（workbuddy 的 pool-head-extra 同规）', () => {
     // 它原本在卡片正文里独占一行、套着为「积分明细列表」准备的 .dsm-qoder-usage
     // （padding:16px 0 4px + gap:16px）；明细移到账号池表格后，那层留白就成了
-    // 纯空档。现在整个搬到账号池标题行右端（用户要求「节约点空间」）。
+    // 纯空档。现在紧挨标题同行（用户要求「节约点空间」）。
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-switch')).toContain('margin:0')
     // 那个为明细列表准备的外壳不该再套在开关上。
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-row')).toBeUndefined()
-    // 标题行右端的容器（开关 + 当前使用芯片）。
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head-right')).toContain('display:flex')
+    // workbuddy 是 `head{gap:10px}` + `head-extra{inline-flex}` +
+    // `current-badge{margin-left:auto}`，qoder 逐字对齐。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head')?.replace(/\s/g, ''))
+      .toBe('display:flex;align-items:center;gap:10px;flex-wrap:wrap')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head-extra')).toContain('inline-flex')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-current-badge')).toContain('margin-left:auto')
   })
 
   it('账号池表格自己的数字框仍然保留', () => {

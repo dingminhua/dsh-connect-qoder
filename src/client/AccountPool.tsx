@@ -357,18 +357,21 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
       <div className="dsm-qoder-pool-head">
         <h3 className="dsm-qoder-pool-title">{t('row.poolTitle')}</h3>
-        {/* 右端：可操作的开关在前，状态芯片在后（用户要求把开关挪到这一行，
-            省掉它在正文里独占的那一行）。 */}
-        <div className="dsm-qoder-pool-head-right">
-          {creditsSwitch}
-          {/* 「当前使用」芯片：由宿主给出的 `current` 事实驱动（正在计费的那个账号），
-              不是从排序或列表位置猜出来的——否则卡片会宣称一次并未发生的切换。 */}
-          {currentAccount === undefined ? null : (
-            <span className="dsm-qoder-pool-current-badge" title={t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}>
-              {t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
-            </span>
-          )}
-        </div>
+        {/* 积分开关紧挨着标题（workbuddy 的 `pool-head-extra` 同位同形）：
+            它是这一行里标题之外唯一**可操作**的东西，放在标题正后方读起来
+            像它的附属，而不是被推到右端跟状态芯片挤在一起。 */}
+        {creditsSwitch === undefined
+          ? null
+          : <span className="dsm-qoder-pool-head-extra">{creditsSwitch}</span>}
+        {/* 「当前使用」芯片：由宿主给出的 `current` 事实驱动（正在计费的那个
+            账号），不是从排序或列表位置猜出来的——否则卡片会宣称一次并未发生
+            的切换。靠 `margin-left:auto` 推到右端（workbuddy 同规）：这样开关
+            的文案长度随区域变化时，芯片的位置不会跟着左右晃。 */}
+        {currentAccount === undefined ? null : (
+          <span className="dsm-qoder-pool-current-badge" title={t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}>
+            {t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
+          </span>
+        )}
       </div>
 
       <div className="dsm-qoder-pool-actions">

@@ -218,7 +218,7 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
-  it('积分开关渲染在账号池标题行右端，排在「当前使用」芯片之前', async () => {
+  it('积分开关紧挨标题同排，芯片靠 margin-left:auto 推右（workbuddy 同规）', async () => {
     // 用户要求把「在对话框显示积分」挪到账号池标题旁边省一行空间。
     // 卡片构造这个节点（它持有写权限与区域），账号池只负责安置。
     const { container, unmount } = await mountPool({
@@ -226,15 +226,18 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     })
     try {
       const head = container.querySelector('.dsm-qoder-pool-head')
-      const right = head?.querySelector('.dsm-qoder-pool-head-right')
+      const extra = head?.querySelector('.dsm-qoder-pool-head-extra')
       expect(head).not.toBeNull()
-      expect(right).not.toBeNull()
-      // 在标题行里，而不是卡片正文（正文那一行已删除）。
-      expect(right!.querySelector('.dsm-qoder-credits-switch')).not.toBeNull()
+      expect(extra).not.toBeNull()
+      // 开关包在自己的壳里，壳紧挨标题（不是被推到右端的独立分组）。
+      expect(extra!.querySelector('.dsm-qoder-credits-switch')).not.toBeNull()
       expect(container.querySelector('.dsm-qoder-credits-row')).toBeNull()
-      // 可操作的控件排在状态芯片之前。
-      const html = right!.innerHTML
-      expect(html.indexOf('credits-switch')).toBeLessThan(html.indexOf('current-badge'))
+      expect(container.querySelector('.dsm-qoder-pool-head-right')).toBeNull()
+      // DOM 顺序 = 标题 → 开关壳 → 芯片；芯片靠 CSS 的 margin-left:auto 靠右，
+      // 而不是靠一层 justify-content:space-between 的容器。
+      const html = head!.innerHTML
+      expect(html.indexOf('pool-title')).toBeLessThan(html.indexOf('head-extra'))
+      expect(html.indexOf('head-extra')).toBeLessThan(html.indexOf('current-badge'))
     } finally {
       await unmount()
     }

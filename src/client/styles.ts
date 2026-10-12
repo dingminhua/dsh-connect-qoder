@@ -58,13 +58,13 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-tab-switch input:disabled{opacity:.4;cursor:default}
 /* One sidebar-credit switch, belonging to the ACTIVE tab's region. */
 /*
- * 「在对话框显示积分」开关：现在渲染在账号池标题行右端（.dsm-qoder-pool-head-right），
- * 不再在卡片正文里独占一行——用户要求「放到账号池这个标题旁边吧，节约点空间」。
- * 它曾套着为「积分明细列表」准备的 .dsm-qoder-usage（16px 上内边距 + 16px gap），
- * 明细移走后那层留白变成纯空档；现在这一行整体消失，开关只占标题行的高度。
- * 字号继承卡片正文的小号（12px），不抢标题的视觉重量。
+ * 「在对话框显示积分」开关：渲染在账号池标题行里、紧挨标题
+ * （.dsm-qoder-pool-head-extra，workbuddy 的 pool-head-extra 同规），不再在卡片
+ * 正文里独占一行——用户要求「放到账号池这个标题旁边吧，节约点空间」。它曾套着
+ * 为「积分明细列表」准备的 .dsm-qoder-usage（16px 上内边距 + 16px gap），明细
+ * 移走后那层留白变成纯空档。字号 12px，不抢标题的视觉重量。
  */
-.dsm-qoder-credits-switch{display:flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-qoder-credits-switch{display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-credits-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-qoder-credits-switch input:disabled{opacity:.4;cursor:default}
 .dsm-qoder-tab-off{opacity:.55}
@@ -175,10 +175,10 @@ export const QODER_CARD_CSS = `
 /* 区块分隔线之上只留 8px：上方的「在对话框显示积分」勾选框只有一行，
    16px 会让这截空档看着像丢了内容（用户实拍：「红色的部分向上靠拢一些」）。 */
 .dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:8px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
-.dsm-qoder-pool-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
-/* 标题行右端：可操作的积分开关 + 「当前使用」状态芯片。 */
-.dsm-qoder-pool-head-right{display:flex;align-items:center;gap:14px;flex-wrap:wrap;min-width:0}
-.dsm-qoder-pool-current-badge{padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
+.dsm-qoder-pool-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* 积分开关的壳：紧挨标题（workbuddy 的 pool-head-extra 同规）。 */
+.dsm-qoder-pool-head-extra{display:inline-flex;align-items:center}
+.dsm-qoder-pool-current-badge{margin-left:auto;padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .dsm-qoder-pool-account-select{min-width:200px}
 .dsm-qoder-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-qoder-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}
