@@ -17,6 +17,27 @@
 - **tab 栏不再顶着上面的分隔线**（用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」）：`.dsm-plugin-card-body` 这条家族共享规则只有 `padding:0 0 8px`——**上内边距为 0**，所以正文的**首个元素必须自带顶部间距**。workbuddy 的 tab 栏正是被 `.dsm-workbuddy-usage`（`padding:16px 0 4px`）托住的；qoder 这边在上一轮删掉积分块时，把那层容器一并拆掉了，于是 tab 栏直接贴在分隔线上。现在用同一条规则 `.dsm-qoder-usage`（本就存在）恢复同样的 16px 呼吸空间——不是新加特例，是恢复与同族插件一致的结构。
 - **「在对话框显示积分」开关移到账号池标题行**（用户要求：「放到账号池这个标题旁边吧，节约点空间」）：它此前在卡片正文里独占一行，约 30px 高却只有一个勾选框。现在渲染在 `pool-head` 右端、排在「当前使用」芯片**之前**（可操作的控件在状态之前）。卡片仍然持有写权限与区域，所以由卡片构造这个节点、经 `creditsSwitch` prop 交给账号池安置（与 `accountTools` 同规）；原来那个只为它存在的 `.dsm-qoder-credits-row` 外壳随之删除。语义也更顺：它决定「积分怎么显示」，而积分明细正是下面那张表的内容。
 - **「在对话框显示积分」那行上移**（用户实拍：「红色的部分向上靠拢一些」）：额度明细移除后，那一行仍套着为明细列表准备的 `.dsm-qoder-usage`（`padding:16px 0 4px` + `gap:16px`），连同 `.dsm-qoder-credits-switch` 自己的 `margin:8px 0 2px` 与账号池区块的 `padding-top:16px`，三处叠加出约 19px 的空档。现在：这一行换成自己的外壳 `.dsm-qoder-credits-row`（`padding:12px 0 2px`）、开关的 margin 归零（间距由外壳统一负责）、账号池的 `padding-top` 收到 8px。分隔线之上只剩约 11px。
+- **「Provider is not configured」的真正原因：`auth.apiKey.resolve` 返回了 `undefined`**（用户实拍，并再次提示我去查参考项目 —— 两次都对）。
+  - **错误文案的真实来源**（不在我们的代码里，在 vendored 的 pi-ai 里）：
+    ```js
+    // pi-ai dist/models.js → applyAuth
+    const resolution = await this.getAuth(model, {...})
+    if (!resolution) throw new ModelsError('auth',
+      `Provider is not configured: ${model.provider}`)   // ← 用户看到的那句
+    ```
+    而 `resolve.js` 在「没有存储凭据」时会退回 ambient，调用 provider 自己的 `auth.apiKey.resolve({ credential: undefined })`。
+  - **我们的 resolver 无条件 `return undefined`** → `getAuth` 返回 undefined → 直接抛错。**问题不在档位、不在目录、不在区域注册，而在这一行的返回值形状。**
+  - **正确形状**（`dsh-llm-pi-ai` 自己的 `harnessApiKeyAuth()` 就是这样）：
+    ```js
+    resolve: ({ credential }) => Promise.resolve({
+      auth: credential?.key === void 0 ? {} : { apiKey: credential.key },
+      source: name,
+    })
+    ```
+    关键：**即使没有 key 也必须返回一个对象**（`auth: {}`），把「是否真的需要 key」交给协议层判断；返回 `undefined` 才等于宣称「这个 provider 根本没配置」。
+  - 本 route 的真实凭据不从这里来 —— 它靠 shim 的进程内 secret 认证，secret 由 `PiAiAdapter` 的 `resolveApiKey` 逐请求提供。所以 resolver 报「没有 key」是诚实的、也是正确的，只要它是一个对象。
+  - 测试：新增两条，**走真实的 `createQoderAdapter`**（从 `piProvider.auth.apiKey.resolve` 取 resolver 调用，而不是复制一份实现），并做了**变异验证**：退回旧实现后两条立刻失败。
+  - 前面两轮（档位 map 全 null 会作废整条路由）也是真实缺陷、也修掉了 —— 但它不是「not configured」的原因；我当时把两个不同层级的失败混为一谈了。
 - **修掉「Provider is not configured: qoder」的真正根因**（用户实拍，并提示「之前参考的项目都是怎么做的」——对照 trae/workbuddy 的 `modelErrors`/`defaultContextWindow` 注释后，去 DSH 内核源码里找到了硬校验）。
   - **根因**：DSH 内核（`dsh-llm`）对适配器返回的推理元数据是**硬校验**的：
     ```js

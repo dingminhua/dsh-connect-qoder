@@ -314,8 +314,28 @@ export function createQoderAdapter(options: QoderAdapterOptions): QoderAdapter {
     auth: {
       apiKey: {
         name: 'Qoder shim token',
-        async resolve() {
-          return undefined
+        // **必须返回一个对象，绝不能返回 undefined。**
+        //
+        // pi-ai 的 `applyAuth` 只做存在性判断：
+        //     const resolution = await this.getAuth(...)
+        //     if (!resolution) throw new ModelsError('auth',
+        //       `Provider is not configured: ${model.provider}`)
+        // 返回 `undefined` 等于宣称「这个 provider 根本没配置」—— 用户在 DSH 里
+        // 看到的正是那句 `Provider is not configured: qoder`（用户实拍）。
+        //
+        // 而真实凭据**不从这里来**：本 route 只通过 shim 的进程内 secret 认证，
+        // secret 由 `PiAiAdapter` 的 `resolveApiKey` 逐请求提供给 pi-ai（见下方
+        // `resolveApiKey: async () => shim.secret`）。所以这里报「没有 key」是
+        // 诚实的、也是正确的 —— 只要它是一个对象。
+        //
+        // 形状对齐 dsh-llm-pi-ai 自己的 `harnessApiKeyAuth()`：即使 credential
+        // 缺席也返回 `{ auth: {}, source }`，把是否真的需要 key 交给协议层判断。
+        async resolve({ credential }) {
+          const apiKey = credential?.key
+          return {
+            auth: apiKey === undefined || apiKey.length === 0 ? {} : { apiKey },
+            source: 'Qoder shim token',
+          }
         },
       },
     },

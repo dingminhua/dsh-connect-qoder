@@ -22,6 +22,7 @@ import {
   regionOfProvider,
   adaptLegacyPiAiContext,
 } from '../src/adapter.ts'
+import { QoderCatalog } from '../src/catalog.ts'
 import type { QoderModelInfo } from '../src/catalog.ts'
 
 const MODEL: QoderModelInfo = {
@@ -129,6 +130,59 @@ describe('qoderThinkingLevelMap', () => {
 
   it('returns undefined for a non-reasoning model (no map at all)', () => {
     expect(qoderThinkingLevelMap({ ...MODEL, supportsThinking: false })).toBeUndefined()
+  })
+})
+
+describe('pi-ai auth 契约（「Provider is not configured」的分水岭）', () => {
+  // pi-ai 的 applyAuth 只做存在性判断：
+  //     const resolution = await this.getAuth(...)
+  //     if (!resolution) throw new ModelsError('auth',
+  //       `Provider is not configured: ${model.provider}`)
+  // 而 resolve.js 在「没有存储凭据」时会退回 ambient，调用 provider 自己的
+  // `auth.apiKey.resolve({ credential: undefined })`。
+  //
+  // 本插件的凭据**不从这里来**：route 只通过 shim 的进程内 secret 认证，secret
+  // 由 `PiAiAdapter` 的 `resolveApiKey` 逐请求提供。所以 resolver 报「没有 key」
+  // 是诚实且正确的 —— **但它必须是一个对象**。此前它 `return undefined`，
+  // 等于宣称「这个 provider 根本没配置」，用户看到的就是
+  // `Provider is not configured: qoder`（用户实拍）。
+  //
+  // 这条测试走**真实的 createQoderAdapter**，从 pi-ai adapter 里取出 route
+  // provider 的 resolver 来调用 —— 而不是复制一份实现（复制品测不出回归）。
+  /**
+   * 从**真实** createQoderAdapter 产出的 pi-ai provider 里取出 resolver。
+   * `buildProvider` 由适配器通过 profile 暴露给 dsh-llm-pi-ai —— 这里用它的
+   * `piProvider`（就是那个 Provider 对象），而不是复制一份 resolver 实现。
+   */
+  const routeResolver = (): { resolve: (a: unknown) => Promise<unknown> } => {
+    const adapter = createQoderAdapter({
+      shim: { baseUrl: 'http://127.0.0.1:1', secret: 'shim-secret', token: () => 'shim-secret' },
+      catalog: new QoderCatalog([MODEL]),
+      piAiGeneration: 'modern',
+    } as never)
+    const profiles = (adapter.adapter as unknown as {
+      config: { profiles: () => Map<string, { piProvider?: { auth?: { apiKey?: { resolve?: unknown } } } }> },
+    }).config.profiles()
+    const provider = [...profiles.values()][0]?.piProvider
+    const resolve = provider?.auth?.apiKey?.resolve
+    if (typeof resolve !== 'function') throw new Error('provider.auth.apiKey.resolve 缺失')
+    return { resolve: resolve as (a: unknown) => Promise<unknown> }
+  }
+
+  it('真实 resolver 在 credential 缺席时返回对象，而不是 undefined', async () => {
+    const apiKey = routeResolver()
+    // pi-ai 的 ambient 分支正是这样调用它的
+    const resolution = await apiKey.resolve({ ctx: {}, credential: undefined, signal: undefined })
+    // 这一条就是「Provider is not configured」的分水岭
+    expect(resolution).toBeTruthy()
+    expect(resolution).toHaveProperty('auth')
+    expect(resolution).toHaveProperty('source')
+  })
+
+  it('真实 resolver 在有 credential 时把 key 透出去', async () => {
+    const apiKey = routeResolver()
+    const resolution = (await apiKey.resolve({ ctx: {}, credential: { key: 'shim-secret' }, signal: undefined })) as { auth: { apiKey?: string } }
+    expect(resolution.auth.apiKey).toBe('shim-secret')
   })
 })
 
