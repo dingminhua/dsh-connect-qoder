@@ -1,14 +1,53 @@
 import { readFileSync } from 'node:fs'
 import type { UserConfig } from 'tsdown'
 
-const PLUGIN_ID = 'dsh-connect-qoder'
-
-/** Read the npm version once so the build injects it into src/version.ts. */
-const PACKAGE_VERSION = JSON.parse(
+/**
+ * Read the package identity once. Both the browser bundle's module id and the
+ * injected version derive from it, so a rename cannot leave one of them behind.
+ */
+const PACKAGE = JSON.parse(
   readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
-).version as string
+) as { name: string, version: string }
 
-const VERSION_DEFINE = { __DSH_QODER_VERSION__: JSON.stringify(PACKAGE_VERSION) }
+/**
+ * The browser bundle's `window.__ModuleLoader__` id.
+ *
+ * **It must equal `package.json` `name`** — NOT the Loader entry id. The shell's
+ * client module roster keys every row by the package name it reads out of the
+ * package manifest (`resolveMeta` → `packageName`), and the module loader pairs
+ * a bundle's *declared* id with that row to remember its revision and to
+ * invalidate it on rebuild (`graphRows` / `reloadTargets` are both keyed by it).
+ *
+ * Declare anything else and the registration can never be tied back to its row:
+ * the stale factory is never evicted, and the next execution of the bundle
+ * throws `client-modules: duplicate factory registration for "<id>"`. That is
+ * exactly what a rename to the scoped `@dmh2002/dsh-connect-qoder` broke — the
+ * package name moved, this constant did not, and the plugin stopped activating.
+ *
+ * The Loader entry id (`cordis.patch.yml`'s `id:`) is a DIFFERENT, deliberately
+ * stable identifier: it backs the settings namespace and the `/plugins/<id>/…`
+ * routes, and is not this value.
+ */
+export const PLUGIN_ID = PACKAGE.name
+
+/** The npm version, injected into `src/version.ts` at build time. */
+const PACKAGE_VERSION = PACKAGE.version
+
+/**
+ * Build-time constants injected into the source (`src/version.ts`).
+ *
+ * The **package name** is injected alongside the version because the browser
+ * half needs it as a runtime string: the plugin manager keys the configuration
+ * slots by package name (`plugins.bundle.config`) and by
+ * `<package name>#<row id>` (`plugins.row.config`). Hardcoding the old unscoped
+ * name there made the card render nothing on the bundle's page — the plugin
+ * showed up as running, with its description and rows, but no configuration
+ * body. Injecting the real name means a rename cannot silently orphan the card.
+ */
+const BUILD_DEFINE = {
+  __DSH_QODER_VERSION__: JSON.stringify(PACKAGE_VERSION),
+  __DSH_QODER_PACKAGE_NAME__: JSON.stringify(PLUGIN_ID),
+}
 
 /**
  * Client-side packages must stay external: the shell registers them in its
@@ -37,7 +76,7 @@ export default [
     fixedExtension: false,
     dts: true,
     clean: true,
-    define: VERSION_DEFINE,
+    define: BUILD_DEFINE,
     deps: {
       neverBundle: [
         '@earendil-works/pi-ai',
@@ -60,7 +99,7 @@ export default [
     platform: 'browser',
     dts: false,
     clean: false,
-    define: VERSION_DEFINE,
+    define: BUILD_DEFINE,
     deps: { neverBundle: [...CLIENT_EXTERNALS] },
     outputOptions: {
       entryFileNames: 'client.js',

@@ -1,6 +1,12 @@
 # Register the Qoder provider without changing the profile's default model.
 # PAT is configured in the plugin's settings card (or via environment
 # variable); no OAuth flow is started by the plugin itself.
+#
+# `id` deliberately stays the unscoped `dsh-connect-qoder`: it is the entry id,
+# the settings namespace (`settingsNamespaceOf`), and the `/plugins/<id>/…`
+# route prefix. Renaming it would silently orphan every existing install's
+# saved config. Only `name` — the package resolved through the profile's
+# node_modules — carries the npm scope.
 - insert:
     - id: dsh-connect-qoder
-      name: dsh-connect-qoder
+      name: '@dmh2002/dsh-connect-qoder'

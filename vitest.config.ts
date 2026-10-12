@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { defineConfig } from 'vitest/config'
@@ -29,7 +29,25 @@ const isolatedEnv = {
   XDG_CONFIG_HOME: join(isolatedHome, '.config'),
 }
 
+/**
+ * Mirror the build-time constants `tsdown.config.ts` injects, read from the same
+ * `package.json`.
+ *
+ * Without this the browser half would fall back to its literal default under
+ * test — and a test asserting the configuration-slot keys would then happily
+ * pass against a name that no longer matches the installed package, which is
+ * precisely the failure mode this guards (the card rendered nothing because its
+ * slots were keyed by the old unscoped name).
+ */
+const PACKAGE = JSON.parse(
+  readFileSync(new URL('./package.json', import.meta.url), 'utf8'),
+) as { name: string, version: string }
+
 export default defineConfig({
+  define: {
+    __DSH_QODER_VERSION__: JSON.stringify(PACKAGE.version),
+    __DSH_QODER_PACKAGE_NAME__: JSON.stringify(PACKAGE.name),
+  },
   test: {
     setupFiles: ['./tests/setup-per-file-home.ts'],
     // `.tsx` entries are component tests that mount the real QoderCard under

@@ -21,6 +21,7 @@ import type { QoderCardInjected } from './QoderCard.tsx'
 import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
+import { QODER_CARD_SLOT_KEYS } from './slot-keys.ts'
 
 export type QoderClientContext = Context & {
   slots: Context['slots']
@@ -88,8 +89,13 @@ export function apply(ctx: QoderClientContext): void {
       }
     }
 
-    registerCard('plugins.bundle.config', 'dsh-connect-qoder')
-    registerCard('plugins.row.config', 'dsh-connect-qoder#dsh-connect-qoder')
+    // Slot keys are keyed by PACKAGE identity, not by our settings namespace:
+    // `plugins.bundle.config` wants the bare package name and
+    // `plugins.row.config` wants `<package name>#<row id>`. Both are built from
+    // the build-injected package name — see `slot-keys.ts` for why hardcoding
+    // them made the card render nothing after the scoped rename.
+    registerCard('plugins.bundle.config', QODER_CARD_SLOT_KEYS.bundle)
+    registerCard('plugins.row.config', QODER_CARD_SLOT_KEYS.row)
 
     /**
      * Credit readout in the composer tool row (`conversation.input.left`, a

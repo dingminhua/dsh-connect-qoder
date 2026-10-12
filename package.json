@@ -1,8 +1,8 @@
 {
-  "name": "dsh-connect-qoder",
+  "name": "@dmh2002/dsh-connect-qoder",
   "displayName": "DSH Connect Qoder",
-  "description": "把 Qoder（阿里云 AI 编程助手）接入 DeepSeek Harness，提供模型接入与只读的用量概览。",
-  "version": "0.2.0",
+  "description": "把 Qoder（通义灵码国内版 / 国际版）接入 DeepSeek Harness：PAT 多账号池、每日签到、积分读数与模型管理。",
+  "version": "0.3.0",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
   "license": "MIT",
@@ -12,9 +12,14 @@
     "qoder",
     "lingma",
     "model-provider",
-    "credits"
+    "credits",
+    "account-pool",
+    "check-in"
   ],
   "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"
   },
@@ -39,7 +44,9 @@
   "files": [
     "lib",
     "icons",
-    "docs",
+    "docs/assets",
+    "docs/PAT.md",
+    "docs/DESIGN.md",
     "screenshots.json",
     "cordis.patch.yml",
     "README.md",
