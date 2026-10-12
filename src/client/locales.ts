@@ -197,6 +197,12 @@ export const en = {
   'row.poolCheckedIn': 'Checked in',
   'row.poolNotCheckedIn': 'Not checked in',
   'row.poolCheckinUnknown': '—',
+  // The countdown is the UPSTREAM's refresh time (campaign `endAt`), not a local
+  // guess: the daily window runs 10:00 → next day 09:59 (UTC+8), which is what the
+  // Qoder web page shows.
+  'row.poolCheckinNext': '· next in {countdown}',
+  'row.poolCheckinNextHint': 'This daily window has been claimed. The next one opens at the time the upstream stated (the same countdown the Qoder web page shows).',
+  'row.poolCheckinDue': '· claimable now',
   'row.poolNeverTested': 'Not tested yet',
   'row.poolTestedAt': 'Tested {at}',
   'row.poolCreditSoon': '{count} expiring within 3 days',
@@ -477,6 +483,11 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolCheckedIn': '已签到',
   'row.poolNotCheckedIn': '未签到',
   'row.poolCheckinUnknown': '—',
+  // 倒计时是**上游给的**刷新时刻（活动行的 `endAt`），不是本地猜的：每日活动窗是
+  // 10:00 → 次日 09:59（UTC+8），也就是 Qoder 网页上显示的那个数。
+  'row.poolCheckinNext': '· {countdown} 后刷新',
+  'row.poolCheckinNextHint': '这一窗已经领过了。下一窗在上游给出的时刻开放 —— 与 Qoder 网页上的倒计时是同一个数。',
+  'row.poolCheckinDue': '· 现在可以领取',
   'row.poolNeverTested': '尚未测试',
   'row.poolTestedAt': '测试于 {at}',
   'row.poolCreditSoon': '{count} 积分 3 天内过期',

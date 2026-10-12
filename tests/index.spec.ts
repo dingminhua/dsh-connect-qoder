@@ -3,6 +3,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import * as Qoder from '../src/index.ts'
+import { qoderAccountId } from '../src/credentials.ts'
 
 /**
  * The 0.1.7-shaped settings service the suite mounts so the plugin's
@@ -168,6 +169,206 @@ describe('Qoder provider registration', () => {
     expect(models.map(m => m.name)).not.toContain('STALE')
   })
 
+  /**
+   * 「思考强度有时候有、有时候没有」（用户实拍）。
+   *
+   * 机制：`fullCatalog`（唯一带思考档位的目录）是**纯内存**的，目录只在启动时拉
+   * 一次；而保存的 `lastCatalog` 在本机是 14 个模型**全部 `thinkingEfforts: []`**
+   * —— 那是旧 schema 剥掉档位字段时留下的。所以：
+   *   - 点一次「从 Qoder 刷新」→ 实时目录装上 → 档位出现；
+   *   - 重启 / 重读 → 实时目录空 → 退回那份全空的快照 → 档位消失。
+   * 「有没有点过刷新、进程活了多久」就是「有时候有、有时候没有」的全部来源。
+   *
+   * 现在：卡片读到「本进程还没成功拉过实时目录 + 手上的目录一个档位都没声明」
+   * 时，在**这条读路径上**触发一次后台拉取（不阻塞这次读），并且**继续服务手上的
+   * 目录**（模型不能消失）；拉回来之后下一次读就有档位了。
+   *
+   * 这条测试走**真实的卡片路由**（/usage → displayModels）。早期版本只断言
+   * `ctx.llm.listModels` —— 那读的是适配器路径（运行时目录），恰好绕开
+   * displayModels，测试全绿而修复在生产路径上是死代码（catalog 永不为空 →
+   * live 恒非空 → 修复分支不可达）。路由捕获的挂法见「签到」那条测试。
+   */
+  it('重启后读到「全空档位」的旧快照时会触发一次拉取，而不是把空档位说成上游没声明', async () => {
+    const realFetch = globalThis.fetch
+    // 模型列表端点：第一次（启动那次刷新）失败 —— 模拟「重启后启动拉取恰好失败」；
+    // 之后的重试成功，并带真实形状的 thinking_config（efforts 的键即档位名）。
+    let modelsCalls = 0
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        modelsCalls += 1
+        if (modelsCalls <= 1) return new Response('upstream boom', { status: 500 })
+        return new Response(JSON.stringify({
+          chat: [{
+            key: 'qfmodel', display_name: 'Qwen3.8-Flash',
+            price_factor: 0, is_vl: true, is_reasoning: true, is_free: true,
+            thinking_config: { enabled: { efforts: { low: {}, medium: {}, xhigh: {} } } },
+            context_config: { c200k: { token_count: 200_000 } },
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // jobToken 交换：fetchModels / refreshUsage 的前置。
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // 用量读（sash）：mountQoder 的 refreshUsage 会打过来。
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 10, origin: 10, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+
+    const routes: CapturedRoute[] = []
+    try {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(MemorySettings)
+      // 挂一个假的 webServer，把插件注册的路由抓下来，好真的去调 /usage。
+      ctx.provide('webServer', {
+        register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+      } as never)
+      // 一份**形状与本机实测一致**的旧快照：每个模型都有 thinkingEfforts 字段，
+      // 但值都是空数组（旧 schema 的产物；modelFromStored 会把空数组剥成缺席）。
+      const staleEntry = {
+        key: 'qfmodel', displayName: 'Qwen3.8-Flash', priceFactor: 0,
+        contextWindow: 400_000, maxOutputTokens: 32_768,
+        supportsImages: true, supportsThinking: true, canDisableThinking: false,
+        isDefault: false, isFree: true, isNew: false,
+        thinkingEfforts: [] as string[],
+        contextTiers: [] as number[],
+      }
+      await mountQoder(ctx, {
+        regions: {
+          cn: { pat: 'pt-rethink', enabledModelKeys: ['qfmodel'], lastCatalog: [staleEntry] },
+          // 国际版**完全没有凭据**：这一侧必须安安静静（无凭据时 refreshModels
+          // 直接 skip，不打网络），不能去拉。
+          global: { pat: '' },
+        },
+      })
+      await waitFor(() => routes.some(r => r.path.includes('/usage')))
+      const usage = routes.find(r => r.path.includes('/usage'))!
+      // 等启动那次（失败的）模型拉取落定，再记下基数 —— 否则它与卡片触发的重拉
+      // 混在一起，「读卡触发了重拉」的计数断言会假通过。
+      await waitFor(() => modelsCalls >= 1)
+      const startupCalls = modelsCalls
+
+      // 读卡片：/usage → displayModels，手上是启动时装配的全空档位旧快照。
+      const first = await readCardModels(usage)
+      // **模型不能消失**：旧快照里的模型照常服务，只是没有档位。
+      expect(first.map(m => m.key)).toContain('qfmodel')
+      expect(first.find(m => m.key === 'qfmodel')?.thinkingEfforts).toBeUndefined()
+      // 关键动作：这次读**触发了重拉**（fire-and-forget，不阻塞这次读）。
+      // 变异检查：删掉 displayModels 里的触发，这里等到超时。
+      await waitFor(() => modelsCalls > startupCalls, 5_000)
+
+      // 重拉落地之后：下一次读，档位来自实时目录 —— 用户实拍「点一次刷新就有」
+      // 的自动版，不用用户点，读一次卡片就自愈。
+      let models = first
+      for (let i = 0; i < 40; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        models = await readCardModels(usage)
+        if ((models.find(m => m.key === 'qfmodel')?.thinkingEfforts?.length ?? 0) > 0) break
+      }
+      expect(models.find(m => m.key === 'qfmodel')?.thinkingEfforts).toEqual(['low', 'medium', 'xhigh'])
+      // 拉成功一次就停：落地之后的读不再打模型列表端点（上游已给出诚实答案）。
+      expect(modelsCalls).toBe(startupCalls + 1)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  /**
+   * 判据只对「快照侧」生效的另一半：**上游真的没声明档位**时，读卡片不能变成
+   * 打网络的循环。`displayModels` 只在本进程还没拉到实时目录时才判「空档位 →
+   * 重拉」；实时目录落地后哪怕一个档位都没有，也不再拉 —— 那是上游的诚实
+   * 答案，重拉多少次都一样。变异检查：把 `full.length === 0` 的守卫改成恒真，
+   * 落地后的三次读会把计数推上去，这条断言就红。
+   */
+  it('上游确实没声明档位时，读卡片不会变成打网络的循环（判据只对快照侧生效）', async () => {
+    const realFetch = globalThis.fetch
+    // 模型列表端点：从一开始就成功，但模型**没有** thinking_config —— 上游
+    // 诚实地声明「这个模型没有思考档位」。
+    let modelsCalls = 0
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        modelsCalls += 1
+        return new Response(JSON.stringify({
+          chat: [{
+            key: 'qmodel', display_name: 'Dmodel',
+            price_factor: 1, is_reasoning: false,
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 10, origin: 10, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+
+    const routes: CapturedRoute[] = []
+    try {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(MemorySettings)
+      ctx.provide('webServer', {
+        register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+      } as never)
+      await mountQoder(ctx, {
+        regions: {
+          cn: { pat: 'pt-noefforts', enabledModelKeys: ['qfmodel'], lastCatalog: [{
+            key: 'qfmodel', displayName: 'Qwen3.8-Flash', priceFactor: 0,
+            contextWindow: 400_000, maxOutputTokens: 32_768,
+            supportsImages: true, supportsThinking: true, canDisableThinking: false,
+            isDefault: false, isFree: true, isNew: false,
+            thinkingEfforts: [] as string[],
+            contextTiers: [] as number[],
+          }] },
+          global: { pat: '' },
+        },
+      })
+      await waitFor(() => routes.some(r => r.path.includes('/usage')))
+      const usage = routes.find(r => r.path.includes('/usage'))!
+      await waitFor(() => modelsCalls >= 1)
+
+      // 等 fullCatalog 落地：卡片读到**实时目录**的 qmodel（而不是快照的
+      // qfmodel）—— 用 key 的更替当作「落地」的可观测信号。
+      let models: Array<{ key: string }> = []
+      for (let i = 0; i < 40; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        models = await readCardModels(usage)
+        if (models.some(m => m.key === 'qmodel')) break
+      }
+      expect(models.map(m => m.key)).toContain('qmodel')
+      const settled = modelsCalls
+
+      // 落地之后再读三次：不再打模型列表端点 —— 否则「上游没声明档位」的
+      // 每一次卡片轮询都会拖一次网络（60s 一发，永不停）。
+      for (let i = 0; i < 3; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        await readCardModels(usage)
+      }
+      expect(modelsCalls).toBe(settled)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('DSH 选择器里的模型名带倍率（用户实拍「没有倍数显示」）', async () => {
     // 卡片自己的选择器一直会画倍率，但 **DSH 内置的模型选择器**读的是适配器
     // 交给它的 `name`。那里此前传的是裸名字（`info.displayName`），于是同一个
@@ -240,6 +441,50 @@ describe('Qoder provider registration', () => {
     await expect.poll(async () => (await ctx.llm.listModels('qoder')).map(m => m.id)).toEqual([only])
   })
 
+  it('全空档位的快照会被当成「需要重拉」，而不是「上游没声明」（思考强度稳定性）', () => {
+    // 用户实拍「思考强度有时候有、有时候没有」。机制：`fullCatalog`（唯一带档位的
+    // 目录）是**纯内存**的，只在启动时拉一次；而保存的 `lastCatalog` 在本机实测
+    // 是 14 个模型**全部 `thinkingEfforts: []`** —— 旧 schema 剥字段时留下的。
+    // 于是「点一次刷新就有、重启后就没」。
+    //
+    // 这里钉住那条判据本身。两种「没有档位」必须分开：
+    // - 字段**缺席** = 上游真的没声明 → 用这份快照是对的，不该重拉；
+    // - `[]` 空数组 = 这份快照来自一次没拉到档位的时刻 → 必须重拉。
+    const withEps = [{ thinkingEfforts: ['low', 'medium', 'xhigh'] }, { thinkingEfforts: [] }]
+    expect(Qoder.catalogSnapshotDeclaresEfforts(withEps)).toBe(true)
+
+    // 本机那 14 个模型的真实形状：字段在，值全空 → 判为「没声明过」→ 需要重拉。
+    const allEmpty = [{ thinkingEfforts: [] }, { thinkingEfforts: [] }]
+    expect(Qoder.catalogSnapshotDeclaresEfforts(allEmpty)).toBe(false)
+
+    // 字段缺席 = 上游确实没声明 → 同样判为「没声明过」，但 UI 说「未知」
+    // 而不是「上游没档位」，且**不会**白白重拉（判据相同、后果由调用处区分）。
+    const absent: Array<{ thinkingEfforts?: readonly string[] }> = [{}, {}]
+    expect(Qoder.catalogSnapshotDeclaresEfforts(absent)).toBe(false)
+
+    // 只有一个模型声明了档位就足够（不是要求全部都有）。
+    expect(Qoder.catalogSnapshotDeclaresEfforts([{ thinkingEfforts: [] }, { thinkingEfforts: ['high'] }])).toBe(true)
+    expect(Qoder.catalogSnapshotDeclaresEfforts([])).toBe(false)
+
+    // **动作真的会执行**（不只是判据返回 false）。这是把判据与动作打包在一起
+    // 的理由：分开接线时，把调用处变异掉单测照样全绿（第一版就骗过了自己）。
+    let pulled = 0
+    const pull = (): void => { pulled += 1 }
+    const good = Qoder.serveSavedCatalog([{ thinkingEfforts: ['low'] } as never], pull)
+    expect(good.models).toHaveLength(1)
+    expect(good.stale).toBe(false)
+    expect(pulled).toBe(0)
+
+    const stale = Qoder.serveSavedCatalog([{ thinkingEfforts: [] } as never], pull)
+    // 模型**继续服务**（模型不能从卡片上消失，缺的只是档位），并且**真的拉了一次**。
+    // 早期版本想让这里返回 `models: []` 让调用处退兜底 —— 但 `[]` 是 truthy，
+    // 调用处的 `if (!serve.models)` 永远不走，而且那样会让用户勾选的模型从卡片上
+    // 消失。宁可诚实：服务手上的模型，档位等拉回来补上。
+    expect(stale.models).toHaveLength(1)
+    expect(stale.stale).toBe(true)
+    expect(pulled).toBe(1)
+  })
+
   it('region defaults are opt-out: absent enabled means on', () => {
     expect(Qoder.regionEnabled({ regions: {} }, 'cn')).toBe(true)
     expect(Qoder.regionEnabled({ regions: { cn: { enabled: undefined } } }, 'cn')).toBe(true)
@@ -285,13 +530,13 @@ interface CapturedRoute {
  * 断言锁的是「签到之后 usage 被**再读了一次**」（也就是新余额能落地），而不是
  * 「缓存被清空了」—— 后者恰好就是旧的（错的）行为本身。
  */
-describe('签到之后积分会被重新拉取', () => {
+describe('签到之后：积分重读 + 下一窗刷新时刻进入行与快照', () => {
   /** One sash usage payload; `total` is the figure the card shows. */
   const usageBody = (total: number): string => JSON.stringify({
     data: { creditConsume: { total, origin: total, packages: [] } },
   })
 
-  it('checkin 之后会再读一次 usage（而不是只作废缓存）', async () => {
+  it('checkin 之后会再读一次 usage，并给出行与快照的「下一窗刷新时刻」', async () => {
     const realFetch = globalThis.fetch
     let usageCalls = 0
     globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
@@ -311,17 +556,33 @@ describe('签到之后积分会被重新拉取', () => {
           securityOauthToken: 'jt-test', refreshToken: 'rt-test',
         }), { status: 200, headers: { 'content-type': 'application/json' } })
       }
-      // 签到活动的活动列表 / 领取：回报成功并带数额。
-      if (url.includes('/sash/api/v1/me/campaigns')) {
+      // 签到活动列表。字段用**实测原文**的形状（`campaignId` / `actionType` /
+      // `claimStatus` / `benefit` / `startAt` / `endAt`，后者是 epoch 秒）：
+      // 解析器只认这些键，早先用 `{ id, credit }` 会解析出零条活动，签到批次空转。
+      if (url.includes('/sash/api/v1/me/campaigns') && !url.includes('/claim')) {
         return new Response(JSON.stringify({
-          success: true, code: 0,
-          data: { campaigns: [{ id: 'c1', name: 'daily', credit: 50 }] },
+          campaigns: [{
+            campaignId: '01a12102-9c4c-7460-a08b-61180061ac65',
+            campaignKey: 'act-20261009-057',
+            actionType: 'CLAIM_BENEFIT',
+            claimStatus: 'CLAIMABLE',
+            startAt: 1791770400,
+            endAt: 1791856740,
+            benefit: { kind: 'CREDITS', amount: 100, validity: { mode: 'RELATIVE_DAYS', days: 30 } },
+          }],
         }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // 领取。
+      if (url.includes('/claim')) {
+        return new Response(JSON.stringify({ status: 'CLAIMED' }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
       }
       return realFetch(input as Parameters<typeof fetch>[0])
     }) as typeof fetch
 
     const routes: CapturedRoute[] = []
+    const QODER_ACCOUNT_ID = qoderAccountId('pt-test-checkin')
     try {
       const ctx = new Context()
       context = ctx
@@ -335,7 +596,10 @@ describe('签到之后积分会被重新拉取', () => {
         regions: {
           cn: {
             pat: 'pt-test-checkin',
-            pool: { enabled: true, targetModelId: '', memberAccountIds: ['pat-test-checkin'] },
+            // 账号 id 是 PAT 派生的散列（`qoderAccountId`），不是 PAT 本身 ——
+            // 写错成 PAT 字符串会让 `credentialFor` 解析不到，批次直接跳过成员，
+            // `rows` 就是空的（第一版正是这样，断言看着像「快照没带时间」）。
+            pool: { enabled: true, targetModelId: '', memberAccountIds: [QODER_ACCOUNT_ID] },
           },
         },
       })
@@ -359,6 +623,26 @@ describe('签到之后积分会被重新拉取', () => {
 
       // 关键断言：签到之后 usage **又被读了**。旧实现只 `delete usageCache`，
       // 这里永远是 `before`，于是卡片继续显示领之前的数字。
+      // 签到行的结果必须带上「下一窗何时刷新」—— 这是「已领取」这句话的另一半。
+      const claimed = (JSON.parse(String(res.body())) as { rows?: Array<{ status: string, refreshAtMs?: number }> }).rows ?? []
+      expect(claimed).toHaveLength(1)
+      expect(claimed[0]!.status).toBe('claimed')
+      expect(claimed[0]!.refreshAtMs).toBe(1791856740 * 1000)
+
+      // 快照（成员表读的那份）也必须带上它 —— 它是 UI 倒计时的唯一来源。
+      const usageRoute = routes.find(r => r.path.includes('/usage'))!
+      const usageRes = fakeResponse()
+      await usageRoute.handler(
+        { method: 'GET', url: `${usageRoute.path}?region=cn`, headers: {} },
+        usageRes.node,
+      )
+      const usageDoc = JSON.parse(String(usageRes.body())) as {
+        pool?: { accounts?: Array<{ accountId: string, checkedInToday?: boolean, checkinRefreshAtMs?: number }> }
+      }
+      const row = usageDoc.pool?.accounts?.find(a => a.accountId === QODER_ACCOUNT_ID)
+      expect(row?.checkedInToday).toBe(true)
+      expect(row?.checkinRefreshAtMs).toBe(1791856740 * 1000)
+
       // 硬边界：签到处理完再等 1s，让任何「迟到」的补读也有机会发生，然后断言。
       // 不能用 waitFor —— 它会一直等，而旧实现里那次补读根本不存在（永远等不到
       // 就会超时；更糟的是别的 usage 读顺手把计数推上去，于是断言假通过）。
@@ -371,14 +655,36 @@ describe('签到之后积分会被重新拉取', () => {
 })
 
 /** A minimal ServerResponse stand-in: records status + body. */
-function fakeResponse(): { node: Record<string, unknown>, status: () => number } {
+function fakeResponse(): { node: Record<string, unknown>, status: () => number, body: () => unknown } {
   let code = 0
+  let payload = ''
   const node: Record<string, unknown> = {
     statusCode: 0,
     setHeader: () => {},
-    end: () => {},
+    end(chunk?: unknown) { if (chunk !== undefined) payload = String(chunk); node.writableEnded = true },
     writeHead(code_: number) { code = code_; (node as { statusCode: number }).statusCode = code_ },
+    // `json()` 第一行就 `if (res.writableEnded || res.destroyed) return` —— 少这两个
+    // 字段它会**静默不写**，于是 body 是空的（第一版就这样，看着像 rows 没返回）。
+    writableEnded: false,
+    destroyed: false,
     get headersSent() { return false },
   }
-  return { node, status: () => code }
+  return { node, status: () => code, body: () => payload }
+}
+
+/**
+ * 调用捕获到的 /usage 路由，读出**卡片视角**的模型行 —— 这才是 displayModels
+ * 的真实调用路径（选择器走的 ctx.llm.listModels 读的是运行时目录，绕开它）。
+ */
+async function readCardModels(
+  usage: CapturedRoute,
+): Promise<Array<{ key: string, thinkingEfforts?: string[] }>> {
+  const res = fakeResponse()
+  await usage.handler(
+    { method: 'GET', url: `${usage.path}?region=cn`, headers: {} },
+    res.node,
+  )
+  if (res.status() !== 200) throw new Error(`/usage 状态码 ${String(res.status())}`)
+  const doc = JSON.parse(String(res.body())) as { models: Array<{ key: string, thinkingEfforts?: string[] }> }
+  return doc.models
 }

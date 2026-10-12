@@ -627,6 +627,16 @@ export interface QoderWebPoolAccount {
    * 仅在 `checkinSupported` 为 true 的区域有意义。
    */
   checkedInToday?: boolean
+  /**
+   * 下一窗每日签到的开门时刻（epoch 毫秒，来自上游活动行的 `endAt`）。
+   *
+   * **上游给的，不是本地按零点或「上次 +24h」算的**：实测活动窗是当天 10:00 到
+   * 次日 09:59（UTC+8），与官方页面「每日 10:00（UTC+8）刷新」一致 —— 用户实拍
+   * 里那个 `09:22:23` 就是 `endAt − 当前时间`。
+   *
+   * 缺席 = 上游没给这个时间（UI 就只说「已领取」，**绝不**编一个本地猜测）。
+   */
+  checkinRefreshAtMs?: number
   /** Set when this account cannot serve right now. */
   excludedBy?: QoderWebPoolExclusion
   /** Whether this is the account currently billing traffic for the region. */
@@ -734,6 +744,14 @@ export interface QoderWebPoolCheckinRow {
   credit?: number
   /** 有效天数（`claimed` 时），来自 `benefit.validity.days`。 */
   validityDays?: number
+  /**
+   * 下一窗每日签到的开门时刻（epoch 毫秒，来自上游活动行的 `endAt`）。
+   *
+   * `already` 时**同样要有**：「已领过」这句话离开「还有多久刷新」是不完整的 ——
+   * 领取不是「今天到此为止」。实测活动窗是当天 10:00 → 次日 09:59（UTC+8）。
+   * 缺席 = 上游这次没给（UI 就只说「已领取」，不编本地猜测）。
+   */
+  refreshAtMs?: number
   message?: string
 }
 

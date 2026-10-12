@@ -257,6 +257,11 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-check input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-qoder-pool-check input:disabled{cursor:default;opacity:.5}
 .dsm-qoder-pool-checked{color:var(--dsw-alias-state-success-primary,#22a06b)}
+/* 「已签到 · 09:22:23 后刷新」：倒计时是上游给的刷新时刻，逐秒变化，所以给它
+   等宽数字（tabular-nums）—— 否则位数一变整格宽度就抖，表格列跟着左右晃。
+   颜色刻意比「已签到」弱一档：已签到是状态，倒计时是附注，不该抢读。 */
+.dsm-qoder-pool-checkin-next{margin-left:6px;font-variant-numeric:tabular-nums;font-feature-settings:"tnum";color:var(--dsw-alias-label-tertiary,#999)}
+.dsm-qoder-pool-checkin-due{margin-left:6px;color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-qoder-pool-unknown{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
 .dsm-qoder-pool-member{color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-qoder-pool-not-member{color:var(--dsw-alias-label-dimmed,#9aa0a6)}

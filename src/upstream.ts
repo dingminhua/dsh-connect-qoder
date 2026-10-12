@@ -84,12 +84,36 @@ export interface QoderCampaign {
   amount?: number
   /** 有效期天数，来自 `benefit.validity.days`。 */
   validityDays?: number
+  /**
+   * 这条活动**开窗**的时刻（epoch **秒** —— 上游给的就是秒，不是毫秒）。
+   *
+   * 实测（`campaignKey: act-20261009-057`）：`startAt` = 当天 10:00:00 UTC+8，
+   * `endAt` = 次日 09:59:00 UTC+8，与活动文案「每日 10:00（UTC+8）刷新」一致。
+   * 所以「下一次刷新还有多久」是**上游给的**，不是本地按零点或「上次领取 +24h」
+   * 猜出来的 —— 用户实拍里那个 `09:22:23` 就是 `endAt − 当前时间`。
+   */
+  startAt?: number
+  /** 这条活动**关窗**的时刻（epoch 秒），即下一次刷新的时刻。 */
+  endAt?: number
 }
 
 /** 一次签到尝试的结果。 */
 export type QoderCheckinOutcome =
-  | { status: 'claimed', amount?: number, validityDays?: number }
-  | { status: 'already-claimed' }
+  | {
+      status: 'claimed'
+      amount?: number
+      validityDays?: number
+      /**
+       * 下一窗的开门时刻（epoch 毫秒，来自上游 `endAt` × 1000）。
+       *
+       * 领取**不是**「今天到此为止」—— 领取只是把这一窗从 `CLAIMABLE` 变成
+       * `CLAIMED`，而下一窗什么时候开上游早就写在了 `endAt` 里。没有它，UI 只能
+       * 说「已领取」，用户会以为要等到明天零点（用户实拍：领取后页面上的倒计时
+       * 才是正确的那个数）。
+       */
+      nextRefreshAtMs?: number
+    }
+  | { status: 'already-claimed', nextRefreshAtMs?: number }
   | { status: 'unavailable', message: string }
 
 const CHAT_PATH = '/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=llm_model_result&AgentId=agent_common&Encode=1'
@@ -99,6 +123,14 @@ const CHAT_PATH = '/algo/api/v2/service/pro/sse/agent_chat_generation?FetchKeys=
  * 注意是 **v1**（用量那套是 v2）。
  */
 const CAMPAIGNS_PATH = '/sash/api/v1/me/campaigns'
+/**
+ * sash 面专用的令牌交换端点（CLI / 网页那一族）。
+ *
+ * 与 {@link JOB_TOKEN_PATH}（桌面客户端那一族）**并存**，不是替代 —— 实测国际版
+ * 的 chat 面只认前者换来的 `securityOauthToken`，而 sash / 额度面只认这里换来的
+ * `token`；国内版两族等价。见 `QoderSessionHolder.sashToken`。
+ */
+const SASH_TOKEN_PATH = '/api/v1/jobToken/exchange'
 const CAMPAIGNS_QUERY = '?forceRefresh=true'
 /** sash 接口要求的客户端标识（参考实现如此，缺了会被拒）。 */
 const SASH_CLIENT_TYPE = '10'
@@ -226,6 +258,29 @@ export interface QoderSessionHolder {
   jobToken: QoderJobToken
   /** 会话过期毫秒时间戳；0 表示未知。 */
   expireAtMs: number
+  /**
+   * 另一族令牌：`POST /api/v1/jobToken/exchange` 换来的 `token`，sash 面专用。
+   *
+   * 国际版需要**两族并存**，实测（本机两个真实 PAT，只读）：
+   *
+   * | 面 | 认哪一族 |
+   * | --- | --- |
+   * | chat / cosy（模型对话） | 旧的 `securityOauthToken`（本字段缺席） |
+   * | sash / 额度（积分、签到） | 新的 `token`（本字段） |
+   *
+   * 换成新的会让国际版对话 403（code 105 登录态失效），继续用旧的会让国际版积分
+   * 401（TOKEN_EXPIRE）—— 而令牌 `expireTime` 还有 24 小时，所以不是过期问题。
+   * 国内版两族等价，这个差异**只在国际版显形**。
+   *
+   * 缺席 = 还没换过（或者换失败）。sash 那一支宁可回落到旧令牌（国内版足够）
+   * 也不整体失败。
+   *
+   * 参考：Liki4/qodercli2api、shuishuipingan/qoder2api-hub、
+   * eghrhegpe/dsh-connect-qoder 都走这个 exchange 端点。
+   */
+  sashToken?: string
+  /** 上面那枚令牌的过期毫秒时间戳；0 表示未知。 */
+  sashExpireAtMs?: number
 }
 
 const DEFAULT_HEADERS: Record<string, string> = {
@@ -344,10 +399,74 @@ export class QoderUpstreamClient {
       jobToken,
       expireAtMs: jobToken.expireTime > 0 ? jobToken.expireTime : 0,
     }
+    // sash 那一族令牌顺手换一枚。**必须在这里 await**：它是 sash 面的唯一凭据，
+    // 不等它落地就返回，会让紧接着的第一次积分 / 签到读到空令牌而 401 —— 而那个
+    // 401 与「真被拒」长得一模一样（实测正是如此：第一次 401、第二次 200），
+    // 排查起来极贵。第二次交换多花一次上游往返，换「第一次读积分就是对的」。
+    await this.refreshSashToken(credential, holder)
     this.holders.set(credential, holder)
     this.currentKey = credential
     this.log(`jobToken 已交换: ${jobToken.name} (${jobToken.id})`)
     return jobToken
+  }
+
+  /**
+   * 换一枚 sash 面专用的令牌（`POST /api/v1/jobToken/exchange`）。
+   *
+   * **不抛**：这一族换不到时 sash 那一支会回落到旧令牌（国内版本来就够用），
+   * 而整条交换失败只该让「积分读不到」，不该让 chat / 对话跟着挂 —— 那是完全
+   * 不同的两条链路。
+   *
+   * body 键是 `personal_token`：实测 `personal_access_token`（eghrhegpe 那个 fork
+   * 用的拼写）在当前上游回 **400 BadRequest**，两个区域都是。
+   */
+  private async refreshSashToken(credential: string, holder: QoderSessionHolder): Promise<void> {
+    const url = `${this.region.openapi}${SASH_TOKEN_PATH}`
+    try {
+      const resp = await this.fetchImpl(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ personal_token: credential }),
+      })
+      const text = await resp.text()
+      if (resp.status !== 200) {
+        this.log(`sash 令牌交换失败（HTTP ${resp.status}），sash 面将回落到旧令牌: ${truncate(text, 120)}`)
+        return
+      }
+      const data = parseJson(text)
+      // 上游在这一点上有过多种拼写（token / job_token / jobToken），全试。
+      const raw = data === undefined ? {} : data as Record<string, unknown>
+      const token = typeof raw['token'] === 'string' && raw['token'] !== ''
+        ? raw['token']
+        : typeof raw['job_token'] === 'string' && raw['job_token'] !== ''
+          ? raw['job_token']
+          : typeof raw['jobToken'] === 'string' && raw['jobToken'] !== '' ? raw['jobToken'] : ''
+      if (token === '') {
+        this.log(`sash 令牌交换响应里没有 token 字段: ${truncate(text, 120)}`)
+        return
+      }
+      holder.sashToken = token
+      // expires_at 是 ISO 字符串（实测 "2026-10-13T17:36:02Z"），不是 epoch 毫秒。
+      const expiry = typeof raw['expires_at'] === 'string' ? Date.parse(raw['expires_at']) : Number.NaN
+      holder.sashExpireAtMs = Number.isFinite(expiry) ? expiry : 0
+      this.log(`sash 令牌已交换（有效期至 ${holder.sashExpireAtMs > 0 ? new Date(holder.sashExpireAtMs).toISOString() : '未知'}）`)
+    } catch (error: unknown) {
+      this.log(`sash 令牌交换异常，sash 面将回落到旧令牌: ${String((error as Error)?.message ?? error).slice(0, 120)}`)
+    }
+  }
+
+  /**
+   * 取该会话用于 **sash 面** 的 Authorization 值。
+   *
+   * 新令牌优先（国际版必需）；没有就回落到旧的 `securityOauthToken`（国内版
+   * 两个面都认它，而且它是 chat 在用的那一个 —— 回落不会破坏任何东西）。
+   *
+   * 返回 `''` 表示两族都没有：那一支必须报「读不到」，绝不能带上一个空 bearer
+   * 去换一个 401 回来（那样分不清是没令牌还是令牌被拒）。
+   */
+  private sashBearerOf(holder: QoderSessionHolder): string {
+    if (typeof holder.sashToken === 'string' && holder.sashToken !== '') return holder.sashToken
+    return holder.jobToken.securityOauthToken
   }
 
   /**
@@ -575,9 +694,10 @@ export class QoderUpstreamClient {
     url: string,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    const oauthToken = holder.jobToken.securityOauthToken
+    // sash 面用**专用那族**令牌（国际版必需，见 QoderSessionHolder.sashToken）。
+    const oauthToken = this.sashBearerOf(holder)
     if (oauthToken === '') {
-      throw new QoderUpstreamError('auth', 'jobToken 未返回 securityOauthToken，无法查询用量', 401)
+      throw new QoderUpstreamError('auth', '两次令牌交换都没有拿到可用令牌，无法查询用量', 401)
     }
     // 设备风控头按区域附加：`requiresDeviceRisk` 的语义是「该区域的 sash 请求
     // 都要带这三件套」，用量查询同属 sash 面，**不能只给签到带**。此前这里只发
@@ -635,6 +755,10 @@ export class QoderUpstreamClient {
           claimStatus: typeof raw.claimStatus === 'string' ? raw.claimStatus : '',
           ...(typeof benefit.amount === 'number' ? { amount: benefit.amount } : {}),
           ...(typeof validity.days === 'number' ? { validityDays: validity.days } : {}),
+          // 活动窗：秒 → 毫秒之外的**原值也留着**，倒计时由 UI 按 region 的时区算。
+          // 这里保留秒，因为 `endAt` 与 `startAt` 同源同单位，混着传才容易错。
+          ...(typeof raw.startAt === 'number' ? { startAt: raw.startAt } : {}),
+          ...(typeof raw.endAt === 'number' ? { endAt: raw.endAt } : {}),
         }
       })
       .filter((c): c is QoderCampaign => c !== undefined)
@@ -652,11 +776,16 @@ export class QoderUpstreamClient {
    */
   async claimDailyCredits(credential: string, signal?: AbortSignal): Promise<QoderCheckinOutcome> {
     const campaigns = await this.fetchCampaigns(credential, signal)
+    const daily = campaigns.find(c => c.actionType === 'CLAIM_BENEFIT')
     const claimable = campaigns.find(c => c.actionType === 'CLAIM_BENEFIT' && c.claimStatus === 'CLAIMABLE')
+    // 「下一次刷新」来自**这一窗的 `endAt`**（秒），无论这次是领到还是已领过。
+    // 关键：已领过时也带着它 —— 「已领取」这个答案离开「还有多久刷新」是不完整的，
+    // 用户看到「已领取」会以为要等到明天零点，而上游说的是次日 10:00。
+    const nextRefreshAtMs = daily?.endAt === undefined ? undefined : daily.endAt * 1000
     if (claimable === undefined) {
-      const claimed = campaigns.some(c => c.actionType === 'CLAIM_BENEFIT' && c.claimStatus === 'CLAIMED')
+      const claimed = daily?.claimStatus === 'CLAIMED'
       return claimed
-        ? { status: 'already-claimed' }
+        ? { status: 'already-claimed', ...(nextRefreshAtMs === undefined ? {} : { nextRefreshAtMs }) }
         : { status: 'unavailable', message: '上游今日没有下发可领取的签到活动' }
     }
     const holder = await this.ensureSession(credential)
@@ -669,12 +798,15 @@ export class QoderUpstreamClient {
           status: 'claimed',
           ...(claimable.amount === undefined ? {} : { amount: claimable.amount }),
           ...(claimable.validityDays === undefined ? {} : { validityDays: claimable.validityDays }),
+          ...(nextRefreshAtMs === undefined ? {} : { nextRefreshAtMs }),
         }
       }
       return { status: 'unavailable', message: `签到未完成（上游状态 ${String(data.status ?? '未知')}）` }
     } catch (error) {
       // 重复领取是幂等的：409 / ALREADY_CLAIMED / replayed 一律当「今天已领」。
-      if (error instanceof QoderUpstreamError && error.status === 409) return { status: 'already-claimed' }
+      if (error instanceof QoderUpstreamError && error.status === 409) {
+        return { status: 'already-claimed', ...(nextRefreshAtMs === undefined ? {} : { nextRefreshAtMs }) }
+      }
       throw error
     }
   }
@@ -697,9 +829,10 @@ export class QoderUpstreamClient {
     body: unknown,
     signal?: AbortSignal,
   ): Promise<Record<string, unknown>> {
-    const oauthToken = holder.jobToken.securityOauthToken
+    // 同上：签到也是 sash 面。
+    const oauthToken = this.sashBearerOf(holder)
     if (oauthToken === '') {
-      throw new QoderUpstreamError('auth', 'jobToken 未返回 securityOauthToken，无法访问签到接口', 401)
+      throw new QoderUpstreamError('auth', '两次令牌交换都没有拿到可用令牌，无法访问签到接口', 401)
     }
     const resp = await this.fetchImpl(url, {
       method,
@@ -971,6 +1104,15 @@ const CONTENT_POLICY_MARKERS = [
 
 export function isContentPolicy(detail: string): boolean {
   return CONTENT_POLICY_MARKERS.some(marker => detail.includes(marker))
+}
+
+/** Parse JSON, or undefined when the body is not JSON at all. Never throws. */
+function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return undefined
+  }
 }
 
 function truncate(text: string, max: number): string {

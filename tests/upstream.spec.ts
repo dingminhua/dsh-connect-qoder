@@ -234,6 +234,14 @@ describe('每日签到（sash campaigns）', () => {
       const u = String(url)
       const h = new Headers(init?.headers ?? {})
       calls.push({ url: u, method: init?.method ?? 'GET', auth: h.get('authorization') ?? undefined })
+      // 两族交换端点都要应答：`/algo/api/v3/user/jobToken`（chat 那一族）与
+      // `/api/v1/jobToken/exchange`（sash 那一族）。它们都含 "jobToken"，所以
+      // 按路径区分而不是按子串 —— 否则 sash 那枚会被当成 chat 的答，桩就假了。
+      if (u.includes('/api/v1/jobToken/exchange')) {
+        return new Response(JSON.stringify({
+          token: 'jt-SASH', expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
       if (u.includes('jobToken')) {
         return new Response(JSON.stringify({
           id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
@@ -260,6 +268,135 @@ describe('每日签到（sash campaigns）', () => {
     expect(campaigns[0]).toMatchObject({ campaignId: 'c1', claimStatus: 'CLAIMABLE', amount: 100, validityDays: 30 })
   })
 
+  // ======================================================================
+  // 两族令牌并存：chat 用旧的，sash 用新的。
+  //
+  // 国际版的实测（本机两个真实 PAT，见 tests/live-intl-session.spec.ts）：
+  //   chat/cosy 面只认 `/algo/api/v3/user/jobToken` 的 securityOauthToken
+  //   sash/额度面只认 `/api/v1/jobToken/exchange` 的 token
+  // 国内版两族等价，所以这个差异**只在国际版显形**。
+  // ======================================================================
+
+  /** A stub that answers BOTH exchanges and records which token each call used. */
+  function dualTokenStub(): {
+    calls: Array<{ url: string, auth: string | undefined }>
+    chatAuth: () => string | undefined
+    sashAuth: () => string | undefined
+    client: QoderUpstreamClient
+  } {
+    const calls: Array<{ url: string, auth: string | undefined }> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      const h = new Headers(init?.headers ?? {})
+      calls.push({ url: u, auth: h.get('authorization') ?? undefined })
+      if (u.includes('/api/v1/jobToken/exchange')) {
+        return new Response(JSON.stringify({
+          token: 'jt-SASH-TOKEN',
+          expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-CHAT-TOKEN', refreshToken: 'jrt-x', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('/me/usage')) {
+        return new Response(JSON.stringify({ qoderUsage: { userQuota: { total: 10 } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(JSON.stringify({ campaigns: [] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    return {
+      calls,
+      chatAuth: () => calls.find(c => c.auth?.includes('COSY.'))?.auth,
+      sashAuth: () => calls.find(c => c.url.includes('/sash/'))?.auth,
+      client: new QoderUpstreamClient('cn', { fetch: fetchImpl }),
+    }
+  }
+
+  it('两次交换都发生：chat 那一族 + sash 那一族', async () => {
+    const { calls, client } = dualTokenStub()
+    await client.fetchUsage('pt-x').catch(() => undefined)
+    const exchanges = calls.filter(c => c.url.includes('jobToken')).map(c => c.url)
+    // 两条都要在 —— 少任何一条，对应的面就通不了。
+    expect(exchanges.some(u => u.includes('/api/v1/jobToken/exchange'))).toBe(true)
+    expect(exchanges.some(u => u.includes('/algo/api/v3/user/jobToken'))).toBe(true)
+  })
+
+  it('sash 面用 sash 那一族的令牌，不是 chat 那一族的', async () => {
+    const { client, sashAuth } = dualTokenStub()
+    await client.fetchUsage('pt-x').catch(() => undefined)
+    expect(sashAuth()).toBe('Bearer jt-SASH-TOKEN')
+    // 明确不许回落到旧令牌：国际版会 401。
+    expect(sashAuth()).not.toBe('Bearer jt-CHAT-TOKEN')
+  })
+
+  it('签到面同样用 sash 那一族的令牌', async () => {
+    const { calls, client } = dualTokenStub()
+    await client.fetchCampaigns('pt-x').catch(() => undefined)
+    const campaigns = calls.find(c => c.url.includes('/campaigns'))
+    expect(campaigns?.auth).toBe('Bearer jt-SASH-TOKEN')
+  })
+
+  it('sash 交换失败时不抛 —— 只让积分读不到，对话照常', async () => {
+    // 「换不到 sash 令牌」绝不能变成「整个会话建立失败」：那是完全不同的两条链路。
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/api/v1/jobToken/exchange')) return new Response('nope', { status: 500 })
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-CHAT-TOKEN', refreshToken: 'jrt-x',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ campaigns: [] }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    const client = new QoderUpstreamClient('cn', { fetch: fetchImpl })
+    // 会话建立成功（没有抛）。
+    const holder = await client.ensureSession('pt-x')
+    expect(holder.jobToken.securityOauthToken).toBe('jt-CHAT-TOKEN')
+    // sash 令牌缺席 → 读积分会失败，但那是「读不到」而不是「会话坏了」。
+    expect(holder.sashToken).toBeUndefined()
+  })
+
+  it('上游不认 personal_access_token 那个拼写（回 400），所以 body 用 personal_token', async () => {
+    // eghrhegpe 那个 fork 用的是 personal_access_token；实测当前上游回
+    // 400 BadRequest，两个区域都是。这里钉住我们用的那个键。
+    const bodies: string[] = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('/api/v1/jobToken/exchange')) {
+        bodies.push(String(init?.body ?? ''))
+        return new Response(JSON.stringify({ token: 'jt-SASH-TOKEN' }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6, securityOauthToken: 'jt-CHAT-TOKEN',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    const client = new QoderUpstreamClient('cn', { fetch: fetchImpl })
+    await client.fetchUsage('pt-x').catch(() => undefined)
+    expect(bodies[0]).toContain('personal_token')
+    expect(bodies[0]).not.toContain('personal_access_token')
+  })
+
+  it('**第一次**读积分就已经用 sash 令牌（不许有「先 401 再 200」的竞态）', async () => {
+    // 曾经的真实故障：sash 交换放后台，于是紧接着的第一次读带着空令牌去，
+    // 拿到 401 —— 而那个 401 与「真被拒」长得一模一样，排查极贵。
+    const { sashAuth, client } = dualTokenStub()
+    await client.fetchUsage('pt-x').catch(() => undefined)
+    // 不重试、不等待：第一发就该带上正确的令牌。
+    expect(sashAuth()).toBe('Bearer jt-SASH-TOKEN')
+  })
+
   it('claims the CLAIMABLE campaign and reports what was granted', async () => {
     const { calls, client } = stub([
       { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100, validity: { days: 30 } } },
@@ -270,7 +407,9 @@ describe('每日签到（sash campaigns）', () => {
     const claim = calls.find(c => c.url.endsWith('/claim'))
     expect(claim?.url).toContain('/sash/api/v1/me/campaigns/c1/claim')
     expect(claim?.method).toBe('POST')
-    expect(claim?.auth).toBe('Bearer jt-CHECKIN')
+    // sash 面用**专用那族**令牌（`/api/v1/jobToken/exchange` 的 token），不是 chat
+    // 那一族的 securityOauthToken —— 国际版只认前者（见 live-intl-session.spec.ts）。
+    expect(claim?.auth).toBe('Bearer jt-SASH')
   })
 
   it('treats a CLAIMED campaign as already claimed (idempotent, not an error)', async () => {
@@ -293,6 +432,77 @@ describe('每日签到（sash campaigns）', () => {
     ], { status: 200, body: {} })
     const out = await client.claimDailyCredits('pt-x')
     expect(out.status).toBe('unavailable')
+  })
+
+  // ======================================================================
+  // 「下一次刷新」= 上游活动行的 `endAt`，不是本地算的。
+  //
+  // 实测（只读拉取，未领取）cn 区域的 campaigns 原文：
+  //   { campaignId: '01a12102-…', campaignKey: 'act-20261009-057',
+  //     actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED',
+  //     startAt: 1791770400, endAt: 1791856740,      ← 活动窗
+  //     benefit: { kind: 'CREDITS', amount: 100,
+  //                 validity: { mode: 'RELATIVE_DAYS', days: 30 } } }
+  // 换算（UTC+8）：startAt = 当天 10:00:00，endAt = 次日 09:59:00 —— 与活动文案
+  // 「每日 10:00（UTC+8）刷新」一致。用户实拍里官网页面上那个 `09:22:23`
+  // 就是 `endAt − 当前时间`。
+  //
+  // 领取**不是**「今天到此为止」：领取只是把这一窗从 CLAIMABLE 变成 CLAIMED，
+  // 下一窗何时开上游早就写在 endAt 里了。此前 UI 只能说「已领取」，用户会以为
+  // 要等到第二天零点。
+  // ======================================================================
+
+  it('parses the activity window (startAt/endAt, epoch SECONDS) from campaigns', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', campaignKey: 'act-20261009-057', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED', startAt: 1791770400, endAt: 1791856740, benefit: { amount: 100 } },
+    ], { status: 200, body: {} })
+    const [campaign] = await client.fetchCampaigns('pt-x')
+    // 保持上游的**秒**，不做 ×1000：这个字段的「×1000」发生在它要变成
+    // 毫秒时间戳的那一刻（`claimDailyCredits` 的 nextRefreshAtMs），
+    // 在解析层就换算会让 startAt/endAt 单位不一致（实测 bug 的形状）。
+    expect(campaign?.startAt).toBe(1791770400)
+    expect(campaign?.endAt).toBe(1791856740)
+  })
+
+  it('reports nextRefreshAtMs after a claim (endAt → ms)', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', startAt: 1791770400, endAt: 1791856740, benefit: { amount: 100, validity: { days: 30 } } },
+    ], { status: 200, body: { status: 'CLAIMED' } })
+    const out = await client.claimDailyCredits('pt-x')
+    expect(out.status).toBe('claimed')
+    if (out.status !== 'claimed') throw new Error('expected claimed')
+    expect(out.nextRefreshAtMs).toBe(1791856740 * 1000)
+  })
+
+  it('reports nextRefreshAtMs even when ALREADY claimed — 「已领过」也要带刷新时刻', async () => {
+    // 否则用户看到「已领取」却不知道要等多久，只能猜到第二天零点。
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED', startAt: 1791770400, endAt: 1791856740, benefit: { amount: 100 } },
+    ], { status: 200, body: {} })
+    const out = await client.claimDailyCredits('pt-x')
+    expect(out.status).toBe('already-claimed')
+    if (out.status !== 'already-claimed') throw new Error('expected already-claimed')
+    expect(out.nextRefreshAtMs).toBe(1791856740 * 1000)
+  })
+
+  it('keeps nextRefreshAtMs on the 409 (repeat-claim) path too', async () => {
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', endAt: 1791856740 },
+    ], { status: 409, body: { result: 'ALREADY_CLAIMED' } })
+    const out = await client.claimDailyCredits('pt-x')
+    expect(out.status).toBe('already-claimed')
+    if (out.status !== 'already-claimed') throw new Error('expected already-claimed')
+    expect(out.nextRefreshAtMs).toBe(1791856740 * 1000)
+  })
+
+  it('omits nextRefreshAtMs when the upstream states no window', async () => {
+    // 上游没给就不编：绝不用本地零点或「上次 +24h」造一个倒计时。
+    const { client } = stub([
+      { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100 } },
+    ], { status: 200, body: { status: 'CLAIMED' } })
+    const out = await client.claimDailyCredits('pt-x')
+    expect(out.status).toBe('claimed')
+    expect('nextRefreshAtMs' in out).toBe(false)
   })
 
   it('skips VIEW_DETAILS entries when picking what to claim', async () => {

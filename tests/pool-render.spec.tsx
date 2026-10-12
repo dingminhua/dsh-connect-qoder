@@ -394,6 +394,112 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
   })
 
   // ==========================================================================
+  // 每日签到的「下一窗倒计时」：领取不是「今天到此为止」。
+  //
+  // 上游活动行带 `startAt`/`endAt`（实测当天 10:00 → 次日 09:59 UTC+8），
+  // 用户实拍里页面上的 `09:22:23` 就是 `endAt − 现在`。宿主把 `endAt` 以
+  // `checkinRefreshAtMs` 送到行上，这一格把它显示成倒计时。
+  // ==========================================================================
+
+  describe('每日签到的下一窗倒计时', () => {
+    /** A pool whose first member is checked in, with a stated refresh time. */
+    const claimedPool = (refreshAtMs?: number): Record<string, unknown> => ({
+      ...poolFixture(),
+      accounts: [
+        {
+          accountId: 'a1', accountName: 'Alpha', current: true, member: true, source: 'vault',
+          credits: 1200, checkedInToday: true,
+          ...(refreshAtMs === undefined ? {} : { checkinRefreshAtMs: refreshAtMs }),
+          probe: { outcome: 'ok', atMs: Date.now(), source: 'test-batch' },
+        },
+      ],
+    })
+
+    /** Mount with `nowMs` pinned so the countdown text is exact. */
+    async function mountAt(nowMs: number, pool: Record<string, unknown>) {
+      vi.useFakeTimers({ shouldAdvanceTime: true })
+      vi.setSystemTime(nowMs)
+      return mountPool({ pool })
+    }
+
+    it('已签到的行显示「已签到 · HH:MM:SS 后刷新」', async () => {
+      const refreshAt = Date.now() + ((9 * 3600 + 22 * 60 + 23) * 1000)
+      const { container, unmount } = await mountAt(Date.now(), claimedPool(refreshAt))
+      try {
+        const cell = container.querySelector('.dsm-qoder-pool-checkin')
+        expect(cell?.textContent).toContain('row.poolCheckedIn')
+        // 倒计时在，且是上游那个时刻。
+        expect(cell?.textContent).toContain('row.poolCheckinNext')
+        const next = cell?.querySelector('.dsm-qoder-pool-checkin-next')
+        expect(next?.textContent).toContain('countdown=09:22:23')
+      } finally {
+        vi.useRealTimers()
+        await unmount()
+      }
+    })
+
+    it('倒计时逐秒递减（心跳驱动，不是一次性文本）', async () => {
+      const refreshAt = Date.now() + (3600 * 1000)
+      const { container, unmount } = await mountAt(Date.now(), claimedPool(refreshAt))
+      try {
+        expect(container.querySelector('.dsm-qoder-pool-checkin-next')?.textContent).toContain('countdown=01:00:00')
+        // 心跳是 20 秒（`setInterval(…, 20_000)`），所以推进一个心跳周期：
+        // 1:00:00 → 00:59:40。证明它跟着时钟走，而不是把第一次算好的字符串钉死。
+        await act(async () => { vi.advanceTimersByTime(20_000) })
+        expect(container.querySelector('.dsm-qoder-pool-checkin-next')?.textContent).toContain('countdown=00:59:40')
+      } finally {
+        vi.useRealTimers()
+        await unmount()
+      }
+    })
+
+    it('倒计时走完 → 「现在可以领取」，而不是一个 00:00:00', async () => {
+      const now = Date.now()
+      const { container, unmount } = await mountAt(now, claimedPool(now - 1000))
+      try {
+        const cell = container.querySelector('.dsm-qoder-pool-checkin')
+        expect(cell?.querySelector('.dsm-qoder-pool-checkin-due')?.textContent).toBe('row.poolCheckinDue')
+        // 关键：不能显示一个「00:00:00」假装还在倒计时。
+        expect(cell?.textContent).not.toContain('00:00:00')
+      } finally {
+        vi.useRealTimers()
+        await unmount()
+      }
+    })
+
+    it('上游没给刷新时刻时只说「已签到」，不编倒计时', async () => {
+      const { container, unmount } = await mountAt(Date.now(), claimedPool(undefined))
+      try {
+        const cell = container.querySelector('.dsm-qoder-pool-checkin')
+        expect(cell?.textContent).toContain('row.poolCheckedIn')
+        expect(cell?.querySelector('.dsm-qoder-pool-checkin-next')).toBeNull()
+        expect(cell?.querySelector('.dsm-qoder-pool-checkin-due')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+        await unmount()
+      }
+    })
+
+    it('没签到时不说倒计时 —— 那是「已领取」那一格的附注', async () => {
+      const notClaimed = {
+        ...poolFixture(),
+        accounts: [
+          { accountId: 'a1', accountName: 'Alpha', current: true, member: true, source: 'vault', checkedInToday: false, probe: { outcome: 'ok', atMs: Date.now(), source: 'test-batch' } },
+        ],
+      }
+      const { container, unmount } = await mountAt(Date.now(), notClaimed)
+      try {
+        const cell = container.querySelector('.dsm-qoder-pool-checkin')
+        expect(cell?.textContent).toContain('row.poolNotCheckedIn')
+        expect(cell?.querySelector('.dsm-qoder-pool-checkin-next')).toBeNull()
+      } finally {
+        vi.useRealTimers()
+        await unmount()
+      }
+    })
+  })
+
+  // ==========================================================================
   // 移出池 = 勾选；删除 = 按钮 + 二次确认。
   // 此前行内只有一个「移除」，它做的其实是移出池却长得像删除：用户点它期望账号
   // 消失，PAT 却留在 vault 里，「全选」一下又回来（用户实拍：「删除唯一的号，

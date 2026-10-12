@@ -26,7 +26,7 @@
  * @module dsh-connect-qoder/client/AccountPool
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createElement as h } from 'react'
 import type { ReactNode } from 'react'
 import {
@@ -53,7 +53,7 @@ import { inlineProbeReason } from './probe-reason.ts'
 import { probeLabelOf, formatProbeMoment } from './probe-label.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
-import { remainingText } from './remaining.ts'
+import { remainingText, countdownText } from './remaining.ts'
 
 /** 池日志行的时间戳：只要时钟（日志是「刚刚/刚才」的语境，不需要日期）。 */
 function formatClock(atMs: number): string {
@@ -431,6 +431,29 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
   const targetMisses = pool?.targetModelSource === 'none' || pool?.targetModelSource === 'stale'
 
+  /**
+   * 本区域「下一窗什么时候开」的倒计时，来自上游活动行的 `endAt`。
+   *
+   * 区域级而不是账号级：活动窗对整个区域是同一批（所有成员领的是同一份每日
+   * 额度），所以取第一条**已领取且给了时间**的成员行即可 —— 不去猜哪条才对。
+   * 一个都没有 → `undefined`：上游没给就不显示倒计时，而不是拿本地区时编一个。
+   *
+   * 返回 `''` 表示「倒计时走完了，此刻就可以领了」——与「没有倒计时」（undefined）
+   * 是两件事，UI 要分开说。
+   */
+  const checkinCountdown = useMemo(() => {
+    if (!checkinOn) return { state: 'off' as const }
+    const row = pool?.accounts.find(row => row.checkedInToday === true && row.checkinRefreshAtMs !== undefined)
+    // **四态，不能塌成两态**：`off`（本区域没有签到列）、`unknown`（已领取但上游
+    // 没给刷新时刻 —— 只说「已领取」，不编倒计时）、`ticking`、`due`。
+    // 此前直接 `countdownText(until, nowMs)`，而它在 `until === undefined` 时返回
+    // `''`，于是「上游没给时间」被渲染成「现在可以领取」—— 把「不知道下一窗什么时候
+    // 开」说成了「已经可以领了」（本轮测试接住的第二个缺陷）。
+    if (row === undefined) return { state: 'unknown' as const }
+    const text = countdownText(row.checkinRefreshAtMs, nowMs)
+    return text === '' ? { state: 'due' as const } : { state: 'ticking' as const, text }
+  }, [checkinOn, pool?.accounts, nowMs])
+
   return (
     <section className="dsm-qoder-pool">
       <BusyOverlay
@@ -603,13 +626,28 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                 </span>
                 {/* 签到单元格（仅在有签到列时渲染）。三态，不是两态：还没读到
                     的账号说「未知」而不是断言「未签到」——后者会与用户刚亲眼看到
-                    的领取结果矛盾。 */}
+                    的领取结果矛盾。
+                    **已领取**那一格还带**下一窗的倒计时**：领取不是「今天到此为止」，
+                    只是这一窗从可领变成已领；下一窗什么时候开是上游活动行的 `endAt`
+                    （实测当天 10:00 → 次日 09:59 UTC+8），也就是用户在 Qoder 网页上
+                    看到的那个 `09:22:23`（用户实拍）。倒计时走秒，每 20 秒的
+                    `nowMs` 心跳重绘一次；到点后换回「可领取」。上游没给时间就**只**
+                    说「已领取」，绝不编一个本地的。 */}
                 {checkinOn
                   ? <span className="dsm-qoder-pool-checkin">
                       {account.checkedInToday === undefined
                         ? <span className="dsm-qoder-pool-unknown" title={t('row.poolNeverTested')}>{t('row.poolCheckinUnknown')}</span>
                         : account.checkedInToday
-                          ? <span className="dsm-qoder-pool-checked">{t('row.poolCheckedIn')}</span>
+                          ? <span>
+                              <span className="dsm-qoder-pool-checked">{t('row.poolCheckedIn')}</span>
+                              {checkinCountdown.state === 'ticking'
+                                ? <span className="dsm-qoder-pool-checkin-next" title={t('row.poolCheckinNextHint')}>
+                                    {t('row.poolCheckinNext', { countdown: checkinCountdown.text })}
+                                  </span>
+                                : checkinCountdown.state === 'due'
+                                  ? <span className="dsm-qoder-pool-checkin-due">{t('row.poolCheckinDue')}</span>
+                                  : null}
+                            </span>
                           : t('row.poolNotCheckedIn')}
                     </span>
                   : null}

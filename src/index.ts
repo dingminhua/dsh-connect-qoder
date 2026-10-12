@@ -189,6 +189,50 @@ export const Config: z<Config> = z.object({
   regions: asVolatile(z.dict(regionConfig).default({}).description('Per-region Qoder settings, keyed cn | global')),
 }) as unknown as z<Config>
 
+/**
+ * 一份目录是否**声明了**思考档位。
+ *
+ * 「一个模型都没有档位」有两种完全不同的含义，必须分开：
+ * 1. 上游当前没声明（`thinkingEfforts` 字段缺席或为空）—— 那它是「上游没
+ *    档位」的诚实答案；
+ * 2. 这份目录来自一次没拉到档位的时刻 —— 本机实测 14 个 cn 模型的
+ *    `thinkingEfforts` 全是 `[]`，是旧 schema 把字段剥掉时的产物。用它当答案，
+ *    卡片就不渲染档位选择器（用户实拍「思考强度有时候有、有时候没有」：点一次
+ *    「从 Qoder 刷新」就有，重启后就没）。
+ *
+ * 两种情况从数据上分不开（空数组与缺席都判「没声明」），要不要重拉由**目录的
+ * 来源**决定：调用方只在「本进程还没成功拉到实时目录」时才据此触发重拉（见
+ * displayModels）—— 实时目录没档位是上游的诚实答案，重拉多少次都一样。
+ *
+ * 判据用 `length > 0` 而不是「字段在不在」：旧 schema 留下的是**空数组**而不是
+ * 缺席，所以「字段在」恰恰不能作为「声明过」的证据。
+ */
+export function catalogSnapshotDeclaresEfforts(
+  models: readonly { thinkingEfforts?: readonly string[] }[],
+): boolean {
+  return models.some(model => (model.thinkingEfforts?.length ?? 0) > 0)
+}
+
+/**
+ * 「手上的目录能不能当档位答案」——**判据与动作打包在一起**。
+ *
+ * 拆开成两个函数（判据一个、调用处自己判）会留下一条没被测试覆盖的接线：把调用处
+ * 变异掉，单测仍然全绿（第一版就是这么自我欺骗的）。这里让规则自己执行动作并
+ * 返回结论，于是「动作有没有真的发生」也能被断言。
+ *
+ * 检测到「一个档位都没声明」时**不改动要服务的模型列表**：模型不能从卡片上
+ * 消失，缺的只是档位 —— 后台拉回来之后的下一次读取自然补上。返回 `stale`
+ * 标记这次调用有没有触发过拉取。
+ */
+export function serveSavedCatalog(
+  models: readonly QoderModelInfo[],
+  onStale: () => void,
+): { models: readonly QoderModelInfo[], stale: boolean } {
+  if (catalogSnapshotDeclaresEfforts(models)) return { models, stale: false }
+  onStale()
+  return { models, stale: true }
+}
+
 /** 某区域的配置状态（缺省返回空对象）。 */
 export function regionStateOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): Record<string, unknown> {
   const regions = unwrapVolatile(config.regions) as Record<string, unknown> | undefined
@@ -460,6 +504,19 @@ export function apply(ctx: Context, config: Config): void {
    * 进程内即可：它描述的是「今天」，重启后由下一次签到重新写入。
    */
   const checkinState: Record<QoderRegion, Record<string, boolean>> = { cn: {}, global: {} }
+  /**
+   * 每区域的签到快照：每个成员「是否已领」+「下一窗何时刷新」（epoch 毫秒，
+   * 来自上游活动行的 `endAt`）。
+   *
+   * 为什么不能只留 `checkinState` 那个布尔表：「已领取」这句话离开「还有多久
+   * 刷新」是不完整的 —— 领取不是「今天到此为止」，只是这一窗从 `CLAIMABLE`
+   * 变成 `CLAIMED`，下一窗什么时候开上游早就写在 `endAt` 里了（实测活动窗是
+   * 当天 10:00 → 次日 09:59 UTC+8）。用户实拍里官网页面上那个 `09:22:23`
+   * 就是这个 `endAt − 当前时间`。
+   *
+   * 同样只在进程内：它描述的是「今天」，重启后由下一次签到重新写入。
+   */
+  const checkinSnapshots: Record<QoderRegion, Record<string, { claimed: boolean, refreshAtMs?: number }>> = { cn: {}, global: {} }
 
   /**
    * 每区域最近一次**实时**拉到的完整目录（含上游声明的思考档位），未过滤。
@@ -479,31 +536,52 @@ export function apply(ctx: Context, config: Config): void {
  * **运行时目录只含用户勾选的模型**（DSH 的选择器读它），而卡片必须看到**完整
  * 目录**，否则未勾选的模型根本不出现在卡片里，用户再也勾不上它们。
  *
- * 三步优先序与 workbuddy 一致：上次保存的目录 → 实时目录 → 静态兜底。用保存的
- * 快照优先，是为了让卡片重新读取的是**当前**目录而不是过期的旧快照（issue #32
- * 的教训：保存槽位丢了目录时，必须显示实时目录，否则卡片会把用户正在用的模型
- * 报成「已下架」）。
+ * 实时目录（`fullCatalog`）优先于运行时目录：实时目录反映上游**当前**声明了
+ * 什么（含思考档位），而运行时目录是启动时由保存的 lastCatalog 装配的 ——
+ * 那是上一次保存时的旧快照（issue #32 的教训：保存槽位丢了目录时必须显示
+ * 实时目录，否则卡片会把用户正在用的模型报成「已下架」）。
+ *
+ * 「思考强度有时候有、有时候没有」（用户实拍）的机制也在这条读路径上：
+ * `fullCatalog` 是纯内存的、只在启动时拉一次；启动那次失败的话，卡片每次
+ * 读到的都是启动装配的旧快照 —— 一个档位都没有，直到用户手动点一次
+ * 「从 Qoder 刷新」。所以读到「本进程还没成功拉过实时目录 + 手上的目录一个
+ * 档位都没声明」时，**触发一次后台重拉**（fire-and-forget，见
+ * ensureCatalogRefresh）并且**继续服务手上的目录** —— 模型不能从卡片上消失，
+ * 缺的只是档位，拉回来之后下一次读取自然补上。
  */
-function displayModels(
-  config: { regions?: Record<string, unknown> | null },
-  region: QoderRegion,
-): readonly QoderModelInfo[] {
-  // 实时目录优先：它反映上游**当前**声明了什么（含思考档位），而保存的
-  // lastCatalog 是上一次保存时的快照 —— 上游新增或修正档位后，快照里没有，
-  // 卡片就一直不渲染档位选择器（用户实拍「还是没有思考强度」）。
-  const live = fullCatalog[region].length > 0
-    ? fullCatalog[region]
-    : stacks[region].catalog.current()
-  if (live.length > 0) return live
-  const state = regionStateOf(config, region)
-  if (Array.isArray(state.lastCatalog) && state.lastCatalog.length > 0) {
-    const parsed = state.lastCatalog
-      .map(item => modelFromStored((item ?? {}) as Record<string, unknown>))
-      .filter((m): m is QoderModelInfo => m !== undefined)
-    if (parsed.length > 0) return parsed
+function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
+  const full = fullCatalog[region]
+  const live = full.length > 0 ? full : stacks[region].catalog.current()
+  if (full.length === 0) {
+    // 判据与动作打包在 serveSavedCatalog 里（空档位目录 → 触发一次拉取）。
+    // 只在还没有实时目录时判：真拉到的目录没档位是上游的诚实答案，再判就是
+    // 白白在读路径上打网络。
+    serveSavedCatalog(live, () => { ensureCatalogRefresh(region) })
   }
-  return QODER_FALLBACK_MODELS.map(fallbackModelInfo)
+  // catalog 构造时种了静态兜底列表、`set()` 拒绝空数组，live 恒非空，
+  // 不需要再垫一层空兜底。
+  return live
 }
+
+  /**
+   * 幂等地触发一次该区域的目录拉取（**不等待**）。
+   *
+   * 为什么不等待：`displayModels` 是**读**路径，被 `/usage` 路由同步调用；在里面
+   * await 网络会让「卡片读一次快照」这个纯读动作每次都等一次上游。改为
+   * fire-and-forget + 在飞标记去重，拉取完成后下一次读取自然拿到新目录。
+   *
+   * 为什么需要它：目录此前**只在启动时拉一次**（`refreshModels`），而 `fullCatalog`
+   * 是纯内存的。于是「思考强度」在重启后必然退化成那份空快照 —— 除非用户恰好
+   * 去点一次「从 Qoder 刷新」。有没有点过刷新、以及进程活多久，就是「有时候有、
+   * 有时候没有」的全部来源。
+   */
+  const catalogRefreshInFlight: Partial<Record<QoderRegion, boolean>> = {}
+  const ensureCatalogRefresh = (region: QoderRegion): void => {
+    if (catalogRefreshInFlight[region] === true) return
+    catalogRefreshInFlight[region] = true
+    // 不 await：读路径不能被网络拖住。
+    refreshModels(region).finally(() => { catalogRefreshInFlight[region] = false })
+  }
 
   let invalidateCatalog = (): void => {}
 
@@ -543,10 +621,7 @@ function displayModels(
           log(`pool ${region}: ${maskPat(accountId)} marked ${outcome} by live request`)
         }
       },
-      poolServingNotice: accountId => {
-        const selected = selectedAccountId(config, region)
-        return selected === accountId ? undefined : `将由账号 ${maskPat(accountId)} 回答本次问题`
-      },
+      // 不提供 poolServingNotice：不在回复流里注入「将由账号 … 回答本次问题」。
     })
 
     stacks[region] = { upstream, catalog, shim, store, probeClient: buildProbeClient(region), poolRuntime }
@@ -722,15 +797,20 @@ function displayModels(
       const base = { accountId, accountName: credit.accountName }
       try {
         const outcome = await client.claimDailyCredits(credit.pat)
+        // 「下一窗何时刷新」**两种成功都要带**（claimed 与 already）。上游的
+        // `endAt` 就是这个数，不带它 UI 只能说「已领取」，用户会以为要等到明天
+        // 零点 —— 而官网页面上写着次日 10:00（用户实拍）。
+        const refresh = outcome.status === 'unavailable' ? {} : outcome.nextRefreshAtMs === undefined ? {} : { refreshAtMs: outcome.nextRefreshAtMs }
         if (outcome.status === 'claimed') {
           rows.push({
             ...base,
             status: 'claimed',
             ...(outcome.amount === undefined ? {} : { credit: outcome.amount }),
             ...(outcome.validityDays === undefined ? {} : { validityDays: outcome.validityDays }),
+            ...refresh,
           })
         } else if (outcome.status === 'already-claimed') {
-          rows.push({ ...base, status: 'already' })
+          rows.push({ ...base, status: 'already', ...refresh })
         } else {
           rows.push({ ...base, status: 'failed', message: outcome.message })
         }
@@ -738,15 +818,27 @@ function displayModels(
         rows.push({ ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) })
       }
     }
-    // 把结果写进快照：成员表据此显示「已签到 / 未签到」。
+    // 把结果写进快照：成员表据此显示「已签到 / 未签到」以及「还有多久刷新」。
     // `claimed` 与 `already` 都算「今天已领」——两者的区别只对**本次操作**有意义
     // （领到了 vs 早就领过），对「今天是否已签到」这个事实没有区别。
     const next = { ...(checkinState[region] ?? {}) }
+    const nextSnapshot = { ...(checkinSnapshots[region] ?? {}) }
     for (const row of rows) {
-      if (row.status === 'claimed' || row.status === 'already') next[row.accountId] = true
-      else if (row.status === 'failed') next[row.accountId] = false
+      if (row.status === 'claimed' || row.status === 'already') {
+        next[row.accountId] = true
+        nextSnapshot[row.accountId] = {
+          claimed: true,
+          ...(row.refreshAtMs === undefined ? {} : { refreshAtMs: row.refreshAtMs }),
+        }
+      } else if (row.status === 'failed') {
+        next[row.accountId] = false
+        // 失败**不**写 refreshAtMs：这一次没拿到上游的开窗时间，宁可不说，
+        // 也不把上一次成功留下的时间当成这次的答案。
+        nextSnapshot[row.accountId] = { claimed: false }
+      }
     }
     checkinState[region] = next
+    checkinSnapshots[region] = nextSnapshot
     // 签到会改变积分余额：必须**重新拉一次**，否则这个区域的积分会一直停在签到
     // 前的数字，直到某个**与签到无关**的动作（改配置 / 点「从 Qoder 刷新」）
     // 顺带触发 `refreshUsage` —— 用户看到的就是「我领了积分，但积分没刷新」
@@ -856,8 +948,8 @@ function displayModels(
     return models
   }
 
-  const refreshModels = (region: QoderRegion): void => {
-    void (async () => {
+  const refreshModels = (region: QoderRegion): Promise<void> => {
+    return (async () => {
       const serving = await resolveServing(region)
       if (!serving) {
         log(`models refresh skipped for ${region}: no PAT configured`)
@@ -1012,6 +1104,7 @@ function displayModels(
       checkinSupported: region => poolFor(region).checkinSupported(region),
       checkin: region => poolFor(region).checkin!(region),
       checkinState: region => checkinState[region],
+      checkinSnapshot: region => checkinSnapshots[region],
       applyProbes: async (region, probes) => poolFor(region).applyProbes(region, probes),
       updateMembership: (region, memberAccountIds, enabled) => poolFor(region).updateMembership(region, memberAccountIds, enabled),
     }
@@ -1160,8 +1253,8 @@ function displayModels(
       clearSelection: region => { submitRegionSettings(region, { accountId: '' }) },
       // 卡片读的是**完整目录**（displayModels），不是过滤后的运行时目录。
       catalogs: {
-        cn: { current: () => [...displayModels(config, 'cn')] },
-        global: { current: () => [...displayModels(config, 'global')] },
+        cn: { current: () => [...displayModels('cn')] },
+        global: { current: () => [...displayModels('global')] },
       },
       contextBudgets: region => contextBudgetsOf(config, region),
       thinkingEfforts: region => thinkingEffortsOf(config, region),

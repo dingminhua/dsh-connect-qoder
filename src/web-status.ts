@@ -138,8 +138,19 @@ export interface QoderPoolDeps {
   /**
    * 今日签到状态快照（成员 id → 是否已领）。由签到批次回写、成员表读取。
    * 缺席的成员表示**还没读过**（UI 说「未知」），不是「未签到」。
+   *
+   * @deprecated 改用 {@link checkinSnapshot}：这个布尔表装不下「下一窗什么时候
+   * 刷新」—— 而那正是「已领取」这句话必须带的另一半（上游 `endAt`）。
    */
   checkinState?(region: QoderRegion): Readonly<Record<string, boolean>>
+  /**
+   * 今日签到快照：每个成员「是否已领」**与**「下一窗何时刷新」（epoch 毫秒，
+   * 来自上游活动行的 `endAt`）。
+   *
+   * 两个字段同源：都只有真的打过上游才存在。`refreshAtMs` 缺席时 UI 只说
+   * 「已领取」，**绝不**编一个本地猜测的倒计时。
+   */
+  checkinSnapshot?(region: QoderRegion): Readonly<Record<string, { claimed: boolean, refreshAtMs?: number }>>
   /** Persist the batch's measurements back to the runtime store. */
   applyProbes(region: QoderRegion, probes: Record<string, QoderPoolProbe>): Promise<void>
   /** Drop one account's membership from the prefs. */
@@ -809,7 +820,9 @@ async function buildPoolView(
   // (`servingAccountId`), never from the target model id or a list position:
   // guessing it would make the card assert a switch that was never applied.
   const checkinSupported = pool.checkinSupported(region)
-  const checkinSnapshot = pool.checkinState?.(region) ?? {}
+  // 新形态（含刷新时刻）；dep 缺席（旧宿主）时退回旧的布尔表。
+  const checkinSnapshot = pool.checkinSnapshot?.(region) ?? {}
+  const checkinLegacy = pool.checkinState?.(region) ?? {}
   const effectiveIds: string[] = []
   const rows: QoderWebPoolAccount[] = []
   // 成员积分：卡片路由付费拉取（workbuddy 同规），失败降级为「—」而不是
@@ -846,12 +859,20 @@ async function buildPoolView(
         },
       }),
       ...(excludedBy === undefined ? {} : { excludedBy }),
-      // 今天是否已签到：从签到的活动状态推不出来（那需要每个账号一次请求），
-      // 所以由签到批次回写、这里读快照。`undefined` 表示还没读过——UI 说
-      // 「未知」而不是断言「未签到」（见 QoderWebPoolAccount.checkedInToday）。
+      // 今天是否已签到 + 下一窗何时刷新：两者同源，都只有真打过上游才存在。
+      // `undefined` 表示还没读过 —— UI 说「未知」而不是断言「未签到」
+      // （见 QoderWebPoolAccount.checkedInToday）。`refreshAtMs` 缺席时不说倒计时，
+      // 绝不用本地零点或「上次 +24h」编一个（用户实拍：官网页面上那个数字才是对的）。
       ...(checkinSupported && checkinSnapshot[account.id] !== undefined
-        ? { checkedInToday: checkinSnapshot[account.id] }
-        : {}),
+        ? {
+            checkedInToday: checkinSnapshot[account.id]!.claimed,
+            ...(checkinSnapshot[account.id]!.refreshAtMs === undefined
+              ? {}
+              : { checkinRefreshAtMs: checkinSnapshot[account.id]!.refreshAtMs }),
+          }
+        : checkinSupported && checkinLegacy[account.id] !== undefined
+          ? { checkedInToday: checkinLegacy[account.id] === true }
+          : {}),
       current: isCurrent,
       member,
     })
