@@ -459,6 +459,17 @@ export function apply(ctx: Context, config: Config): void {
    */
   const checkinState: Record<QoderRegion, Record<string, boolean>> = { cn: {}, global: {} }
 
+  /**
+   * 每区域最近一次**实时**拉到的完整目录（含上游声明的思考档位），未过滤。
+   *
+   * 为什么要单独存：`stacks[region].catalog` 装的是**过滤后**（只含勾选模型）
+   * 的运行时目录，卡片不能用它；而保存的 `lastCatalog` 可能是**旧快照**，
+   * 上游新声明的思考档位会缺失（用户实拍「还是没有思考强度」——即使刚刚
+   * 「从 Qoder 刷新」成功过，卡片读的仍是那份没有档位的旧快照）。
+   * 实时目录优先于保存快照，才能反映上游当前声明了什么。
+   */
+  const fullCatalog: Record<QoderRegion, readonly QoderModelInfo[]> = { cn: [], global: [] }
+
 /**
  * 卡片展示用的模型列表（workbuddy 的 `displayModels` 同规）。
  *
@@ -475,6 +486,13 @@ function displayModels(
   config: { regions?: Record<string, unknown> | null },
   region: QoderRegion,
 ): readonly QoderModelInfo[] {
+  // 实时目录优先：它反映上游**当前**声明了什么（含思考档位），而保存的
+  // lastCatalog 是上一次保存时的快照 —— 上游新增或修正档位后，快照里没有，
+  // 卡片就一直不渲染档位选择器（用户实拍「还是没有思考强度」）。
+  const live = fullCatalog[region].length > 0
+    ? fullCatalog[region]
+    : stacks[region].catalog.current()
+  if (live.length > 0) return live
   const state = regionStateOf(config, region)
   if (Array.isArray(state.lastCatalog) && state.lastCatalog.length > 0) {
     const parsed = state.lastCatalog
@@ -482,8 +500,7 @@ function displayModels(
       .filter((m): m is QoderModelInfo => m !== undefined)
     if (parsed.length > 0) return parsed
   }
-  const live = stacks[region].catalog.current()
-  return live.length > 0 ? live : QODER_FALLBACK_MODELS.map(fallbackModelInfo)
+  return QODER_FALLBACK_MODELS.map(fallbackModelInfo)
 }
 
   let invalidateCatalog = (): void => {}
@@ -803,6 +820,10 @@ function displayModels(
     // 卡片另走 `displayModels()`（完整目录），否则未勾选的模型会从卡片里消失、
     // 用户再也勾不上——两个视图分开正是 workbuddy 的做法。
     const saved = new Set(enabledModelKeysOf(config, region))
+    // 完整目录（含上游声明的思考档位）另存一份给卡片；运行时目录只留勾选的。
+    // 两者必须分开：卡片要看到未勾选的模型才勾得上，而档位信息只有实时目录里
+    // 才有（保存的 lastCatalog 可能是旧快照，甚至被旧 schema 剥掉档位字段）。
+    fullCatalog[region] = stamped
     stacks[region].catalog.set(deriveCatalog(stamped, saved))
     invalidateCatalog()
     return stamped

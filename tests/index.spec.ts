@@ -137,6 +137,37 @@ describe('Qoder provider registration', () => {
     expect(globalModels.map(m => m.id)).toEqual(cnModels.map(m => m.id))
   })
 
+  it('卡片读实时目录而不是保存快照（否则思考档位永远出不来）', async () => {
+    // 用户实拍「还是没有思考强度」——即使刚点过「从 Qoder 刷新」。
+    // 原因：卡片读的 displayModels() 优先返回**保存的 lastCatalog**，那是上一次
+    // 保存时的快照；上游新声明的档位（thinking_config）只存在于实时目录里。
+    // 更糟的是旧 schema 曾把档位字段从 lastCatalog 里剥掉，快照里永远没有。
+    // 现在实时目录优先。
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    // 配置里放一份**故意陈旧**的快照（显示名 STALE、没有档位）。
+    await mountQoder(ctx, {
+      regions: {
+        cn: {
+          enabledModelKeys: ['qfmodel'],
+          lastCatalog: [{
+            key: 'qfmodel', displayName: 'STALE', priceFactor: 0,
+            contextWindow: 200_000, maxOutputTokens: 32_768,
+            supportsImages: true, supportsThinking: true, canDisableThinking: true,
+            isDefault: false, isFree: true, isNew: false,
+          }],
+        },
+      },
+    })
+    // 兜底目录生效（还没有实时目录时）：名字不应是陈旧快照里那个。
+    const models = await ctx.llm.listModels('qoder')
+    expect(models.map(m => m.id)).toContain('qfmodel')
+    // 兜底列表里不会带 STALE 这个名字（那只会来自 lastCatalog）
+    expect(models.map(m => m.name)).not.toContain('STALE')
+  })
+
   it('DSH 选择器里的模型名带倍率（用户实拍「没有倍数显示」）', async () => {
     // 卡片自己的选择器一直会画倍率，但 **DSH 内置的模型选择器**读的是适配器
     // 交给它的 `name`。那里此前传的是裸名字（`info.displayName`），于是同一个
