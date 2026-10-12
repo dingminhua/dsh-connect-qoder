@@ -522,9 +522,9 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         onDiscard={() => { setDraftPool(saved); setDraftRegion(region); setDirty(false); setSaveError(undefined) }}
       />
 
-      {/* 区域独立性说明放在尾部（workbuddy 同规）：它是脚注性质的信息，
-          不该插在操作区之前。 */}
-      <p className="dsm-qoder-pool-note">{t('row.poolRegionNote')}</p>
+      {/* 这里**不再**重复「国内版与国际版互相独立」那句话（用户实拍：「都重复
+          了」）：tab 栏下方已经有一行 `row.tabHint` 说明每个 tab 是独立供应商、
+          一侧的改动不影响另一侧，而这一行只是把它换了个说法再说一遍。 */}
 
       {/* Activity log */}
       <div className="dsm-qoder-pool-log">

@@ -148,14 +148,14 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       expect(settings).not.toBeNull()
       expect(settings!.textContent).toContain('row.poolTargetCurrentPreferred')
 
-      // regionNote 是尾部脚注：必须在日志区之前、settings 之后。
+      // 区域独立性那句话**不再**出现在池区（tab 栏下方已经说过，用户实拍
+      // 「都重复了」）；区块顺序仍是 表 → settings → 日志。
       const text = container.textContent ?? ''
       const settingsAt = text.indexOf('row.poolTargetLabel')
-      const noteAt = text.indexOf('row.poolRegionNote')
       const logAt = text.indexOf('row.poolLogTitle')
       expect(settingsAt).toBeGreaterThan(-1)
-      expect(noteAt).toBeGreaterThan(settingsAt)
-      expect(logAt).toBeGreaterThan(noteAt)
+      expect(logAt).toBeGreaterThan(settingsAt)
+      expect(text).not.toContain('row.poolRegionNote')
 
       // 成员表在 settings 之前。
       const tableAt = text.indexOf('row.poolColumnAccount')
