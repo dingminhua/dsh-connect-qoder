@@ -415,4 +415,46 @@ describe('QoderCard render', () => {
       await unmount()
     }
   })
+
+  it('积分只渲染明细行，不再另起一行「合计」（同一组数字说两遍）', async () => {
+    // 用户实拍：顶部「92 Token 余额 · 最近积分包 12/31 过期」与紧接着的
+    // 「附加额度 · 92 / 100 (12/31 到期)」是同一组数字；后者才是明细（带进度条）。
+    // 那行合计已删，且不再有对应的文案键（usageToken / usageNearestExpiry /
+    // usageExpiringSoon 一并清掉）。
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ...usageDoc(region),
+            credits: {
+              total: 92,
+              expiringSoon: 0,
+              nearestExpiryMs: Date.UTC(2026, 11, 31, 0, 0),
+              packages: [{ packageName: 'addon', remain: 92, size: 100, monthly: false }],
+            },
+          }),
+        } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const { container, unmount } = await mountCard()
+    try {
+      const text = container.textContent ?? ''
+      // 明细在：额度桶名 + 92 / 100 + 进度条（t 是保留键名的 mock，
+      // 所以桶名渲染成它的键）。
+      expect(text).toContain('row.usageBucketAddon')
+      expect(text).toContain('92')
+      expect(text).toContain('100')
+      expect(container.querySelector('.dsm-qoder-usage-progress')).not.toBeNull()
+      // 那行合计没回来（文案键已删除，重新引入会渲染成字面量键名）。
+      expect(text).not.toContain('row.usageToken')
+      expect(text).not.toContain('row.usageNearestExpiry')
+    } finally {
+      await unmount()
+    }
+  })
 })

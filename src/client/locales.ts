@@ -104,7 +104,6 @@ export const en = {
   'row.creditsError': 'Credit query unavailable: {message}',
   'row.usageTitle': 'Credits',
   'row.usageUnavailable': 'Credits unavailable (no PAT, or the upstream is not answering).',
-  'row.usageToken': 'Token balance',
   'row.usageBucketBase': 'Base quota',
   'row.usageBucketAddon': 'Add-on quota',
   'row.usageBucketOrg': 'Org quota',
@@ -112,8 +111,6 @@ export const en = {
   'row.usageTotal': 'total',
   'row.usageExpiresAt': 'expires {at}',
   'row.usageExpired': 'expired',
-  'row.usageExpiringSoon': '{count} expiring within 3 days',
-  'row.usageNearestExpiry': 'Nearest package expires {at}',
   'row.refreshUsage': 'Refresh credits',
   'row.refreshingUsage': 'Refreshing credits…',
 
@@ -381,7 +378,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.creditsError': '积分查询失败：{message}',
   'row.usageTitle': '额度',
   'row.usageUnavailable': '额度暂不可用（未配置 PAT，或上游未响应）。',
-  'row.usageToken': 'Token 余额',
   'row.usageBucketBase': '基础额度',
   'row.usageBucketAddon': '附加额度',
   'row.usageBucketOrg': '组织额度',
@@ -389,8 +385,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.usageTotal': '总量',
   'row.usageExpiresAt': '{at} 到期',
   'row.usageExpired': '已到期',
-  'row.usageExpiringSoon': '{count} 个 3 天内过期',
-  'row.usageNearestExpiry': '最近积分包 {at} 过期',
   'row.refreshUsage': '刷新额度',
   'row.refreshingUsage': '正在刷新额度…',
 

@@ -566,19 +566,18 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         {c === undefined
           ? <p className="dsm-qoder-usage-text">{signIn?.creditsError === undefined ? t('row.usageUnavailable') : t('row.creditsError', { message: signIn.creditsError })}</p>
           : (
+            // 这里**不再**另起一行「合计」文字：它会把同一组数字说两遍——
+            // 「92 Token 余额 · 最近积分包 12/31 过期」下面紧接着就是
+            // 「附加额度 · 92 / 100 (12/31 到期)」，后者才是明细（带进度条）。
+            // 用户实拍圈出这段要求清理。
+            // 「即将过期」的信息没有丢：账号池的每个账号行各自标
+            // `pool-soon` / `pool-soon-plain`，那里的粒度更有用（哪个账号要过期）。
             <>
-              <p className="dsm-qoder-usage-text">
-                <b>{formatNumber(c.total)}</b> {t('row.usageToken')}
-                {c.nearestExpiryMs === undefined ? null : <> · {t('row.usageNearestExpiry', { at: formatDate(c.nearestExpiryMs) })}</>}
-                {c.expiringSoon > 0 ? <> · {t('row.usageExpiringSoon', { count: String(c.expiringSoon) })}</> : null}
-              </p>
-              {c.packages.map(pkg => {
-                const pct = pkg.size <= 0 ? 0 : Math.min(100, Math.round((pkg.remain / pkg.size) * 100))
-                return (
-                  <div key={pkg.packageName} className="dsm-qoder-usage">
-                    <div className="dsm-qoder-usage" style={{ gap: 4 }}>
-                      <span className="dsm-qoder-usage-text">
-                        <b>{bucketLabel(t, pkg.packageName)}</b> · {formatNumber(pkg.remain)} / {formatNumber(pkg.size)}
+              {c.packages.map(pkg => (
+                <div key={pkg.packageName} className="dsm-qoder-usage">
+                  <div className="dsm-qoder-usage" style={{ gap: 4 }}>
+                    <span className="dsm-qoder-usage-text">
+                      <b>{bucketLabel(t, pkg.packageName)}</b> · {formatNumber(pkg.remain)} / {formatNumber(pkg.size)}
                         {pkg.expiresAtMs === undefined
                           ? pkg.monthly ? ` (${t('row.usageTotal')})` : ''
                           : ` (${pkg.expiresAtMs <= Date.now() ? t('row.usageExpired') : t('row.usageExpiresAt', { at: formatDate(pkg.expiresAtMs) })})`}
@@ -586,8 +585,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                       <progress className="dsm-qoder-usage-progress" value={pkg.remain} max={pkg.size} />
                     </div>
                   </div>
-                )
-              })}
+                ))}
             </>
           )}
       </div>
