@@ -56,7 +56,7 @@ import {
 import type { QoderRegion } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { resolveTargetModel, exclusionOf } from './account-pool.ts'
-import type { QoderPoolProbe } from './account-pool.ts'
+import type { QoderPoolCredits, QoderPoolProbe } from './account-pool.ts'
 import type { QoderStoredAccount } from './accounts.ts'
 
 // ---------------------------------------------------------------------------
@@ -102,6 +102,12 @@ export interface QoderPoolDeps {
   catalog(region: QoderRegion): readonly QoderModelInfo[]
   /** The measured probes currently in the runtime store. */
   poolProbes(region: QoderRegion): Record<string, QoderPoolProbe>
+  /**
+   * 池成员的最新积分读数（成员 id → 余额），供成员表的积分列使用。
+   * workbuddy 同规：这一列由卡片路由付费（每成员一次 usage 读数），结果同时
+   * 写入宿主侧快照供请求路径的排名使用；非成员不读，显示「—」。
+   */
+  memberCredits?(region: QoderRegion, accountIds: readonly string[]): Promise<ReadonlyMap<string, QoderPoolCredits>>
   /** Resolve one account's PAT WITHOUT changing selection. */
   credentialFor(region: QoderRegion, accountId: string): Promise<{ pat: string, accountName: string } | undefined>
   /** Probe one model through one specific PAT. */
@@ -143,12 +149,28 @@ export interface QoderWebRouteDeps {
   imageModelKeys(region: QoderRegion): readonly string[]
   enabledModelKeys(region: QoderRegion): readonly string[]
   discoverModels?(region: QoderRegion, signal?: AbortSignal): Promise<QoderModelInfo[]>
+  /**
+   * Full refresh behind the card's refresh button: re-reads the upstream
+   * catalog AND installs it into the runtime catalog (plus a usage refresh),
+   * then returns the fresh list. Preferred over {@link discoverModels} for the
+   * refresh route; discoverModels alone never mutates runtime state, so a route
+   * wired to it answers new data while the card's next poll still sees the old.
+   */
+  refreshModels?(region: QoderRegion): Promise<QoderModelInfo[]>
   /** A cached usage read for one region. */
   usage(region: QoderRegion): { usage?: { credits: QoderWebCredits, atMs: number }, error?: string } | undefined
   /** Probe one model through the region's selected credential. */
   probeModel?(region: QoderRegion, modelId: string, signal?: AbortSignal): Promise<QoderWebProbeResult>
   /** Fetch one region's per-account credit balances fresh (composer panel). */
   accountCredits?(region: QoderRegion, signal?: AbortSignal): Promise<QoderWebAccountCredit[]>
+  /**
+   * What to tell the user after the upstream refused this region's credential.
+   *
+   * Probes the OTHER stored accounts and promises a switch only to one that
+   * actually answered — the alternative (guessing from the account count) says
+   * "try switching" about an account that may be just as expired.
+   */
+  credentialRecovery?(region: QoderRegion, rejectedAccountId: string): Promise<QoderWebRecovery>
   pool?: QoderPoolDeps
   transfer?: QoderTransferDeps
   accountValidation?: QoderAccountValidationDeps
@@ -215,10 +237,17 @@ function webModelOf(m: QoderModelInfo): QoderWebModel {
     contextWindow: m.contextWindow,
     nativeContextWindow: m.contextWindow,
     maxTokens: m.maxOutputTokens,
-    ...(m.priceFactor === 1 ? {} : { creditMultiplier: m.priceFactor }),
+    // 倍率总是带上——包括恰好 1。workbuddy 的卡片行对「已声明的倍率」一律
+    // 渲染 `(1.00x)`，Qoder 自家菜单也写 `· x1.0`；把 1 当「无」丢掉，卡片上
+    // 就只剩没倍率的裸名字，与其他模型视觉不一致。
+    creditMultiplier: m.priceFactor,
     ...(m.supportsImages === true ? { supportsImages: true } : {}),
     supportsThinking: m.supportsThinking,
     ...(m.canDisableThinking === true ? { canDisableThinking: true } : {}),
+    // 思考强度档位：上游 `thinking_config.enabled.efforts` 的键（已按强度升序）。
+    // 缺失时不写字段，卡片据此不渲染这一项——而不是渲染一个空标签。
+    ...(m.thinkingEfforts === undefined ? {} : { thinkingEfforts: m.thinkingEfforts }),
+    ...(m.defaultThinkingEffort === undefined ? {} : { defaultThinkingEffort: m.defaultThinkingEffort }),
     ...(m.isDefault === true ? { isDefault: true } : {}),
     ...(m.isFree === true ? { isFree: true } : {}),
     ...(m.isNew === true ? { isNew: true } : {}),
@@ -240,7 +269,9 @@ function poolModelOf(m: QoderModelInfo): { id: string, name: string, creditMulti
   return {
     id: m.key,
     name: m.displayName,
-    ...(m.isFree === true ? { creditMultiplier: 0 } : {}),
+    // 同 pool 视图的规则：免费折叠为 0（resolveTargetModel 只认 === 0），付费
+    // 透传真实倍率。
+    creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
     contextWindow: m.contextWindow,
   }
 }
@@ -304,9 +335,10 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
     const region = regionOf(res, req.url ?? '')
     if (region === undefined) return
-    if (deps.discoverModels === undefined) return json(res, 503, { reason: 'refresh-unavailable', error: 'model discovery unavailable' })
+    const refresh = deps.refreshModels ?? deps.discoverModels
+    if (refresh === undefined) return json(res, 503, { reason: 'refresh-unavailable', error: 'model discovery unavailable' })
     try {
-      const models = await deps.discoverModels(region)
+      const models = await refresh(region)
       return json(res, 200, { models: models.map(webModelOf) })
     } catch (error: unknown) {
       return json(res, 502, { error: safeMessage(error) })
@@ -344,15 +376,22 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     if (action === 'add') {
       const pat = typeof parsed.pat === 'string' ? parsed.pat.trim() : ''
       if (pat === '') return json(res, 400, { error: 'pat is required' })
+      // 用户在这次添加里填的显示名（可空）。**必须**用上：qoder 是 PAT 模式，
+      // 上游校验只回一个账号标识，而用户给这个 PAT 起的名字（「公司号」「备用」）
+      // 才是他认得的那个。此前只做在客户端、路由完全忽略它——名字填了等于没填，
+      // 存进去的永远是上游解析出的那个。
+      const preferred = typeof parsed.name === 'string' ? parsed.name.trim() : ''
       if (deps.accountValidation === undefined) return json(res, 503, { reason: 'validation-unavailable', error: 'account validation unavailable' })
       try {
         const { name } = await deps.accountValidation.validateForRegion(region, pat)
-        const stored = await deps.store(region).add(pat, name)
-        // Resolve the account's name later only if validation returned none.
-        if (name === '' || name !== stored.accountName) {
-          await deps.store(region).rename(stored.id, name)
+        // 用户没填才退回上游解析出的名字（两者都空时写空串，卡片渲染「未命名」）。
+        const displayName = preferred !== '' ? preferred : name
+        const stored = await deps.store(region).add(pat, displayName)
+        // `add` 命中已存在的 id 时只更新凭据、保留旧名；这次明确填了名字就改过去。
+        if (displayName !== stored.accountName) {
+          await deps.store(region).rename(stored.id, displayName)
         }
-        return json(res, 200, { accountId: stored.id })
+        return json(res, 200, { accountId: stored.id, accountName: displayName })
       } catch (error: unknown) {
         return json(res, 502, { error: safeMessage(error) })
       }
@@ -546,9 +585,18 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
   const offModelKeys = catalog.filter(m => offKeysRaw.includes(m.key) || !m.supportsThinking).map(m => m.key)
 
   const credentialRejected = usageEntry?.error === 'credential-rejected'
-  const recovery: QoderWebRecovery | undefined = credentialRejected
-    ? { reloginRequired: accounts.length <= 1 }
-    : undefined
+  // 恢复建议必须建立在**实测**上：把「本区域还有其他账号，但刚才都没能通过
+  // 上游校验」这句话说出口之前，得真的去问过那些账号。此前这里是
+  // `accounts.length <= 1` 的猜测——只要存在第二条记录就宣称「可以切换一个
+  // 试试」，而那条记录可能同样过期（用户实拍：两条同名记录、一条已过期，卡片
+  // 却说「试试上面那个」）。`credentialRecovery` 逐个探测其余账号，只把真正
+  // 答过话的那个承诺给用户；dep 缺席（旧宿主）时退回原来的保守猜测。
+  let recovery: QoderWebRecovery | undefined
+  if (credentialRejected) {
+    recovery = deps.credentialRecovery === undefined
+      ? { reloginRequired: accounts.length <= 1 }
+      : await deps.credentialRecovery(region, serving.id)
+  }
 
   let pool: QoderWebPool | undefined
   if (deps.pool !== undefined) {
@@ -595,7 +643,10 @@ async function buildPoolView(
   const targetModels = catalog.map(m => ({
     id: m.key,
     name: m.displayName,
-    ...(m.isFree === true ? { creditMultiplier: 0 } : {}),
+    // 「免费即 0」是 resolveTargetModel 的契约（只认 === 0）；付费模型透传真实
+    // 倍率，让选项标签能定价（`名字 (x0.79)`）。此前只写免费项，付费模型一个
+    // 数字都没有——读起来全像免费。
+    creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
     contextWindow: m.contextWindow,
   }))
   const target = resolveTargetModel(targetModels, prefs.targetModelId)
@@ -610,6 +661,9 @@ async function buildPoolView(
   // guessing it would make the card assert a switch that was never applied.
   const effectiveIds: string[] = []
   const rows: QoderWebPoolAccount[] = []
+  // 成员积分：卡片路由付费拉取（workbuddy 同规），失败降级为「—」而不是
+  // 让整个文档失败。非成员不读（从未测量过，显示「—」是诚实的）。
+  const memberCredits = await pool.memberCredits?.(region, prefs.memberAccountIds).catch(() => undefined)
   for (const account of accounts) {
     const member = memberSet.has(account.id)
     const probe = probes[account.id]
@@ -619,9 +673,15 @@ async function buildPoolView(
       const cred = await pool.credentialFor(region, account.id)
       if (cred !== undefined) effectiveIds.push(account.id)
     }
+    const reading = member === true ? memberCredits?.get(account.id) : undefined
     rows.push({
       accountId: account.id,
       accountName: account.accountName,
+      ...(reading === undefined ? {} : {
+        credits: reading.total,
+        expiringSoon: reading.expiringSoon,
+        ...(reading.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: reading.nearestExpiryMs }),
+      }),
       ...(probe === undefined ? {} : {
         probe: {
           outcome: probe.outcome,

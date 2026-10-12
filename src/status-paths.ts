@@ -48,6 +48,13 @@ export const QODER_ACCOUNT_CREDITS_PATH = '/plugins/dsh-connect-qoder/account-cr
  */
 export const QODER_GITHUB_URL = 'https://github.com/dingminhua/dsh-connect-qoder'
 
+/**
+ * 创建 PAT 的逐步指南。挂在「添加 PAT」弹窗里而不是页脚：用户打开那个弹窗的
+ * 时刻正是需要它的时刻，而页脚那条常驻提示已按用户要求删除。用仓库内的绝对
+ * 地址（GitHub blob），因为 DSH 里没有内嵌文档路由可指。
+ */
+export const QODER_PAT_DOC_URL = `${QODER_GITHUB_URL}/blob/main/docs/PAT.md`
+
 /** Plugin-owned live model refresh endpoint. */
 export const QODER_MODELS_REFRESH_PATH = '/plugins/dsh-connect-qoder/models/refresh'
 
@@ -392,6 +399,18 @@ export interface QoderWebModel {
    * effective value stamped by the Host.
    */
   canDisableThinking?: boolean
+  /**
+   * Upstream's selectable thinking strengths (`thinking_config.enabled.efforts`
+   * keys), ordered weakest → strongest.
+   *
+   * Names differ per model family (Qwen: `low/medium/xhigh`; DeepSeek/GLM:
+   * `low/high/max`), and the upstream's own key order is NOT meaningful, so the
+   * Host sorts them before they reach the card. Absent means the model declares
+   * no choices — the row then omits the line rather than showing an empty one.
+   */
+  thinkingEfforts?: readonly string[]
+  /** The strength upstream marks as default (`efforts[x].is_default`). */
+  defaultThinkingEffort?: string
   isDefault?: boolean
   isFree?: boolean
   isNew?: boolean
@@ -531,6 +550,8 @@ export interface QoderWebPoolAccount {
   accountName: string
   /** Total remaining credits, absent when the credits read failed. */
   credits?: number
+  /** Credits expiring within the card's "soon" window (3 days). */
+  expiringSoon?: number
   /** When the nearest bucket expires, in ms. */
   nearestExpiryMs?: number
   /** The last test of the target model, absent when never tested. */

@@ -54,6 +54,7 @@ import {
   type QoderWebCredits,
   type QoderWebCreditPackage,
   type QoderWebAccountCredit,
+  type QoderWebRecovery,
 } from './status-paths.ts'
 import { qoderAccountId, maskPat, patFromEnv } from './credentials.ts'
 import { QoderAccountStore, type QoderStoredAccount } from './accounts.ts'
@@ -61,11 +62,13 @@ import { QODER_CONNECT_VERSION } from './version.ts'
 import {
   rankPool,
   resolveTargetModel,
+  type QoderPoolCredits,
   type QoderPoolProbe,
   type QoderPoolMember,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import { testAllAccounts, type QoderPoolRunnerDeps } from './account-pool-run.ts'
+import { resolveCredentialRecovery, createAccountUsabilityProbe, type QoderProbeStore } from './credential-recovery.ts'
 import { writeHostHeartbeat, clearHostHeartbeat } from './host-heartbeat.ts'
 
 export { QODER_CONNECT_VERSION }
@@ -482,14 +485,20 @@ export function apply(ctx: Context, config: Config): void {
     const memberIds = poolPreferencesOf(config, region).memberAccountIds
     const probes = stacks[region].poolRuntime
     const now = Date.now()
+    // 请求路径不能上网，积分取卡片路由写入的快照（workbuddy 的 creditsSnapshot
+    // 同规）：新鲜时用真实余额参与排名，过期则退回「只有探针」的排名。
+    const fresh = now - (poolCreditsSnapshotAt[region] ?? 0) <= POOL_CREDITS_SNAPSHOT_MS
+    const snapshot = fresh ? poolCreditsSnapshot[region] : undefined
     const candidates: QoderPoolMember[] = []
     for (const accountId of memberIds) {
       if (tried.includes(accountId)) continue
       const credit = await store.credentialFor(accountId, sourcesOf(region))
       if (credit === undefined) continue
       const probe = probes[accountId]
+      const reading = snapshot?.get(accountId)
       candidates.push({
         account: { id: credit.id, accountName: credit.accountName },
+        ...reading === undefined ? {} : { credits: reading },
         ...probe === undefined ? {} : { probe },
       })
     }
@@ -497,6 +506,41 @@ export function apply(ctx: Context, config: Config): void {
     if (chosen === undefined || chosen.excludedBy !== undefined) return undefined
     const credit = await store.credentialFor(chosen.account.id, sourcesOf(region))
     return credit === undefined ? undefined : { accountId: credit.id, accountName: credit.accountName, pat: credit.pat }
+  }
+
+  /** 成员积分快照：请求路径不能上网，排名用卡片路由最近一次的读数。 */
+  const poolCreditsSnapshot: Partial<Record<QoderRegion, ReadonlyMap<string, QoderPoolCredits>>> = {}
+  const POOL_CREDITS_SNAPSHOT_MS = 10 * 60_000
+  const poolCreditsSnapshotAt: Partial<Record<QoderRegion, number>> = {}
+
+  /**
+   * 池成员的最新积分（每成员一次 usage 读数）。由卡片路由付费——卡片正在看的
+   * 数字与排名快照同一次读取（workbuddy 的 poolMembersOf 同规），单个账号失败
+   * 只让那一行显示「—」，不拖垮整张表。
+   */
+  async function poolMemberCredits(region: QoderRegion, accountIds: readonly string[]): Promise<ReadonlyMap<string, QoderPoolCredits>> {
+    const store = stacks[region].store
+    const SOON_MS = 3 * 24 * 3600 * 1000
+    const entries = await Promise.all(accountIds.map(async accountId => {
+      const credit = await store.credentialFor(accountId, sourcesOf(region)).catch(() => undefined)
+      if (credit === undefined) return undefined
+      const usage = await stacks[region].upstream.fetchUsage(credit.pat).catch(() => undefined)
+      if (usage === undefined) return undefined
+      const view = creditsOf(usage)
+      const expiringSoon = view.packages.reduce(
+        (sum, pkg) => pkg.expiresAtMs !== undefined && pkg.expiresAtMs - Date.now() < SOON_MS ? sum + pkg.remain : sum,
+        0,
+      )
+      return [accountId, {
+        total: view.total,
+        expiringSoon,
+        ...(view.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: view.nearestExpiryMs }),
+      }] as const
+    }))
+    const map = new Map(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined))
+    poolCreditsSnapshot[region] = map
+    poolCreditsSnapshotAt[region] = Date.now()
+    return map
   }
 
   /** A probe client for one region backed by chatStream. */
@@ -572,10 +616,15 @@ export function apply(ctx: Context, config: Config): void {
       const usage = await stacks[region].upstream.fetchUsage(serving.pat)
       usageCache[region] = { usage, atMs: Date.now() }
     } catch (error: unknown) {
+      // `auth` 必须记为 `credential-rejected`，不能塞一个笼统的 kind 字符串：
+      // 卡片只认这三个字来渲染「凭据被拒」区块（以及切换到可用账号的按钮）。
+      // 过期 PAT 此前既没有积分、也没有任何提示，就是这一步把错误吞成了
+      // 「无数据」。其他 kind 原样保留，卡片按普通错误行显示上游原文。
+      const kind = isQoderUpstreamError(error) ? error.kind : undefined
       usageCache[region] = {
         usage: undefined,
         atMs: Date.now(),
-        error: isQoderUpstreamError(error) ? error.kind : 'unknown',
+        error: kind === 'auth' ? 'credential-rejected' : (kind ?? 'unknown'),
       }
     }
   }
@@ -585,7 +634,9 @@ export function apply(ctx: Context, config: Config): void {
     return stacks[region].catalog.current().map(m => ({
       id: m.key,
       name: m.displayName,
-      ...(m.isFree === true ? { creditMultiplier: 0 } : {}),
+      // 「免费即 0」是 resolveTargetModel 的契约；付费模型透传真实倍率，与
+      // web-status 的两处投影同规则。
+      creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
       contextWindow: m.contextWindow,
     }))
   }
@@ -603,6 +654,35 @@ export function apply(ctx: Context, config: Config): void {
     return applyContextBudgets(parsed, contextBudgetsOf(config, region))
   }
 
+  /**
+   * 拉取并安装一个区域的动态目录。返回安装后的目录；拉取失败抛错——
+   * 路由层据此答 500，启动路径自己吞掉落回兜底目录。
+   */
+  async function refreshRegionCatalog(region: QoderRegion, pat: string): Promise<QoderModelInfo[]> {
+    const upstream = await stacks[region].upstream.fetchModels(pat)
+    const parsed = upstream.map(parseUpstreamModel)
+    const saved = new Set(enabledModelKeysOf(config, region))
+    const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
+    const stamped = stampRuntimeCatalog(config, region, withTiers)
+    const next = deriveCatalog(stamped, saved.size > 0 ? saved : initialEnabledKeys(stamped))
+    stacks[region].catalog.set(next)
+    invalidateCatalog()
+    return next
+  }
+
+  /**
+   * 路由层（卡片「从 Qoder 刷新」按钮）用的完整刷新：装目录 + 刷积分。
+   * 此前的路由只调只读的 discoverModels——返回了新模型给卡片，却从不写入
+   * 运行时目录，卡片随后重取 usage 文档看到的仍是旧目录，刷了个寂寞。
+   */
+  async function refreshRegionForRoute(region: QoderRegion): Promise<QoderModelInfo[]> {
+    const serving = await resolveServing(region)
+    if (!serving) throw new Error(`no PAT configured for ${region}`)
+    const models = await refreshRegionCatalog(region, serving.pat)
+    void refreshUsage(region)
+    return models
+  }
+
   const refreshModels = (region: QoderRegion): void => {
     void (async () => {
       const serving = await resolveServing(region)
@@ -611,17 +691,13 @@ export function apply(ctx: Context, config: Config): void {
         return
       }
       try {
-        const upstream = await stacks[region].upstream.fetchModels(serving.pat)
-        const parsed = upstream.map(parseUpstreamModel)
-        const saved = new Set(enabledModelKeysOf(config, region))
-        const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
-        const stamped = stampRuntimeCatalog(config, region, withTiers)
-        stacks[region].catalog.set(deriveCatalog(stamped, saved.size > 0 ? saved : initialEnabledKeys(stamped)))
-        invalidateCatalog()
-        void refreshUsage(region)
+        await refreshRegionCatalog(region, serving.pat)
       } catch (error: unknown) {
         log(`dynamic ${region} model catalog unavailable; serving the static fallback list: ${String((error as Error)?.message ?? error)}`)
       }
+      // 积分与目录独立成败：目录拉取失败绝不能拖死积分——此前 refreshUsage
+      // 链在目录成功的分支里，目录一挂积分永远不来，卡片上「看不到积分」。
+      void refreshUsage(region)
     })()
   }
 
@@ -736,6 +812,7 @@ export function apply(ctx: Context, config: Config): void {
       preferences: region => poolPreferencesOf(config, region),
       catalog: region => stacks[region].catalog.current(),
       poolProbes: region => stacks[region].poolRuntime,
+      memberCredits: (region, accountIds) => poolMemberCredits(region, accountIds),
       credentialFor: (region, accountId) => stacks[region].store.credentialFor(accountId, sourcesOf(region)),
       probeOne: (region, credit, modelId) => probeThrough(region, credit, modelId),
       test: (region, modelId) => poolFor(region).test(region, modelId),
@@ -838,6 +915,21 @@ export function apply(ctx: Context, config: Config): void {
     return out
   }
 
+  /**
+   * 凭据被拒后的恢复建议：逐个探测本区域其余账号，只把**真正答过话**的那个
+   * 承诺给用户（`credential-recovery.ts` 的实现早就写好了，此前从未接线——
+   * 卡片一直用「账号数 ≤ 1」猜，于是对着一条同样过期的记录说「可以切换试试」）。
+   */
+  async function credentialRecoveryOf(region: QoderRegion, rejectedAccountId: string): Promise<QoderWebRecovery> {
+    // 两个组件都要「按区域取到账号与凭据」，共用一份适配器。
+    const probeStore = (reg: QoderRegion): QoderProbeStore => ({
+      accounts: () => stacks[reg].store.accounts(sourcesOf(reg)).then(list => list.map(a => ({ id: a.id, accountName: a.accountName }))),
+      credentialFor: (accountId: string) => stacks[reg].store.credentialFor(accountId, sourcesOf(reg)),
+    })
+    const probe = createAccountUsabilityProbe({ store: probeStore, client: stacks[region].upstream })
+    return resolveCredentialRecovery({ region, store: probeStore(region), rejectedAccountId, probe })
+  }
+
   /** The serving credential for a probe route (region's selection). */
   async function probeModelOf(region: QoderRegion, modelId: string, signal?: AbortSignal): Promise<QoderWebProbeResult> {
     const serving = await resolveServing(region)
@@ -865,6 +957,7 @@ export function apply(ctx: Context, config: Config): void {
       imageModelKeys: region => imageModelKeysOf(config, region),
       enabledModelKeys: region => enabledModelKeysOf(config, region),
       discoverModels,
+      refreshModels: refreshRegionForRoute,
       usage: usageEntryOf,
       probeModel: probeModelOf,
       accountCredits: accountCreditsOf,

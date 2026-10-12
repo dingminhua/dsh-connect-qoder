@@ -4,22 +4,33 @@
  * 安全模型与 dsh-connect-workbuddy 一致（参考其 `src/shim.ts`）：
  * - 随机端口 + 进程内 32 字节随机 secret（pi-ai 只拿到 secret 当 apiKey，
  *   真实的 Qoder 凭据绝不交给 pi-ai）；
- * - Host / Origin / Content-Type 三重入站校验（必须在路由判定之前）；
+ * - Host / Origin / Content-Type 三重入站校验（必须在路由判定之前），
+ *   请求体有 64MB 上限；
  * - 常量时间比对 Authorization。
  *
  * 职责：把 pi-ai 的 OpenAI 聊天请求翻译成 Qoder 网关请求，并把 Qoder 的
  * OpenAI 形状 SSE 原样转发为 OpenAI chunks；错误分类映射为 DSH 可判定的
  * HTTP 状态 + error.code。
  *
+ * 首字节之前的失败一律回 **非 200 的 JSON 错误**（不是 SSE 错误帧）：pi-ai
+ * 的 openai-completions 客户端只认非 2xx 响应体的 `error.message/code`，
+ * 对 200 流里的 `error` 字段完全不读（chunk 循环只取 `choices[0]`，
+ * `finish_reason:"error"` 会被塌缩成一句无信息的 "Provider finish_reason:
+ * error"）。只有 JSON 错误能把真实的 kind/code 送进宿主的分类器。
+ *
  * 账号池故障转移（参考 dsh-connect-workbuddy 的 `src/shim.ts` 相同模式）：
  * - 每次请求先 `resolveServing()` 解析**本次该买单的账号**（账号池排序结果或
  *   用户显式选择；缺省落到 `credential()` 的默认解析）；
  * - 首块字节写出前若上游硬拒（auth / 限流 / 额度 / 瞬时），记录该账号的失败
- *   （`onServingFailure` → live-request 写回账号池），再 `failoverAccount()`
- *   取下一个候选重试 —— **只在未写任何 SSE 前重试**，一旦首个 delta 已转发，
- *   之后的错误原样进流（不回放、不换号）；
- * - 被账号池接管时，首块 delta 携带 `notice` 字段说明「本次由账号池账号 X
- *   服务」，便于用户在流里看到买单账号并非默认选择。
+ *   （`onServingFailure` → live-request 写回账号池），间隔
+ *   `failoverGapMs`（默认 2s，可中断）后再 `failoverAccount()` 取下一个候选
+ *   重试 —— **只在未写任何 SSE 前重试**，一旦首个 delta 已转发，之后的错误
+ *   原样进流（不回放、不换号）；策略层若重复返回已试过的账号，shim 侧也刹车；
+ * - 客户端中途断开（响应流 close）会中止上游请求，且**不**为该次失败记测量
+ *   （那是断开，不是账号的错）；
+ * - 被账号池接管时，首个内容帧以引用块前缀说明「本次由账号池账号 X 服务」
+ *   （必须走 `choices[0].delta.content`——空 choices 的自定义帧会被 pi-ai
+ *   直接跳过，用户将完全看不到换号）。
  *
  * @module dsh-connect-qoder/shim
  */
@@ -61,14 +72,21 @@ export interface QoderShimOptions {
   /** Record one serving account's pre-first-byte failure (pool measurement). */
   onServingFailure?: (accountId: string, kind: UpstreamErrorKind, message: string) => void
   /**
-   * Optional notice text to carry on the first chunk when the serving account
-   * is not the user's explicit selection (i.e. the pool took over).
+   * Optional notice text to carry ahead of the first content when the serving
+   * account is not the user's explicit selection (i.e. the pool took over).
    */
   poolServingNotice?: (accountId: string) => string | undefined
   /** 模型显示名 → Qoder 内部 key。未知时原样发送。 */
   modelKeyOf?: (displayName: string) => string | undefined
   /** 该模型是否支持图像输入（用于请求校验，可选）。 */
   supportsImagesOf?: (displayName: string) => boolean
+  /**
+   * 换号重试前的间隔（默认 {@link FAILOVER_ACCOUNT_GAP_MS}）。测试注入 0。
+   * 上游限流按请求体积触发，零间隔连环重试会让每个候选都撞同一堵墙。
+   */
+  failoverGapMs?: number
+  /** 请求体字节上限（默认 64MB，对齐 workbuddy）。测试可注入小值。 */
+  requestBodyLimit?: number
   userTypeOf?: () => string | undefined
   logger?: (message: string) => void
 }
@@ -83,6 +101,56 @@ export interface QoderShim {
 }
 
 const CONTENT_TYPE_JSON = 'application/json'
+
+/** 请求体上限（workbuddy 同值）：长对话体可以很大，但必须有界。 */
+const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
+
+/**
+ * 换号重试前的间隔（workbuddy 同值）。
+ *
+ * 上游限流按请求体积触发：零间隔连环重试会让每个候选账号都撞上同一堵墙
+ * （4 个账号一秒内全部失败）。批量测试已在账号间等 400ms
+ * （`POOL_BATCH_GAP_MS`）；故障转移重试是用户正在等的真实请求，给上游窗口
+ * 更多喘息空间。等待是可中断的：客户端断开就立刻停，而不是睡满全程。
+ */
+const FAILOVER_ACCOUNT_GAP_MS = 2_000
+
+/**
+ * 浏览器 Origin（存在时）必须指向回环。非浏览器客户端（插件自己的 fetch、
+ * pi-ai）根本不发 Origin，直接放行；DNS-rebinding 页面的 Host 可以伪造，
+ * 但 Origin 会暴露它的真实域名。
+ */
+function originIsLoopback(origin: string | undefined): boolean {
+  if (origin === undefined || origin.trim() === '') return true
+  try {
+    const { hostname } = new URL(origin)
+    return hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1' || hostname === '[::1]'
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 写给宿主的 `code` 翻译表。
+ *
+ * 宿主（`@deepseek-ai/dsh-llm` + llm-pi-ai）从失败文案里读英文短语来决定
+ * 「原地重试（默认 5 次指数退避）」还是「跨供应商故障转移」：`RATE_LIMIT` /
+ * `SERVER` / `TIMEOUT` / `TRANSPORT` / `EMPTY_RESPONSE` 在原地重试集里。
+ *
+ * `rate-limited` 是那个被字面翻译害惨的 kind：上游 429 的冷却常常以小时计
+ * （探针从响应体里解析恢复时间），若按 `rate_limit_exceeded` 送达，宿主会把
+ * 整个重试预算烧在一个不可能在退避窗口内恢复的端点上。翻成 `quota_exceeded`
+ * 是宿主认得的词，也符合上游「此刻不可用」的实际语义；HTTP 状态保持 429
+ * 不动（那是上游真实返回的），上游自己的消息仍原文透传给人读。
+ */
+const KIND_HOST_CODE: Partial<Readonly<Record<UpstreamErrorKind, string>>> = {
+  'rate-limited': 'quota_exceeded',
+}
+
+/** 首字节前失败写给宿主的 code（宿主按它分类）；流内错误帧仍用原 code。 */
+function hostErrorCode(kind: UpstreamErrorKind): string {
+  return KIND_HOST_CODE[kind] ?? ERROR_MAP[kind].code
+}
 
 /** HTTP 状态 + error.code 双映射表（DSH 依据 code 判定原地重试 vs failover）。 */
 const ERROR_MAP: Record<UpstreamErrorKind, { status: number; code: string }> = {
@@ -112,6 +180,15 @@ function isFailoverEligible(kind: UpstreamErrorKind): boolean {
     || kind === 'transient'
 }
 
+/** 可中断的等待：signal 中止时立即结束，而不是睡满全程。 */
+function sleepAbortable(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    if (ms <= 0 || signal.aborted) return resolve()
+    const timer = setTimeout(resolve, ms)
+    signal.addEventListener('abort', () => { clearTimeout(timer); resolve() }, { once: true })
+  })
+}
+
 export function createQoderShim(options: QoderShimOptions): QoderShim {
   const { upstream } = options
   const logger = options.logger ?? (() => {})
@@ -126,7 +203,7 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     const server = createServer((req, res) => {
       void handleRequest(req, res).catch((error) => {
         const status = isQoderUpstreamError(error) ? ERROR_MAP[error.kind].status : 500
-        const code = isQoderUpstreamError(error) ? ERROR_MAP[error.kind].code : 'internal_error'
+        const code = isQoderUpstreamError(error) ? hostErrorCode(error.kind) : 'internal_error'
         writeJson(res, status, { error: { message: String((error as Error).message ?? 'internal error'), code, type: 'qoder_error' } })
       })
     })
@@ -149,7 +226,11 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
 
   async function handleRequest(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
     if (!checkHost(req)) {
-      writeJson(res, 403, { error: { message: 'bad host', code: 'invalid_request_error' } })
+      writeJson(res, 403, { error: { message: 'bad host', code: 'host_not_allowed' } })
+      return
+    }
+    if (!originIsLoopback(req.headers.origin)) {
+      writeJson(res, 403, { error: { message: 'Origin must be a loopback origin', code: 'origin_not_allowed' } })
       return
     }
     if (!checkAuthorization(req, secretBuf)) {
@@ -162,6 +243,10 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     }
 
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    if (req.method === 'GET' && (url.pathname === '/healthz' || url.pathname === '/healthz/')) {
+      writeJson(res, 200, { ok: true })
+      return
+    }
     if (req.method === 'GET' && url.pathname === '/v1/models') {
       await handleModels(res)
       return
@@ -216,7 +301,18 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
   }
 
   async function handleChat(req: import('node:http').IncomingMessage, res: import('node:http').ServerResponse): Promise<void> {
-    const raw = await readBody(req)
+    let raw: string
+    try {
+      raw = await readBody(req, options.requestBodyLimit ?? REQUEST_BODY_LIMIT)
+    } catch (error) {
+      if ((error as Error).message === 'request body too large') {
+        // 文案与宿主 INVALID_REQUEST 分类器的既有分支对齐（"request body too
+        // large"），413 在原地重试集之外——同一个超大体换谁重发都一样被拒。
+        writeJson(res, 413, { error: { message: 'request body too large', code: 'invalid_request_error' } })
+        return
+      }
+      throw error
+    }
     let body: Record<string, unknown>
     try {
       body = JSON.parse(raw) as Record<string, unknown>
@@ -226,7 +322,6 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     }
     const model = typeof body.model === 'string' ? body.model : ''
     const messages = Array.isArray(body.messages) ? body.messages as Array<Record<string, unknown>> : []
-    const tools = Array.isArray(body.tools) ? body.tools : undefined
     const stream = body.stream !== false
 
     if (messages.length === 0) {
@@ -247,10 +342,24 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
       return
     }
 
+    // `tool_choice` 的处理与 workbuddy 的 prepareChatBody 同义：cosy 模板没有
+    // tool_choice 字段，其他形态无法透传；但 `"none"` 必须落实为「不带 tools」，
+    // 否则宿主明确禁止工具时上游仍看得到它们。
+    const toolChoice = body.tool_choice
+    const tools = toolChoice === 'none' || !Array.isArray(body.tools) ? undefined : body.tools
+
     // reasoning 档：DSH 的 thinking 选择落在 `reasoning_effort` 上。Qoder 的
     // 线是布尔 `is_reasoning`：`off` → false；任何正档 → true；否则回落到
     // stream_options.include_reasoning。
     const isReasoning = isReasoningRequested(body)
+
+    // 客户端断开要中止上游（否则上游继续烧额度），且断开前的失败不该记成账号
+    // 的测量。监听**响应**的 close 而非请求的：请求流被读完后 Node 会自行
+    // destroy 请求对象（`req.destroyed` 在正常读完时也会变 true），只有响应
+    // 的 close 才代表 socket 真的拆了。
+    const controller = new AbortController()
+    res.on('close', () => controller.abort())
+    if (res.destroyed) controller.abort()
 
     // 用账号池解析本次服务的账号（可多账号 / 池接管 / 默认回落）。
     let serving: QoderServingAccount | undefined
@@ -268,6 +377,7 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     const requestId = `chatcmpl-${randomBytes(12).toString('hex')}`
     const created = Math.floor(Date.now() / 1000)
     const tried: string[] = []
+    const gapMs = options.failoverGapMs ?? FAILOVER_ACCOUNT_GAP_MS
 
     // 本轮尝试：写 SSE 头 + 转发流。返回前若抛错且尚未写出任何字节，则上游
     // `wroteAny` 保持 false，可进入换号重试。
@@ -284,18 +394,22 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           ...(tools === undefined ? {} : { tools }),
           isReasoning,
           isVl: supportsImages,
-          ...(req.destroyed ? { signal: AbortSignal.abort() } : {}),
+          signal: controller.signal,
           onDelta: (delta) => {
             if (!wroteAny) {
               res.writeHead(200, {
                 'Content-Type': 'text/event-stream',
                 'Cache-Control': 'no-cache',
-                Connection: 'keep-alive',
+                'Connection': 'keep-alive',
+                // 反向代理（若有）不得缓冲 SSE。
+                'X-Accel-Buffering': 'no',
               })
-              // 池接管时在首个 delta 帧后补一个空 choices 的 notice 帧，不动首块
-              // delta 的 JSON 形状（对任何 OpenAI SSE 消费者都是合法 chunk）。
+              // 池接管时必须让用户看见：通知文本作为首个**内容**帧写出
+              // （choices[0].delta.content）。空 choices 的自定义帧会被 pi-ai
+              // 的 chunk 循环直接跳过（`if (!choice) continue`），用户将完全
+              // 不知道换号发生过。
               if (notice !== undefined) {
-                res.write(`data: ${JSON.stringify({ object: 'chat.completion.chunk', id: requestId, created, model, choices: [], notice })}\n\n`)
+                writeNoticeChunk(res, requestId, created, model, notice)
                 notice = undefined
               }
               wroteAny = true
@@ -320,11 +434,14 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         return
       } catch (error) {
         if (wroteAny) {
-          // 已提交字节：错误进流（不换号）。
+          // 已提交字节：错误进流（不换号、不重放——回放会让客户端看到两段
+          // 拼接的回答）。
           writeErrorChunk(res, requestId, created, model, error)
           return
         }
-        if (isQoderUpstreamError(error) && isFailoverEligible(error.kind)) {
+        if (isQoderUpstreamError(error) && isFailoverEligible(error.kind) && !controller.signal.aborted) {
+          // 每一次失败尝试都记测量，包括没有后继可试的最后一次——那正是下一个
+          // 请求最该避开的账号。客户端已断开时不记：断开不是账号的错。
           options.onServingFailure?.(serving.accountId, error.kind, error.message)
           tried.push(serving.accountId)
           let next: QoderServingAccount | undefined
@@ -333,25 +450,38 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           } catch {
             next = undefined
           }
-          if (next !== undefined) {
+          // 策略层被要求跳过已试账号，但 shim 不依赖这一点：候选若重复，同一
+          // 请求体会对同一账号无限重发、空烧额度。`tried` 是唯一刹车，shim 侧
+          // 也查一遍。
+          if (next !== undefined && !tried.includes(next.accountId)) {
             logger(`shim failover: ${serving.accountId} → ${next.accountId} (${error.kind})`)
             serving = next
+            // 零间隔连环重试会让每个候选都撞上同一个按体积计费的限流墙；
+            // 等待可中断，客户端断开就不再睡。
+            await sleepAbortable(gapMs, controller.signal)
+            if (controller.signal.aborted) return
             continue
           }
-          // 没有下一个候选：以 SSE 错误流如实回传（先写头 + 错误块 + [DONE]）。
-          // 与工作清单族内一致：上游已判定的失败（凭据/限流/额度/瞬时）一律进
-          // SSE 错误帧，让 DSH 按 code 判定后续（原地重试 vs 跨 provider）；只有
-          // 请求组装阶段的问题（缺 PAT / 坏 body）才是前置 JSON 状态。绝不静默
-          // 换上别的东西。
-          res.writeHead(200, {
-            'Content-Type': 'text/event-stream',
-            'Cache-Control': 'no-cache',
-            Connection: 'keep-alive',
+        }
+        if (isQoderUpstreamError(error)) {
+          // 没有下一个候选（或失败本就不值得换号）：首字节未写，回**非 200
+          // JSON 错误**。pi-ai 对 200 流里的 error 字段完全失明（塌缩成
+          // "Provider finish_reason: error"），只有非 2xx 响应体能把真实的
+          // 状态、宿主可分类的 code 与上游原文送进宿主的分类器。尝试过多个
+          // 账号时在消息里注明数量——否则池子换过号仍失败读起来就像用户选定
+          // 的那一个账号单独失败。
+          const note = tried.length > 1 ? ` (after trying ${tried.length} accounts)` : ''
+          const mapped = ERROR_MAP[error.kind]
+          writeJson(res, mapped.status, {
+            error: {
+              message: `qoder upstream ${error.kind} (http ${error.status})${note}: ${error.message.slice(0, 400)}`,
+              code: hostErrorCode(error.kind),
+              type: 'qoder_error',
+            },
           })
-          writeErrorChunk(res, requestId, created, model, error)
           return
         }
-        // 请求本身不合法 / 内容审核 / 未知错误：不进换号逻辑。
+        // 非上游错误（组装问题等）：交外层统一 500。
         throw error
       }
     }
@@ -364,6 +494,19 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     if (effort !== undefined && effort !== '') return true
     const streamOptions = body.stream_options as Record<string, unknown> | undefined
     return streamOptions?.include_reasoning === true
+  }
+
+  /** 池接管的通知帧：一段以引用块前缀开头的**内容**帧（pi-ai 可见）。 */
+  function writeNoticeChunk(
+    res: import('node:http').ServerResponse,
+    id: string,
+    created: number,
+    model: string,
+    notice: string,
+  ): void {
+    const chunk = makeChunk(id, created, model)
+    chunk.choices[0]!.delta.content = `\n\n> [dsh-connect-qoder] ${notice}\n\n`
+    res.write(`data: ${JSON.stringify(chunk)}\n\n`)
   }
 
   function writeDeltaChunk(
@@ -424,11 +567,25 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     res.end(text)
   }
 
-  function readBody(req: import('node:http').IncomingMessage): Promise<string> {
+  function readBody(req: import('node:http').IncomingMessage, limit: number): Promise<string> {
     return new Promise((resolve, reject) => {
       const chunks: Buffer[] = []
-      req.on('data', (chunk: Buffer) => chunks.push(chunk))
-      req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')))
+      let size = 0
+      let over = false
+      req.on('data', (chunk: Buffer) => {
+        if (over) return
+        size += chunk.length
+        if (size > limit) {
+          over = true
+          reject(new Error('request body too large'))
+          // 排干剩余上传而不是 destroy：destroy 会在 413 写回前拆掉 socket，
+          // 客户端只会看到 "other side closed" 而不是可读的状态码。
+          req.resume()
+          return
+        }
+        chunks.push(chunk)
+      })
+      req.on('end', () => { if (!over) resolve(Buffer.concat(chunks).toString('utf8')) })
       req.on('error', reject)
     })
   }

@@ -456,28 +456,56 @@ export class QoderUpstreamClient {
       const data = await this.bearerGet(holder, url, signal)
       return parseUsage(data)
     } catch (error) {
+      // 凭据被上游拒（401/403，实测 Qoder 回 `TOKEN_EXPIRE / token is not
+      // active`）必须**抛出去**，不能和「网络抖了一下」一起降级成 undefined：
+      //  - 卡片需要它来说「积分为什么是空的」，否则用户只看到一片空白；
+      //  - credential-recovery 的 `try { await fetchUsage } catch { usable =
+      //    false }` 靠这个异常判定凭据是否可用——原实现静默返回 undefined，
+      //    await 正常结束，于是**过期凭据被判为可用**。
+      // 其他错误（超时、5xx、网关抖动）仍旧返回 undefined：那是「这次没读到」，
+      // 不是「凭据坏了」，报成凭据被拒会把用户引去换一个没问题的 PAT。
       if (error instanceof QoderUpstreamError && (error.status === 401 || error.status === 403)) {
         // OpenAPI 端点可能不接受 cosy bearer：用 Bearer PAT 直连再试一次。
-        try {
-          const resp = await this.fetchImpl(url, {
-            headers: {
-              authorization: `Bearer ${credential}`,
-              accept: 'application/json',
-              'cosy-clienttype': '10',
-              'user-agent': 'Qoder',
-            },
-            ...(signal === undefined ? {} : { signal }),
-          })
-          if (resp.status === 200) {
-            const data = await resp.json() as Record<string, unknown>
-            return parseUsage(data)
-          }
-        } catch {
-          // 静默：返回 undefined，卡片如实显示「用量不可用」。
-        }
+        const direct = await this.fetchUsageDirect(url, credential, signal)
+        if (direct !== undefined) return direct
+        throw error
       }
       return undefined
     }
+  }
+
+  /**
+   * 直连回退：`Bearer <PAT>` 打同一个端点。返回 undefined 表示这条回退路径
+   * 也没给出 200（端点不接受直连 PAT，或网络失败）——由调用方决定是否把原始
+   * 的凭据被拒错误抛出去。
+   */
+  private async fetchUsageDirect(
+    url: string,
+    credential: string,
+    signal?: AbortSignal,
+  ): Promise<QoderUsage | undefined> {
+    try {
+      const resp = await this.fetchImpl(url, {
+        headers: {
+          authorization: `Bearer ${credential}`,
+          accept: 'application/json',
+          'cosy-clienttype': '10',
+          'user-agent': 'Qoder',
+        },
+        ...(signal === undefined ? {} : { signal }),
+      })
+      if (resp.status === 200) {
+        const data = await resp.json() as Record<string, unknown>
+        return parseUsage(data)
+      }
+      if (resp.status === 401 || resp.status === 403) {
+        // 两条路径都拒绝同一个 PAT：这就是凭据被拒，保留原始错误抛出。
+        return undefined
+      }
+    } catch {
+      // 直连路径失败不代表凭据坏了，交给调用方用原始错误判定。
+    }
+    return undefined
   }
 
   private async bearerGet(holder: QoderSessionHolder, url: string, signal?: AbortSignal): Promise<Record<string, unknown>> {

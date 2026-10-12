@@ -51,6 +51,17 @@ export interface QoderModelInfo {
   supportsThinking: boolean
   /** 可完全关闭思考（thinking_config.disabled 存在）。 */
   canDisableThinking: boolean
+  /**
+   * 上游声明的思考强度档位（`thinking_config.enabled.efforts` 的键，按强度
+   * 升序）。不存在时该模型没有可选档位，卡片不渲染这一项。
+   *
+   * 实测 Qoder 的档位名不统一：Qwen 系用 `low / medium / xhigh`，DeepSeek/GLM
+   * 用 `low / high / max`——所以只做展示，不做跨模型比较。上游给出的键序也不
+   * 可靠（JSON 里可能先出现 `xhigh`），必须按语义排序后再显示。
+   */
+  thinkingEfforts?: string[]
+  /** 上游标为默认的档位（`efforts[x].is_default`）。 */
+  defaultThinkingEffort?: string
   isDefault: boolean
   isFree: boolean
   isNew: boolean
@@ -73,10 +84,56 @@ export function contextTiersOf(raw: QoderUpstreamModel): number[] | undefined {
   return [...new Set(counts)].sort((a, b) => a - b)
 }
 
+/** 强度语义排序用的序表（`max` 与 `xhigh` 同属"最强"档，都排最后）。 */
+const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+
+/**
+ * 从 `thinking_config` 提取可选档位。
+ *
+ * 实测形状（qmodel_38max）：
+ *   `{ disabled: {}, enabled: { is_default: true,
+ *      efforts: { xhigh: {}, low: {}, medium: { is_default: true } } } }`
+ *
+ * 两个要点：
+ * - **键序不可信**：上游给的顺序是 `xhigh, low, medium`，直接显示会让用户
+ *   以为 xhigh 是最弱档。按语义序表排。
+ * - **不是每个模型都有档位**：`auto`、`qmodel_latest` 等 `efforts` 缺失，
+ *   此时返回空对象（字段缺席），卡片据此不渲染这一项——而不是渲染一个空标签。
+ */
+export function thinkingOf(config: Record<string, unknown> | undefined): {
+  thinkingEfforts?: string[]
+  defaultThinkingEffort?: string
+} {
+  const enabled = config?.['enabled']
+  if (enabled === null || enabled === undefined || typeof enabled !== 'object') return {}
+  const efforts = (enabled as Record<string, unknown>)['efforts']
+  if (efforts === null || typeof efforts !== 'object' || Array.isArray(efforts)) return {}
+  const names = Object.keys(efforts as Record<string, unknown>)
+  if (names.length === 0) return {}
+  const sorted = [...names].sort((a, b) => {
+    const ia = EFFORT_ORDER.indexOf(a)
+    const ib = EFFORT_ORDER.indexOf(b)
+    // 序表外的档位名排在已知档之后，再按字典序，保证顺序稳定。
+    if (ia === -1 && ib === -1) return a.localeCompare(b)
+    if (ia === -1) return 1
+    if (ib === -1) return -1
+    return ia - ib
+  })
+  const declared = sorted.find(name => {
+    const entry = (efforts as Record<string, unknown>)[name]
+    return entry !== null && typeof entry === 'object' && (entry as Record<string, unknown>)['is_default'] === true
+  })
+  return {
+    thinkingEfforts: sorted,
+    ...(declared === undefined ? {} : { defaultThinkingEffort: declared }),
+  }
+}
+
 /** 把上游 snake_case 条目解析成 DSH 侧模型信息。 */
 export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
   const contextWindow = pickDefaultContextWindow(raw) ?? raw.max_input_tokens ?? QODER_DEFAULT_CONTEXT
   const canDisable = raw.thinking_config?.disabled !== undefined
+  const reasoning = thinkingOf(raw.thinking_config)
   return {
     key: raw.key,
     displayName: raw.display_name,
@@ -86,6 +143,7 @@ export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
     supportsImages: raw.is_vl,
     supportsThinking: raw.is_reasoning,
     canDisableThinking: canDisable || raw.is_reasoning === false,
+    ...reasoning,
     isDefault: raw.is_default,
     isFree: raw.is_free === true,
     isNew: false,
@@ -149,13 +207,11 @@ export function applyContextBudgets(
 }
 
 /**
- * 模型显示名：内嵌积分倍率（与 Qoder 自身菜单格式一致）。
- * `GLM-5.2 · x0.79` / `Qwen3.7-Max · x1.0`。
+ * 模型显示名：内嵌积分倍率（与 Qoder 自身菜单格式一致——倍率为 1 也照写，
+ * `Qwen3.7-Max · x1.00`）。workbuddy 的选择器同名规则同样不省略 1。
  */
 export function modelDisplayName(info: QoderModelInfo): string {
-  const factor = info.priceFactor
-  const suffix = factor !== 1 ? ` · x${factor.toFixed(2)}` : ''
-  return `${info.displayName}${suffix}`
+  return `${info.displayName} · x${info.priceFactor.toFixed(2)}`
 }
 
 /**

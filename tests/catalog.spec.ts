@@ -60,12 +60,40 @@ describe('model parsing', () => {
   it('canDisableThinking is true when thinking_config.disabled exists', () => {
     expect(parseUpstreamModel(rawModel({ thinking_config: { disabled: true } })).canDisableThinking).toBe(true)
   })
+
+  it('carries the thinking strengths, ordered weakest → strongest', () => {
+    // 实测形状：上游给的键序是 xhigh/low/medium（**不是**强度序），直接显示会
+    // 让用户以为 xhigh 是最弱档。解析必须按语义排序。
+    const qwen = parseUpstreamModel(rawModel({
+      thinking_config: { disabled: {}, enabled: { is_default: true, efforts: { xhigh: {}, low: {}, medium: { is_default: true } } } },
+    }))
+    expect(qwen.thinkingEfforts).toEqual(['low', 'medium', 'xhigh'])
+    expect(qwen.defaultThinkingEffort).toBe('medium')
+
+    // 另一族用 low/high/max——档位名不统一，不跨模型比较。
+    const other = parseUpstreamModel(rawModel({
+      thinking_config: { enabled: { efforts: { max: { is_default: true }, high: {}, low: {} } } },
+    }))
+    expect(other.thinkingEfforts).toEqual(['low', 'high', 'max'])
+    expect(other.defaultThinkingEffort).toBe('max')
+  })
+
+  it('omits the strengths entirely when the model declares none', () => {
+    // auto / kmodel_latest 等实测无 efforts：字段必须缺席（卡片据此不渲染这一
+    // 项），而不是一个空数组——空数组会渲染出「推理强度：」这样的半句话。
+    const bare = parseUpstreamModel(rawModel({ thinking_config: undefined }))
+    expect(bare.thinkingEfforts).toBeUndefined()
+    expect(bare.defaultThinkingEffort).toBeUndefined()
+    const empty = parseUpstreamModel(rawModel({ thinking_config: { enabled: { efforts: {} } } }))
+    expect(empty.thinkingEfforts).toBeUndefined()
+  })
 })
 
 describe('display names', () => {
   it('embeds the credit multiplier like the Qoder menu', () => {
     expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 0.79 })).toBe('Qwen3.7-Max · x0.79')
-    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 1 })).toBe('Qwen3.7-Max')
+    // 倍率 1 也照写——Qoder 自家菜单如此，workbuddy 的选择器同名规则也不省略 1。
+    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 1 })).toBe('Qwen3.7-Max · x1.00')
   })
 })
 

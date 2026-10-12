@@ -228,10 +228,31 @@ describe('registerQoderWebRoutes registration', () => {
       QODER_SAVE_PATH,
     ])
   })
+
+  it('模型刷新路由优先调用会落状态的 refreshModels，而非只读的 discoverModels', async () => {
+    // 回归：路由此前只调 discoverModels——把新模型答给卡片，却从不写入运行时
+    // 目录；卡片随后重取 usage 文档看到的仍是旧目录，「刷新」按钮刷了个寂寞，
+    // 积分也因 refreshUsage 从未被触发而永远不来。
+    let refreshed = 0
+    let discovered = 0
+    const fresh = [{ ...FREE_MODEL, key: 'qfmodel', displayName: 'Qwen3.8-Flash', priceFactor: 0, isFree: true }]
+    const captured = await mountRoutes(deps({
+      discoverModels: async () => { discovered++; return [] },
+      refreshModels: async () => { refreshed++; return fresh },
+    }))
+    const handler = findHandler(captured, QODER_MODELS_REFRESH_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_MODELS_REFRESH_PATH}?region=cn`), res)
+    expect(status()).toBe(200)
+    expect(refreshed).toBe(1)
+    expect(discovered).toBe(0)
+    const answer = body() as { models: readonly { key: string, creditMultiplier?: number }[] }
+    expect(answer.models[0]!.key).toBe('qfmodel')
+    expect(answer.models[0]!.creditMultiplier).toBe(0)
+  })
 })
 
-describe('usage route', () => {
-  it('answers 200 with a signed-in document for the addressed region', async () => {
+describe('usage route', () => {  it('answers 200 with a signed-in document for the addressed region', async () => {
     const captured = await mountRoutes()
     const usage = findHandler(captured, QODER_USAGE_PATH)
     const { res, status, body } = response()
@@ -300,6 +321,38 @@ describe('accounts route (add|remove)', () => {
     expect(status()).toBe(200)
     expect(body()).toMatchObject({ accountId: qoderAccountId('pt-new-value') })
     expect(validated).toBe(1)
+    // 没填名字时才用上游解析出的那个。
+    const stored = (await store.accounts({})).find(a => a.id === qoderAccountId('pt-new-value'))
+    expect(stored?.accountName).toBe('New User')
+  })
+
+  it('uses the name the user typed, not the upstream one', async () => {
+    // 回归：客户端一直会发 `name`，路由却完全忽略它——用户给 PAT 起的名字
+    // （「公司号」）填了等于没填，列表里显示的永远是上游解析出的标识。
+    const validation: QoderAccountValidationDeps = {
+      validateForRegion: async () => ({ name: 'upstream-uid-1234' }),
+    }
+    const store = baseStore()
+    const captured = await mountRoutes(deps({ store: () => store, accountValidation: validation }))
+    const handler = findHandler(captured, QODER_ACCOUNTS_PATH)
+    const { res, status, body } = response()
+    await handler(reqWithBody('POST', `${QODER_ACCOUNTS_PATH}?region=cn&action=add`, { pat: 'pt-mine', name: '  公司号  ' }), res)
+    expect(status()).toBe(200)
+    expect(body()).toMatchObject({ accountName: '公司号' })
+    const stored = (await store.accounts({})).find(a => a.id === qoderAccountId('pt-mine'))
+    expect(stored?.accountName).toBe('公司号')
+  })
+
+  it('keeps a blank name blank so the card can say "unnamed"', async () => {
+    const validation: QoderAccountValidationDeps = { validateForRegion: async () => ({ name: '' }) }
+    const store = baseStore()
+    const captured = await mountRoutes(deps({ store: () => store, accountValidation: validation }))
+    const handler = findHandler(captured, QODER_ACCOUNTS_PATH)
+    const { res, status } = response()
+    await handler(reqWithBody('POST', `${QODER_ACCOUNTS_PATH}?region=cn&action=add`, { pat: 'pt-anon', name: '   ' }), res)
+    expect(status()).toBe(200)
+    const stored = (await store.accounts({})).find(a => a.id === qoderAccountId('pt-anon'))
+    expect(stored?.accountName).toBe('')
   })
 
   it('removes a vault account', async () => {
@@ -332,6 +385,26 @@ describe('accounts route (add|remove)', () => {
 })
 
 describe('pool route (test|remove)', () => {
+  it('pool 目录带上真实倍率与显示名（选项标签要用它们定价）', async () => {
+    // 双缺陷回归：路由层曾只对免费模型写 `creditMultiplier: 0`，付费模型一个
+    // 数字都没有——下拉选项读起来像免费；而选项文本更早还直接渲染模型 **id**
+    // （`dfmodel`），用户既不认识、也无从判断花不花积分。
+    const pools = [
+      { ...FREE_MODEL, key: 'gm51model', displayName: 'GLM-5.2', isFree: false, priceFactor: 0.79 },
+      { ...FREE_MODEL, key: 'dfmodel', displayName: 'DeepSeek-V4-Flash', isFree: true, priceFactor: 0 },
+    ]
+    const d = deps({
+      catalogs: { cn: { current: () => pools }, global: { current: () => pools } },
+      pool: poolDeps({ catalog: () => pools }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    const byId = Object.fromEntries((usage.pool?.catalog ?? []).map(m => [m.id, m]))
+    expect(byId['gm51model']?.name).toBe('GLM-5.2')
+    expect(byId['gm51model']?.creditMultiplier).toBe(0.79)
+    expect(byId['dfmodel']?.creditMultiplier).toBe(0)
+  })
+
   it('answers a test batch with the resolved model and rows', async () => {
     const pool = poolDeps()
     const captured = await mountRoutes(deps({ pool }))
@@ -345,8 +418,7 @@ describe('pool route (test|remove)', () => {
     expect(answer.rows).toHaveLength(1)
   })
 
-  it('answers an empty batch when no target model can resolve', async () => {
-    // 目标的求解读的是 `pool.catalog(region)`（路由层投影 `poolModelOf`），当目标
+  it('answers an empty batch when no target model can resolve', async () => {    // 目标的求解读的是 `pool.catalog(region)`（路由层投影 `poolModelOf`），当目标
     // 目录里没有任何免费模型时 `targetModelId` 无从解析，行必须为空、绝不调用 test。
     let tested = false
     const pool = poolDeps({
@@ -482,6 +554,50 @@ describe('__save route', () => {
 })
 
 describe('buildWebUsage', () => {
+  it('a rejected credential is REPORTED, never silently blank', async () => {
+    // 回归：过期 PAT 曾表现为「积分一片空白，且没有任何提示」——上游 401 被
+    // fetchUsage 静默吞成 undefined，宿主于是走成功分支写入 `{usage: undefined}`，
+    // 既无 credits 也无 creditsError，卡片只能显示空白。现在拒绝必须说出来。
+    const d = deps({
+      usage: () => ({ atMs: Date.now(), error: 'credential-rejected' }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.credentialRejected).toBe(true)
+    // fixture 有 settings + env 两个账号，所以不要求「重新添加 PAT」——正确
+    // 的说法是「试试切到另一个」（reloginRequired 只在账号数 ≤ 1 时置位）。
+    expect(usage.recovery?.reloginRequired).toBe(false)
+    expect(usage.recovery?.usableAccount).toBeUndefined()
+  })
+
+  it('a rejected credential with a single account asks for a new PAT', async () => {
+    // 只剩一个账号时「切换到另一个」无从谈起，唯一的出路是添加新 PAT。
+    const store: QoderAccountDeps = {
+      ...baseStore(),
+      accounts: async () => [{ id: 'pat-settings', accountName: 'Only', source: 'settings' }],
+    }
+    const d = deps({
+      store: () => store,
+      credentialSources: () => ({ settingsPat: 'pt-only', envPat: undefined }),
+      usage: () => ({ atMs: Date.now(), error: 'credential-rejected' }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.accounts).toHaveLength(1)
+    expect(usage.credentialRejected).toBe(true)
+    expect(usage.recovery?.reloginRequired).toBe(true)
+  })
+
+  it('the credits column reports the upstream message instead of vanishing', async () => {
+    const d = deps({
+      usage: () => ({ atMs: Date.now(), error: 'token is not active' }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.credits).toBeUndefined()
+    expect(usage.creditsError).toContain('token is not active')
+  })
+
   it('carries a signed-in document with models, accounts, and the pool', async () => {
     const d = deps({ pool: poolDeps() })
     const usage = await buildWebUsage(d, 'cn')
@@ -490,6 +606,9 @@ describe('buildWebUsage', () => {
     expect(usage.models.length).toBe(1)
     expect(usage.pool?.checkinSupported).toBe(false)
     expect(usage.pool?.targetModelSource).toBe('preferred')
+    // 倍率为 1 也必须透传（卡片渲染 `(1.00x)`）：webModelOf 曾把 1 当「无」
+    // 丢掉，卡片上只剩没倍率的裸名字。
+    expect(usage.models[0]!.creditMultiplier).toBe(1)
   })
 
   it('marks as `current` the account actually serving, not the first row or the target model', async () => {
@@ -515,6 +634,28 @@ describe('buildWebUsage', () => {
       ['pat-settings', false],
       ['pat-env', true],
     ])
+  })
+
+  it('pool rows carry member credits (total/expiringSoon/nearestExpiry), non-members stay unknown', async () => {
+    // 成员表积分列的数据通路：memberCredits 按成员 id 读，读到的成员行得到
+    // total/expiringSoon/nearestExpiryMs 三件套；没读到（凭据失效/上游拒绝）
+    // 的成员行保持「—」（字段缺席）而不是一个编出来的 0。
+    const memberCredits = new Map([
+      ['pat-settings', { total: 1200, expiringSoon: 300, nearestExpiryMs: 1_800_000_000_000 }],
+    ])
+    const d = deps({
+      pool: poolDeps({ memberCredits: async (_region, ids) => new Map([...memberCredits].filter(([id]) => ids.includes(id))) }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    const rows = usage.pool?.accounts ?? []
+    const settingsRow = rows.find(r => r.accountId === 'pat-settings')
+    expect(settingsRow?.credits).toBe(1200)
+    expect(settingsRow?.expiringSoon).toBe(300)
+    expect(settingsRow?.nearestExpiryMs).toBe(1_800_000_000_000)
+    const envRow = rows.find(r => r.accountId === 'pat-env')
+    expect(envRow?.credits).toBeUndefined()
+    expect(envRow?.expiringSoon).toBeUndefined()
   })
 
   it('marks nothing as `current` when no credential resolves', async () => {
