@@ -55,7 +55,6 @@ function formatClock(atMs: number): string {
 import {
   draftBaseFor,
   effectiveMemberIds,
-  ghostMemberIds,
   poolFailureText,
   usableMemberIds,
 } from './pool-state.ts'
@@ -135,6 +134,8 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const [draftRegion, setDraftRegion] = useState<string | undefined>(undefined)
   const [draftPool, setDraftPool] = useState<PoolPreferences | null>(null)
   const mounted = useRef(true)
+  /** 幽灵成员自愈的防重入标记（见 render 前的那个 effect）。 */
+  const pruningRef = useRef(false)
   useEffect(() => {
     mounted.current = true
     setNowMs(Date.now())
@@ -181,8 +182,35 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       listedIds: listed,
       dirty,
     })
-  const ghost = ghostMemberIds(active.memberAccountIds, listed)
   const canEditPool = settingsScope !== undefined && canWrite && !siblingBusy
+
+  /**
+   * 幽灵成员自愈：名单里留有「凭据已被删除」的 id 时，静默把名单收敛为实际
+   * 存在的成员并写回。
+   *
+   * 为什么不提示用户（用户实拍：「你应该直接就清理掉，而不是再给我这么一个
+   * 提示」）：删掉 PAT 之后配置里的 `memberAccountIds` 不会自动收缩，残渣是
+   * 插件的内部记账问题。原先的文案（「再保存一次即可移除它们」）把这件事推回
+   * 给用户——他删完 PAT 还得回到池设置里再点一次保存，而他本来就不想要这些
+   * 账号；更糟的是批量测试仍会遍历它们，白跑一轮。
+   *
+   * 只在不脏、不忙、可写时动手：正在编辑草稿时不能偷改（会覆盖用户的选择），
+   * 只读权限下也不能写。ref 防重入——写回后 pool 以新快照回流，effect 再跑时
+   * kept 已等于 savedIds，自然停下。
+   */
+  useEffect(() => {
+    if (dirty || saving || settingsScope === undefined || !canEditPool) return
+    const savedIds = pool?.memberAccountIds
+    if (savedIds === undefined) return
+    const kept = savedIds.filter(id => listed.has(id))
+    if (kept.length === savedIds.length) return
+    if (pruningRef.current) return
+    pruningRef.current = true
+    void writePoolPreferences(settingsScope, region, { ...saved, memberAccountIds: kept })
+      .then(() => onChanged?.())
+      .catch(() => { /* 自愈失败不弹错；下次快照回流再试 */ })
+      .finally(() => { pruningRef.current = false })
+  }, [dirty, saving, settingsScope, canEditPool, pool?.memberAccountIds, region, saved, listed, onChanged])
   // 现在就能服务的成员（workbuddy 的 usable）：有效成员 ∩ 未被排除。
   const usable = pool === undefined ? [] : usableMemberIds(pool.accounts, effective, active.memberAccountIds)
   // 目标模型来源一句话：「当前用的是谁、是不是你选的」先于「自动怎么工作」的
@@ -475,9 +503,8 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
             `${t('row.poolNoneSelected')} ${t('row.poolNoneSelectedHint')}`)
         : null}
-      {ghost.length === 0 ? null
-        : h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
-            t('row.poolGhostMembers', { count: ghost.length }))}
+      {/* 幽灵成员没有提示行：上面那个 effect 静默收敛名单（用户实拍：
+          「你应该直接就清理掉，而不是再给我这么一个提示」）。 */}
       {dirty && !sameIds(active.memberAccountIds, saved.memberAccountIds)
         ? h('p', { className: 'dsm-qoder-pool-dirty' }, t('row.poolUnsavedMembers'))
         : null}

@@ -217,4 +217,40 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       await unmount()
     }
   })
+
+  it('幽灵成员不再有提示行，而是静默把名单收敛后写回', async () => {
+    // 回归（用户实拍）：「有 2 个已保存的账号当前没有可用的 PAT，因此不计入、
+    // 也不会被使用。再保存一次即可移除它们。」——删掉 PAT 是用户已经做过的动作，
+    // 名单不随 vault 收缩是插件的内部记账问题，不该要求用户回来点保存；而且
+    // 批量测试还会遍历这些空壳（白跑一轮）。
+    const saved: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/__save') || url.includes('save')) {
+        saved.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+      }
+      return { ok: true, status: 200, json: async () => ({}) } as Response
+    }))
+    // 名单里有 a1/a2（存在）与两个已被删除凭据的幽灵 id。
+    const pool = { ...poolFixture(), memberAccountIds: ['a1', 'a2', 'pat-dead0001', 'pat-dead0002'] }
+    const { container, unmount } = await mountPool({ pool })
+    try {
+      // 不再出现那句提示（文案键已删除，重新引入会渲染成字面量而被捕获）。
+      expect(container.textContent).not.toContain('row.poolGhostMembers')
+      // 表里只列真实存在的两个账号（行选择器含表头行，排除它）。
+      const dataRows = Array.from(container.querySelectorAll('.dsm-qoder-pool-row'))
+        .filter(r => !r.classList.contains('dsm-qoder-pool-row-head'))
+      expect(dataRows).toHaveLength(2)
+      // 自愈是 effect 里异步落盘的：等它跑完再断言写入。
+      await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)) })
+    } finally {
+      await unmount()
+    }
+    // 自愈已发生：写回的成员名单只剩真实成员。
+    expect(saved.length).toBeGreaterThan(0)
+    const members = JSON.stringify(saved)
+    expect(members).toContain('a1')
+    expect(members).not.toContain('pat-dead0001')
+    expect(members).not.toContain('pat-dead0002')
+  })
 })

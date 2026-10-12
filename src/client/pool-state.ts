@@ -58,16 +58,6 @@ export function effectiveMemberIds(input: {
 }
 
 /**
- * Saved member ids with no matching credential.
- */
-export function ghostMemberIds(
-  draftMembers: readonly string[],
-  listedIds: ReadonlySet<string>,
-): string[] {
-  return draftMembers.filter(id => !listedIds.has(id))
-}
-
-/**
  * How many accounts a batch will really touch, as the log announces it.
  */
 export function announcedBatchCount(input: {

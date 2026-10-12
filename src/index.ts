@@ -811,10 +811,16 @@ export function apply(ctx: Context, config: Config): void {
           credentialFor: accountId => store.credentialFor(accountId, sourcesOf(reg)),
           probe: (credit, modelId) => probeThrough(reg, credit, modelId),
         }
-        const targets = prefs.memberAccountIds.map(accountId => {
-          void accountId
-          return { accountId, accountName: '' }
-        })
+        const targets: Array<{ accountId: string, accountName: string }> = []
+        for (const accountId of prefs.memberAccountIds) {
+          // 只测**真的还有凭据**的成员。用户的 PAT 被删除后 memberAccountIds
+          // 里会留下幽灵 id（配置里的名单不会随 vault 自动收缩），它们既测不出
+          // 结果、又会往池里写一条假的「凭据被拒」——用户看到的就是「有 2 个
+          // 已保存的账号当前没有可用的 PAT」这种本该自动消失的提示。
+          const credit = await store.credentialFor(accountId, sourcesOf(reg))
+          if (credit === undefined) continue
+          targets.push({ accountId, accountName: credit.accountName })
+        }
         const rows = await testAllAccounts(targets, target.modelId, deps)
         const probes: Record<string, QoderPoolProbe> = {}
         for (const row of rows) {
