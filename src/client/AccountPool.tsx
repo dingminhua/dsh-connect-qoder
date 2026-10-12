@@ -643,6 +643,11 @@ function RenderSettings(props: {
           </select>
         </div>
       </div>
+      </div>
+      {/* 保存行是那张带边框的设置卡片的**兄弟**，不在它里面（workbuddy 同构）：
+          放进卡片就落进 `overflow:hidden` 的圆角边框内，左端的仓库链接会紧贴
+          边框，而上方的「启用账号池」内缩 14px——同一条左对齐线断成两截（用户
+          实拍：「还是不对」）。它自带的 border-top 也正是这一行与卡片之间的分隔。 */}
       <div className="dsm-qoder-pool-save-bar">
         {/* 仓库链接在保存行左端（workbuddy 同构）：与模型保存行同一个位置，
             不给它单独一行。 */}
@@ -664,7 +669,6 @@ function RenderSettings(props: {
             {saving ? t('row.poolSaving') : t('row.poolSaved')}
           </button>
         </div>
-      </div>
       </div>
     </div>
   )

@@ -166,6 +166,28 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
+  it('保存行在设置卡片之外（不在带边框的圆角框里）', async () => {
+    // 回归：保存行曾被放进 dsm-qoder-pool-settings（那张 overflow:hidden 的
+    // 带边框卡片）内部——左端的仓库链接于是紧贴边框，而上方的「启用账号池」
+    // 内缩 14px，同一条左对齐线断成两截（用户实拍：「还是不对」）。
+    // workbuddy 里它是那张卡片的**兄弟**。
+    const { container, unmount } = await mountPool()
+    try {
+      const card = container.querySelector('.dsm-qoder-pool-settings')
+      const bar = container.querySelector('.dsm-qoder-pool-save-bar')
+      expect(card).not.toBeNull()
+      expect(bar).not.toBeNull()
+      // 不在卡片里。
+      expect(card!.contains(bar!)).toBe(false)
+      // 仍在设置区外壳里，且紧随卡片之后。
+      const wrap = container.querySelector('.dsm-qoder-pool-settings-wrap')
+      expect(wrap!.contains(bar!)).toBe(true)
+      expect(card!.nextElementSibling).toBe(bar)
+    } finally {
+      await unmount()
+    }
+  })
+
   it('账号工具在设置区顶部的虚线框里（标题之下、说明行之上）', async () => {
     const tools = React.createElement('span', { className: 'test-tool' }, 'TOOL')
     const { container, unmount } = await mountPool({ accountTools: tools })
