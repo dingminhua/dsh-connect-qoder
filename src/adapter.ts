@@ -126,8 +126,21 @@ export function qoderThinkingLevelMap(info: QoderModelInfo): QoderThinkingLevelM
   const declared = info.thinkingEfforts ?? []
   const supported = THINKING_LEVELS.filter(level =>
     (declared as readonly string[]).includes(level))
-  // 上游声明的档位与 DSH 的档位名没有交集时，仍然要给出 map（模型是推理模型），
-  // 但全部置 null —— 此时 DSH 的设置里不出现任何可选档位，而不是给出无效项。
+  // **必须至少有一个真实档位，否则不能返回 map。**
+  //
+  // DSH 内核（dsh-llm）对推理元数据是硬校验的：
+  //   - `if (reasoning.efforts.length === 0) throw INVALID_MODEL_REASONING`
+  //   - dsh-llm-pi-ai 的 `getSupportedThinkingLevels()` 把
+  //     `thinkingLevelMap[level] === null` 判为不支持，于是「全 null 的 map」
+  //     解析出**零个**档位。
+  // 一旦某个模型那样，**整条 provider 路由作废** —— 用户在 DSH 里看到的是
+  // 「Provider is not configured: <provider>」，而不是「这个模型没有档位」。
+  // 实测：`auto` 与 `qmodel_latest` 上游不声明 efforts，正是这样把 qoder 整条
+  // 路由打掉的（用户实拍）。
+  //
+  // 所以上游没声明档位时返回 `undefined`：DSH 把它读作「这个模型不提供推理」，
+  // 于是不渲染档位选择器（正确的降级），而路由保持健康。
+  if (supported.length === 0) return undefined
   const map: QoderThinkingLevelMap = {}
   for (const level of THINKING_LEVELS) map[level] = supported.includes(level) ? level : null
   if (info.canDisableThinking === true) map.off = 'off'

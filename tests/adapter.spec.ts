@@ -76,14 +76,55 @@ describe('qoderThinkingLevelMap', () => {
     expect(noOff?.off).toBeUndefined()
   })
 
-  it('still defines a map (all null) when the upstream declares no scale', () => {
-    // 模型是推理模型，所以 map 存在 → DSH 知道它支持推理；但没有真实档位时
-    // 不给出任何可选项，而不是给出无效项。
-    const map = qoderThinkingLevelMap({ ...MODEL, canDisableThinking: true })
-    expect(map).toBeDefined()
-    expect(map?.minimal).toBeNull()
-    expect(map?.max).toBeNull()
-    expect(map?.off).toBe('off')
+  it('returns undefined when the upstream declares no scale (否则整条路由作废)', () => {
+    // **这是「Provider is not configured: qoder」的根因**（用户实拍）。
+    //
+    // DSH 内核硬校验推理元数据：
+    //   - dsh-llm: `if (reasoning.efforts.length === 0) throw INVALID_MODEL_REASONING`
+    //   - dsh-llm-pi-ai `getSupportedThinkingLevels()`: `thinkingLevelMap[level] === null`
+    //     判为不支持 → 「全 null 的 map」解析出**零个**档位
+    // 于是只要有一个模型如此，**整条 provider 路由作废**：用户在 DSH 里看到
+    // 「Provider is not configured」，而不是「这个模型没有档位」。
+    // 实测 `auto` / `qmodel_latest` 上游不声明 efforts，正是这样打掉整条路由。
+    // 正确做法：返回 undefined → DSH 读作「不提供推理」→ 不渲染档位选择器，
+    // 而路由保持健康。
+    const { thinkingEfforts: _drop, ...withoutEfforts } = MODEL
+    expect(qoderThinkingLevelMap(withoutEfforts)).toBeUndefined()
+    expect(qoderThinkingLevelMap({ ...MODEL, thinkingEfforts: [] })).toBeUndefined()
+    // 上游档位与 DSH 档位名无交集时同样不能返回全 null 的 map。
+    expect(qoderThinkingLevelMap({ ...MODEL, thinkingEfforts: ['weird'] })).toBeUndefined()
+  })
+
+  it('never returns a map that DSH would see as offering zero levels', () => {
+    // 复刻 DSH 的 getSupportedThinkingLevels()，确保任何上游形状都不会让
+    // 路由被作废。
+    const TL = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    const dshLevels = (map: Record<string, string | null> | undefined): string[] => {
+      if (map === undefined) return []
+      return TL.filter(level => {
+        const mapped = map[level]
+        if (mapped === null) return false
+        if (level === 'xhigh' || level === 'max') return mapped !== undefined
+        return true
+      })
+    }
+    const { thinkingEfforts: _omit, ...noEffortsModel } = MODEL
+    const shapes: Array<Record<string, unknown>> = [
+      noEffortsModel,
+      { thinkingEfforts: [] },
+      { thinkingEfforts: ['low'] },
+      { thinkingEfforts: ['low', 'medium', 'xhigh'] },
+      { thinkingEfforts: ['high', 'max'] },
+      { thinkingEfforts: ['minimal'] },
+      { thinkingEfforts: ['weird'] },
+      { thinkingEfforts: ['low'], canDisableThinking: true },
+      { supportsThinking: false },
+    ]
+    for (const shape of shapes) {
+      const map = qoderThinkingLevelMap({ ...MODEL, ...shape }) as Record<string, string | null> | undefined
+      if (map === undefined) continue
+      expect(dshLevels(map).length, `${JSON.stringify(shape)} 会让整条路由作废`).toBeGreaterThan(0)
+    }
   })
 
   it('returns undefined for a non-reasoning model (no map at all)', () => {

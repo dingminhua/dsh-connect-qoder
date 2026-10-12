@@ -17,6 +17,17 @@
 - **tab 栏不再顶着上面的分隔线**（用户实拍：「国际版 国内版 不要顶着上面这条线，最基本的统一样式」）：`.dsm-plugin-card-body` 这条家族共享规则只有 `padding:0 0 8px`——**上内边距为 0**，所以正文的**首个元素必须自带顶部间距**。workbuddy 的 tab 栏正是被 `.dsm-workbuddy-usage`（`padding:16px 0 4px`）托住的；qoder 这边在上一轮删掉积分块时，把那层容器一并拆掉了，于是 tab 栏直接贴在分隔线上。现在用同一条规则 `.dsm-qoder-usage`（本就存在）恢复同样的 16px 呼吸空间——不是新加特例，是恢复与同族插件一致的结构。
 - **「在对话框显示积分」开关移到账号池标题行**（用户要求：「放到账号池这个标题旁边吧，节约点空间」）：它此前在卡片正文里独占一行，约 30px 高却只有一个勾选框。现在渲染在 `pool-head` 右端、排在「当前使用」芯片**之前**（可操作的控件在状态之前）。卡片仍然持有写权限与区域，所以由卡片构造这个节点、经 `creditsSwitch` prop 交给账号池安置（与 `accountTools` 同规）；原来那个只为它存在的 `.dsm-qoder-credits-row` 外壳随之删除。语义也更顺：它决定「积分怎么显示」，而积分明细正是下面那张表的内容。
 - **「在对话框显示积分」那行上移**（用户实拍：「红色的部分向上靠拢一些」）：额度明细移除后，那一行仍套着为明细列表准备的 `.dsm-qoder-usage`（`padding:16px 0 4px` + `gap:16px`），连同 `.dsm-qoder-credits-switch` 自己的 `margin:8px 0 2px` 与账号池区块的 `padding-top:16px`，三处叠加出约 19px 的空档。现在：这一行换成自己的外壳 `.dsm-qoder-credits-row`（`padding:12px 0 2px`）、开关的 margin 归零（间距由外壳统一负责）、账号池的 `padding-top` 收到 8px。分隔线之上只剩约 11px。
+- **修掉「Provider is not configured: qoder」的真正根因**（用户实拍，并提示「之前参考的项目都是怎么做的」——对照 trae/workbuddy 的 `modelErrors`/`defaultContextWindow` 注释后，去 DSH 内核源码里找到了硬校验）。
+  - **根因**：DSH 内核（`dsh-llm`）对适配器返回的推理元数据是**硬校验**的：
+    ```js
+    if (reasoning.efforts.length === 0)
+      throw new LlmError('adapter returned invalid reasoning metadata …', 'INVALID_MODEL_REASONING')
+    ```
+    而 `dsh-llm-pi-ai` 的 `getSupportedThinkingLevels()` 把 `thinkingLevelMap[level] === null` 判为「不支持」，并把 `xhigh`/`max` 额外要求 `!== undefined`。于是**「全 null 的 map」解析出零个档位**。
+  - 我此前在「上游没声明档位」时**仍然**返回全 null 的 map。上游的 `auto` 与 `qmodel_latest` 恰恰不声明 `thinking_config.efforts` → 零档位 → **整条 provider 路由被 DSH 作废**。用户看到的是「Provider is not configured: qoder」，而不是「这个模型没有档位」。
+  - **修法**：`qoderThinkingLevelMap` 在「没有一个真实档位」时返回 `undefined`（而不是全 null 的 map）。DSH 读作「该模型不提供推理」→ 不渲染档位选择器（正确的降级），路由保持健康。
+  - 新增两条回归测试：一条复刻 DSH 的 `getSupportedThinkingLevels()`，对九种上游形状断言「map 为 undefined，或至少解析出一个真实档位」——即**任何模型都不会让整条路由作废**。
+  - 教训：`provider 整条路由」与「单模型能力」是两个层级。单模型的元数据写错，代价是整条 provider 消失，所以「降级」必须比「声明」更保守。
 - **思考档位改为只映射上游**真正声明的档位**（用户要求：「学习 workbuddy 一样，显示可以选择的档位，然后保存到 DSH 自己的模型设置里」）。
   - 对照 workbuddy 发现两处关键差异：
     1. **workbuddy 的档位是「只显示」的纯文本**（`model.reasoning.supportedEfforts.join(' / ')`），它不保存用户选择；用户要的是**可选 + 存到 DSH**，所以保留 qoder 已有的可保存选择，只对齐它「显示哪些档位」的判断。
