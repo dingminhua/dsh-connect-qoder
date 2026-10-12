@@ -90,6 +90,29 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
 **提交后报「验证失败」**
 令牌与区域不匹配（国内版的令牌不能用在国际版 tab），或复制时带上了空格/换行，或已过期。
 
+**「凭据被拒」但令牌明明是新生成的（实测记录）**
+2026-10 实测到一个值得记下来的现象：同一个 CN 令牌，
+
+| 请求 | 结果 |
+| --- | --- |
+| `api.qoder.com.cn/api/v1/cloud/agents` | **200** —— 令牌有效、账号正常 |
+| `openapi.qoder.com.cn/sash/api/v2/me/usage` | 401 `TOKEN_EXPIRE / token is not active` |
+| `openapi.qoder.sh/sash/api/v2/me/usage` | 401 `TOKEN_EXPIRE` |
+| `gateway.qoder.com.cn/algo/api/v2/model/list` | 403 `Signature invalid` |
+
+两个结论：
+
+1. **一张令牌有效与否，不能只看单一端点。** `sash` 系列接口回 `TOKEN_EXPIRE`
+   时，令牌本身可能完全正常——它只是不接受 PAT 直连（那条路径预期的是
+   浏览器会话 cookie：`qoder.com.cn/sash/...` 对缺 cookie 的请求回
+   `UNAUTHORIZED / missing cookie header`，与令牌无关）。
+2. **`gateway.*/algo/*` 必须走 COSY 签名**，裸 `Bearer` 一律 `Signature invalid`。
+   本插件正是走「PAT → jobToken → 签名会话」这条路，所以**聊天与模型列表不受
+   上面那条 401 影响**；受影响的只有用量/积分查询。
+
+因此：卡片上积分显示「—」而对话能正常用，属于「积分端点读不到」，不等于
+「令牌坏了」。判断令牌真实状态应看对话能否发送，或按上表用 Cloud Agents 端点核对。
+
 **模型列表是空的，但令牌看着没问题**
 未配置 PAT 的区域**不会列出任何模型**——一个请求都发不出去，列出来只会点到就失败。确认「从 Qoder 刷新」执行过。
 
