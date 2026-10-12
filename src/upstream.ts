@@ -465,13 +465,26 @@ export class QoderUpstreamClient {
 
   /**
    * 查询用量（只读）。`GET {openapi}/sash/api/v2/me/usage`。
-   * 用 cosy bearer 尝试；失败回退到 Bearer PAT 直连。
+   *
+   * **认证用的是 jobToken 里的 `securityOauthToken`（`jt-…`），不是 PAT，
+   * 也不是 COSY 签名 bearer。** 三者实测（2026-10，CN）：
+   *
+   * | 凭据 | 结果 |
+   * | --- | --- |
+   * | 裸 PAT `pt-…` | 401 `TOKEN_EXPIRE / token is not active` |
+   * | COSY 签名 bearer（chat/models 用的那套） | 401 `TOKEN_INVALID / invalid token` |
+   * | `jt-…`（jobToken 交换产出） | **200，返回完整 qoderUsage** |
+   *
+   * 前两种之所以失败，是因为 `sash` 是**浏览器会话面**的接口：它既不收 PAT，
+   * 也不认 cosy 协议头（缺 Authorization 时它回
+   * `UNAUTHORIZED / missing cookie header`，可见它本来是给 cookie 会话用的）。
+   * 这解释了「令牌明明是好的、聊天也正常，积分却永远拿不到」——以前用错凭据。
    */
   async fetchUsage(credential: string, signal?: AbortSignal): Promise<QoderUsage | undefined> {
     const url = `${this.region.openapi}/sash/api/v2/me/usage`
     try {
       const holder = await this.ensureSession(credential)
-      const data = await this.bearerGet(holder, url, signal)
+      const data = await this.jobTokenGet(holder, url, signal)
       return parseUsage(data)
     } catch (error) {
       // 凭据被上游拒（401/403，实测 Qoder 回 `TOKEN_EXPIRE / token is not
@@ -483,12 +496,47 @@ export class QoderUpstreamClient {
       // 其他错误（超时、5xx、网关抖动）仍旧返回 undefined：那是「这次没读到」，
       // 不是「凭据坏了」，报成凭据被拒会把用户引去换一个没问题的 PAT。
       if (error instanceof QoderUpstreamError && (error.status === 401 || error.status === 403)) {
-        // OpenAPI 端点可能不接受 cosy bearer：用 Bearer PAT 直连再试一次。
+        // 兜底：万一某个区域只认 PAT 直连，再试一次。两条都失败才报凭据被拒。
         const direct = await this.fetchUsageDirect(url, credential, signal)
         if (direct !== undefined) return direct
         throw error
       }
       return undefined
+    }
+  }
+
+  /**
+   * `sash` 系列接口的取数：带 `Authorization: Bearer <jobToken.securityOauthToken>`。
+   *
+   * 与 {@link bearerGet} 的区别只有一个——**认证凭据不同**：`sash` 要的是
+   * jobToken 交换产出的 `jt-…`，不是 COSY 签名 bearer（实测后者回
+   * `TOKEN_INVALID / invalid token`），也不是裸 PAT（回 `TOKEN_EXPIRE`）。
+   * 也正因为如此，这里**不**带那套 cosy-* 头：它们属于 cosy 协议面。
+   */
+  private async jobTokenGet(
+    holder: QoderSessionHolder,
+    url: string,
+    signal?: AbortSignal,
+  ): Promise<Record<string, unknown>> {
+    const oauthToken = holder.jobToken.securityOauthToken
+    if (oauthToken === '') {
+      throw new QoderUpstreamError('auth', 'jobToken 未返回 securityOauthToken，无法查询用量', 401)
+    }
+    const resp = await this.fetchImpl(url, {
+      headers: {
+        accept: 'application/json',
+        authorization: `Bearer ${oauthToken}`,
+      },
+      ...(signal === undefined ? {} : { signal }),
+    })
+    const text = await resp.text()
+    if (resp.status !== 200) {
+      throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
+    }
+    try {
+      return JSON.parse(text) as Record<string, unknown>
+    } catch {
+      throw new QoderUpstreamError('unknown', `响应不是 JSON: ${truncate(text, 200)}`, resp.status)
     }
   }
 

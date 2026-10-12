@@ -8,7 +8,16 @@
 
 ### Fixed
 
-- **首字节之前的上游失败改为非 200 JSON 错误**（原为 200 + SSE 错误帧）。pi-ai 的 openai-completions chunk 循环只取 `choices[0]`，**完全不读流内 `error` 字段**：`finish_reason:"error"` 会塌缩成一句无信息的 `Provider finish_reason: error`（宿主分类为 `PI_AI_ERROR`），真实的上游消息与分类 code 全部丢失。改为非 200 JSON 后，状态码、`code` 与上游原文都能进入宿主分类器（`classifyPiAiError`）。
+- **积分（用量）查询一直 401 —— 用错了凭据**（用户实拍「没有积分」，并指出令牌明明是新的）。`fetchUsage` 打 `{openapi}/sash/api/v2/me/usage` 时带的是 **COSY 签名 bearer**（和聊天/模型列表同一套），而该端点不认它。实测三种凭据（2026-10，CN，同一张有效令牌）：
+
+  | 凭据 | 结果 |
+  | --- | --- |
+  | 裸 PAT `pt-…` | 401 `TOKEN_EXPIRE / token is not active` |
+  | COSY 签名 bearer | 401 `TOKEN_INVALID / invalid token` |
+  | jobToken 的 `securityOauthToken`（`jt-…`） | **200 + 完整 `qoderUsage`** |
+
+  `sash` 是**浏览器会话面**的接口：缺 Authorization 时它回 `UNAUTHORIZED / missing cookie header`，可见它本为 cookie 会话设计，既不收 PAT 也不认 cosy 协议头。`TOKEN_EXPIRE / token is not active` 这条消息误导性极强——它让人以为令牌失效，实际只是「这种凭据不适用于这个端点」。新增 `jobTokenGet()`（只换 Authorization，不带 cosy-* 头）专供 `sash` 系列取数；`fetchUsage` 改用它，PAT 直连降为兜底。测试锁住「带的必须是 jt- 令牌」。
+  - 顺带修正 `docs/PAT.md`：原文据此把「积分读不到」写成了「令牌可能坏了」，已改为「令牌有效性不能只看单一端点」并附上面这张实测表。
 - **限流（429）对宿主的 code 改写为 `quota_exceeded`**（HTTP 状态仍 429，上游消息原文透传）。原 `rate_limit_exceeded` 会被宿主归入 `RATE_LIMIT` **原地重试集**（默认 5 次指数退避），把重试预算烧在小时级冷却上——正是 workbuddy 用 `KIND_HOST_CODE` 修掉的同一个缺陷形状。
 - **账号池接管通知改走首个内容帧**（原为 `choices: []` 的自定义 `notice` 帧）：pi-ai 的 chunk 循环对无 choice 的帧直接 `continue`，换号通知此前**用户完全不可见**。现在以引用块前缀写进 `choices[0].delta.content`。
 - **换号重试前增加 2 秒可中断间隔**（对齐 workbuddy 的 `FAILOVER_ACCOUNT_GAP_MS`）：上游限流按请求体积触发，零间隔连环重试会让每个候选账号撞上同一堵墙。

@@ -7,6 +7,7 @@ import {
   isContentPolicy,
   parseUsage,
   QoderUpstreamError,
+  QoderUpstreamClient,
   QODER_REGIONS,
 } from '../src/upstream.ts'
 import { cosyDecode } from '../src/cosy.ts'
@@ -183,5 +184,41 @@ describe('parseUsage', () => {
     const usage = parseUsage({})
     expect(usage).toBeDefined()
     expect(usage?.userQuota).toBeUndefined()
+  })
+})
+describe('sash usage credential (regression)', () => {
+  // 实测（2026-10，CN）：`sash/api/v2/me/usage` 只认 jobToken 交换产出的
+  // `securityOauthToken`（`jt-…`）。
+  //   - 裸 PAT        → 401 TOKEN_EXPIRE / token is not active
+  //   - COSY 签名 bearer → 401 TOKEN_INVALID / invalid token
+  //   - jt- 令牌       → 200 + 完整 qoderUsage
+  // 之前用 COSY bearer 打这个端点，于是「令牌明明是好的、聊天也正常，积分却
+  // 永远拿不到」。这里把选凭据的契约钉住。
+  it('sends the jobToken oauth token, not the PAT or a COSY bearer', async () => {
+    const seen: Array<{ url: string, auth: string | undefined }> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      const h = new Headers(init?.headers ?? {})
+      seen.push({ url: u, auth: h.get('authorization') ?? undefined })
+      // jobToken 交换返回一个 jt- 令牌；usage 端点据此答 200。
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-TESTTOKEN', refreshToken: 'jrt-x', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ qoderUsage: { addOnQuota: { total: 100, used: 8, remaining: 92 } } }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+
+    const client = new QoderUpstreamClient('cn', { fetch: fetchImpl })
+    const usage = await client.fetchUsage('pt-whatever')
+
+    const usageCall = seen.find(c => c.url.includes('/sash/api/v2/me/usage'))
+    expect(usageCall).toBeDefined()
+    // 关键断言：带的是 jt- 令牌（裸 PAT 与 COSY bearer 都会被拒）。
+    expect(usageCall!.auth).toBe('Bearer jt-TESTTOKEN')
+    expect(usage?.addOnQuota?.remaining).toBe(92)
   })
 })
