@@ -215,18 +215,24 @@ export function modelDisplayName(info: QoderModelInfo): string {
 }
 
 /**
- * 目录派生：目录 ∩ 勾选。上过线的模型保持勾选状态；新目录条目按
- * 「默认/免费/多模态」启发式初始勾选，其余不勾（用户可手动改）。
+ * 目录派生：目录 ∩ 勾选（workbuddy 的 `deriveCatalog` 同规）。
+ *
+ * **注册给 DSH 的模型 = 用户勾选的那些**。此前实现是「一律全部保留」，于是
+ * 无论用户在卡片里勾了几个，DSH 的模型选择器里都躺着整份上游目录（用户实拍：
+ * 「保存的模型，还是那么多」）——勾选形同虚设。
+ *
+ * `enabled` 为空是特例：**全不勾不等于全不选**，而是「还没选过」——此时把整份
+ * 目录交出去，否则新用户的选择器会是空的。这与 workbuddy 的
+ * `enabled.size === 0 ? catalog : catalog.filter(...)` 逐字同义。
+ *
+ * 卡片自己的模型列表走的是另一条路（`catalog.current()`，始终是完整目录），
+ * 所以「未勾选的也要看得见、才勾得上」不受影响。
  */
 export function deriveCatalog(
   models: QoderModelInfo[],
   enabledKeys: ReadonlySet<string>,
 ): QoderModelInfo[] {
-  return models.map((model) => {
-    if (enabledKeys.has(model.key)) return model
-    // 未勾选的也保留在目录里（卡片可见、可勾），只是默认不启用。
-    return model
-  })
+  return enabledKeys.size === 0 ? models : models.filter(model => enabledKeys.has(model.key))
 }
 
 /** 初始勾选集合：目录中的默认模型 + 免费模型；其余不勾。 */

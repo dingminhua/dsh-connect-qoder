@@ -689,13 +689,14 @@ export function apply(ctx: Context, config: Config): void {
   async function refreshRegionCatalog(region: QoderRegion, pat: string): Promise<QoderModelInfo[]> {
     const upstream = await stacks[region].upstream.fetchModels(pat)
     const parsed = upstream.map(parseUpstreamModel)
-    const saved = new Set(enabledModelKeysOf(config, region))
     const withTiers = applyContextBudgets(parsed, contextBudgetsOf(config, region))
     const stamped = stampRuntimeCatalog(config, region, withTiers)
-    const next = deriveCatalog(stamped, saved.size > 0 ? saved : initialEnabledKeys(stamped))
-    stacks[region].catalog.set(next)
+    // 运行时目录保持**完整**（不在这里按勾选过滤）：卡片要列出整份目录，用户才
+    // 勾得上「没勾的」模型；在这里过滤会让未勾选的模型从卡片里消失，再也勾不选。
+    // 「只把勾选的交给 DSH 选择器」发生在注册边界（registerModelDiscovery）。
+    stacks[region].catalog.set(stamped)
     invalidateCatalog()
-    return next
+    return stamped
   }
 
   /**

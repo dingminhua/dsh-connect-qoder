@@ -110,11 +110,37 @@ describe('selection derivation', () => {
     expect(keys.has(models[2]!.key)).toBe(false)
   })
 
-  it('deriveCatalog preserves the whole roster and respects saved keys', () => {
-    const models = [fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), fallbackModelInfo(QODER_FALLBACK_MODELS[1]!)]
-    const derived = deriveCatalog(models, new Set([models[0]!.key]))
-    expect(derived.length).toBe(2)
-    expect(derived[0]!.key).toBe(models[0]!.key)
+  it('deriveCatalog narrows to the enabled keys (what DSH is offered)', () => {
+    // 用户实拍：「保存的模型，还是那么多」——此前这个函数一律返回整份目录，
+    // 于是无论卡片里勾了几个，DSH 的模型选择器都列出全部。现在与 workbuddy
+    // 同义：勾选决定注册给 DSH 的集合。
+    const models = [
+      fallbackModelInfo(QODER_FALLBACK_MODELS[0]!),
+      fallbackModelInfo(QODER_FALLBACK_MODELS[1]!),
+      fallbackModelInfo(QODER_FALLBACK_MODELS[2]!),
+    ]
+    const derived = deriveCatalog(models, new Set([models[1]!.key]))
+    expect(derived.map(m => m.key)).toEqual([models[1]!.key])
+  })
+
+  it('deriveCatalog treats "nothing enabled" as "not chosen yet", not "none"', () => {
+    // 全不勾不等于全不选：把整份目录交给 DSH，否则新用户的选择器是空的
+    // （workbuddy 的 enabled.size === 0 ? catalog : filter 同义）。
+    const models = [
+      fallbackModelInfo(QODER_FALLBACK_MODELS[0]!),
+      fallbackModelInfo(QODER_FALLBACK_MODELS[1]!),
+    ]
+    expect(deriveCatalog(models, new Set()).map(m => m.key))
+      .toEqual(models.map(m => m.key))
+  })
+
+  it('display names always carry the multiplier, so the DSH picker shows it', () => {
+    // 用户实拍的第二半：「没有倍数显示」。DSH 选择器显示的就是这个名字，所以
+    // 倍率必须拼在这里而不是只在卡片里（实测上游 price_factor 0.5 / 0.1 / 0）。
+    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 0.5 }))
+      .toContain('x0.50')
+    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 0 }))
+      .toContain('x0.00')
   })
 })
 
