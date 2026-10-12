@@ -236,6 +236,45 @@ describe('QoderCard render', () => {
     }
   })
 
+  it('上下文档位选择器的标签就是「上下文」，不重复成长句', async () => {
+    // 标签此前是「DSH 上下文预算」，还被同时用作 title——标签与悬停提示写
+    // 同一句话是纯噪音，而且这一行本身已经明说是在选窗口大小。
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        const doc = usageDoc(region) as Record<string, unknown>
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ...doc,
+            models: [modelOf({ contextTiers: [262_144, 524_288, 1_000_000] })],
+            enabledModelKeys: ['qwen3-coder'],
+          }),
+        } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const { container, unmount } = await mountCard()
+    try {
+      const picker = container.querySelector('.dsm-qoder-context-budget')
+      expect(picker).not.toBeNull()
+      expect(picker!.textContent).toContain('row.contextBudget')
+      // 悬停提示不再重复标签：没有 title 属性。
+      expect(picker!.getAttribute('title')).toBeNull()
+      // 原生窗口单独列第一项，后面是上游声明的档位（含与原生值相同的那个，
+      // 两处都会出现——第一项是「回落原生值」的显式表达）。档位文本由
+      // formatCapacity 产生：整百万缩写为 1M，其余按千分位。
+      const options = Array.from(picker!.querySelectorAll('option')).map(o => o.textContent)
+      expect(options[0]).toBe('262,144')
+      expect(options).toContain('524,288')
+      expect(options).toContain('1M')
+    } finally {
+      await unmount()
+    }
+  })
+
   it('保存行与页脚：cheer 链接进 actions 行、无空错误容器、无未排版的 foot', async () => {
     const { container, unmount } = await mountCard()
     try {

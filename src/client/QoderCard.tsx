@@ -873,7 +873,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     if (tiers.length === 0) return <span />
     const current = draft.contextBudgets[model.key] ?? model.contextWindow
     return (
-      <div className="dsm-qoder-context-budget" title={t('row.contextBudget')}>
+      // 标签只说「上下文」：这一行是给模型选上下文窗口，不带 title（标签与
+      // 悬停提示写同一句话是纯噪音）。
+      <div className="dsm-qoder-context-budget">
         <label>
           {t('row.contextBudget')}{' '}
           <select
