@@ -18,6 +18,35 @@
 
 ### Fixed
 
+- **peer 范围静默排除整条 `0.2.0-rc.*` 宿主线 —— 从 npm 装到当前 DSH 就会 `ERESOLVE`。**
+  - **现象**：13 条 `@deepseek-ai/dsh-*` peer 写的是 `>=0.1.7-rc.1 <0.3.0-0`。这条范围**看着很宽，却匹配不到任何 `0.2.0-rc.*`**：node-semver 只有当范围里*某个*比较符与该版本的 `major.minor.patch` 元组完全一致、且自身也带预发布标签时，才放行预发布版本；`0.1.7-rc.1` 与 `0.3.0-0` 都不落在 `0.2.0` 元组上，于是 `0.2.0-rc.1` / `0.2.0-rc.2` 被**静默**排除。而 `@deepseek-ai/dsh` 的 `latest` **正是 `0.2.0-rc.2`** —— 从 npm 安装本插件的用户会撞上 `ERESOLVE`，还得自己手工绕过。
+  - **为什么本地与 CI 全绿**：本机 profile 是 `link:` 安装，**完全不走 peer 解析**；而 `tests/dsh-line.spec.ts` 当时自带一个只认「两个比较符」的简易实现，它对预发布版本的判断与 node-semver **相反** —— 一条**假绿**测试，而且它断言的恰好是错误的那一侧（用例写着「0.2.x 线仍放行」，实际并不放行）。
+  - **修法**：范围改为**两条分支** `>=0.1.7-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0`（peer 与 dev 共 26 处一并改），`tests/dsh-line.spec.ts` 的比较器换成**真实的 node-semver**（`semver` 提为显式 devDependency —— 此前只作为传递依赖存在），删掉已无用的手写比较器；新增两条用例：已发布的 `0.2.0-rc.*` 必须被放行（回归）、有意排除的 `0.1.7-alpha.*` / `0.2.1-alpha.*` / `0.3.0-rc.1` 仍须被挡在外；并让 peer 与 dev 的口径一致。两条 README 的「受支持的宿主范围」表与 `RELEASING.md` 的发布核对清单同步更新。
+  - **依据**：`awesome-dsh-plugin/awesome-dsh-plugin` 的 `contributing.md`「A peer range without an explicit prerelease branch silently excludes every prerelease build of the harness」。
+- **思考强度「有时候有、有时候没有」—— 目录只在启动时拉一次，而保存的快照全是空档位**（用户实拍）。
+  - **实测本机状态**（只读检查，未发起任何领取）：保存的 `regions.cn.lastCatalog` 里 **14 个模型的 `thinkingEfforts` 全部是 `[]`**，`defaultThinkingEffort` 一个都没有；而同一时刻上游实时目录里 **9 个模型明确声明了档位**（`qmodel_38max` / `qfmodel` → `low, medium, xhigh` 默认 medium；`dmodel` → `high, max` 默认 max；`dfmodel` / `gmodel` / `kmodel` / `gfmodel` / `gm51model` / `kmodel_latest` 各自不同）。`[]` 是**旧 schema 把档位字段剥掉时**留下的产物 —— 也就是说这份快照根本不是「上游没声明」，而是「它来自一个没拉到档位的时刻」。
+  - **为什么是间歇性的**：`fullCatalog`（唯一带档位的目录）是**纯内存**的，而目录只在**启动时**拉一次。于是：点一次「从 Qoder 刷新」→ 实时目录装上 → 档位出现；重启 / 重新读取 → 实时目录空 → 退回那份全空快照 → 档位消失。「有没有点过刷新、进程活了多久」就是「有时候有、有时候没有」的全部来源。
+  - **修法**：读到一份**一个模型都没声明档位**的快照时，不再把它当成「上游没声明」，而是触发一次拉取（fire-and-forget + 在飞标记去重，**不阻塞**这次读 —— `displayModels` 是被 `/usage` 路由同步调用的读路径，在里面 await 网络会让每次读卡片都等一次上游），退回诚实的兜底目录。拉回来之后下一次读就有档位了。
+  - **判据用 `length > 0` 而不是「字段在不在」**：旧 schema 留下的是**空数组**而不是缺席，所以「字段在」恰恰不能作为「声明过」的证据。
+  - **顺带修掉一个测试自我欺骗**：第一版只测了纯判据函数，把**调用处**（`if (!…) { ensureCatalogRefresh(region) }`）变异掉仍然全绿 —— 断言是空的。改成 `serveSavedCatalog(models, onStale)` **判据与动作打包**：它自己返回结论**并且**执行动作，于是「动作有没有真的发生」也能被断言。变异掉 `onStale` 立刻失败。
+- **每日签到：领取之后不说「还有多久刷新」—— 而「已领取」这句话离开它是残缺的**（用户实拍官网页面上的 `09:22:23` 倒计时，并指出领取成功要判断是否有倒计时）。
+  - **先去看接口，而不是猜**：用本地那个能用的 PAT 只读拉了一次 `GET /sash/api/v1/me/campaigns`（**没有领取任何东西**）。实测活动行是：
+    ```json
+    { "campaignId": "01a12102-…", "campaignKey": "act-20261009-057",
+      "actionType": "CLAIM_BENEFIT", "claimStatus": "CLAIMED",
+      "startAt": 1791770400, "endAt": 1791856740,
+      "benefit": { "kind": "CREDITS", "amount": 100,
+                  "validity": { "mode": "RELATIVE_DAYS", "days": 30 } } }
+    ```
+    换算（UTC+8）：`startAt` = 当天 **10:00:00**，`endAt` = 次日 **09:59:00** —— 与活动文案「每日 10:00（UTC+8）刷新」一致。所以页面上那个 `09:22:23` 就是 **`endAt − 当前时间`**。
+  - **领取不是「今天到此为止」**：领取只是把这一窗从 `CLAIMABLE` 变成 `CLAIMED`，而下一窗什么时候开，上游早就写在 `endAt` 里了。此前插件只回一个 `already-claimed` / `claimed`，UI 只能说「已签到」—— 用户会以为要等到第二天零点。
+  - **修法**（`endAt` 是 epoch **秒**，转毫秒只发生在它变成时间戳的那一刻；解析层保持秒，否则 `startAt`/`endAt` 单位会不一致）：
+    - `QoderCampaign` 解析 `startAt` / `endAt`；`QoderCheckinOutcome` 在 `claimed` **与 `already-claimed` 两条路**（含 409 幂等）都带上 `nextRefreshAtMs`；
+    - 宿主快照从 `Record<id, boolean>` 升级为 `{ claimed, refreshAtMs? }`，写进成员行的 `checkinRefreshAtMs`；
+    - 客户端新增 `countdownText()`（`HH:MM:SS`，秒级向上取整，小时不封顶），由既有的 20 秒 `nowMs` 心跳重绘；样式用等宽数字（tabular-nums），否则位数一变整格宽度就抖、表格列跟着晃。
+    - **上游没给 `endAt` 就不显示倒计时**，绝不用本地零点或「上次 +24h」编一个。
+  - **顺带修掉一个真缺陷**：客户端最初把「已领取但上游没给时间」与「倒计时走完了」都表达成 `countdownText(...) === ''`，于是前者被渲染成「现在可以领取」—— 把「不知道下一窗什么时候开」说成了「已经可以领了」。改成四态（`off` / `unknown` / `ticking` / `due`）。测试接住了它：先写成两态时那条断言立刻失败。
+  - 测试 +17（`tests/checkin-countdown.spec.ts` 新建 7 条、`tests/upstream.spec.ts` +5、`tests/pool-render.spec.tsx` +5），**用实测值锚定**（`endAt = 1791856740`，倒计时断言精确到 `09:22:23`）。四组变异测试：`already-claimed` 丢掉刷新时刻 / `unknown` 塌成 `due` / 宿主快照丢掉 `refreshAtMs` / 上游缺字段时仍然编一个 —— 各自被对应测试接住。
 - **国际版 tab「还是缺少账号池这些功能」—— 同一处区域分发上的两个独立缺陷**（用户实拍，接在「国际版看起来就是空的」那轮之后）。
   - **为什么「cn 一切正常」查不出来**：两个缺陷都只伤**非 cn** 的那个 tab，cn 自己完全不受影响。上一轮修的是「signed-out 时账号池不渲染」（`renderPool` 读 `signIn`），那个确实修好了；但只要 usage 文档**根本没落地**，卡片仍然什么都不渲染 —— 症状看起来一样，根因完全不同。
   - **缺陷 1：挂载时只读 `cn`。** `useEffect` 里只有 `void refresh('cn')`，另一个区域要等 **60 秒**轮询才第一次有数据。切到国际版就是一片空白（连账号池与「添加 PAT」一起），要自己等一分钟才长出来。现在挂载即读**两个**区域，并在切 tab 时若该区域还没读过就立刻补读一次（不依赖轮询时机）。

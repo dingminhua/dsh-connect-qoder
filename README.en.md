@@ -207,7 +207,7 @@ pnpm exec dsh-connect-qoder doctor --json        # machine-readable output
 
 | Host | Peer range |
 | --- | --- |
-| DSH (`@deepseek-ai/*`) | `>=0.1.7-rc.1 <0.3.0-0` |
+| DSH (`@deepseek-ai/*`) | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0` |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 
 > Enforced by `tests/dsh-line.spec.ts`: the upper bound must carry `-0` (DSH only ships prereleases; `<0.3.0` would block nothing).

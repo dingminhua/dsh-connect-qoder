@@ -50,7 +50,7 @@ grep -F "dsh-codex-connect" README.md README.en.md   # 唯一的 Apache-2.0 参�
 
 ```bash
 # 所有 dsh-* peer 必须是同一条范围，且上界带 -0（DSH 至今只发预发布）
-grep -c '">=0.1.7-rc.1 <0.3.0-0"' package.json
+grep -c '">=0.1.7-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0"' package.json
 
 # 宿主线是否已经前进？有 0.3.x 的 tag 就说明该复核上界了
 git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
@@ -59,6 +59,7 @@ git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
 核对清单：
 
 - [ ] `package.json` 里全部 `dsh-*` peer 范围完全一致（`tests/dsh-line.spec.ts` 会强制这一点）
+- [ ] **下界之后的每一条宿主线都要有自己的预发布分支**：node-semver 只有当范围里*某个*比较符与该版本的 `major.minor.patch` 元组完全一致、且自身带预发布标签时，才放行预发布版本。只写 `>=0.1.7-rc.1 <0.3.0-0` 会静默排除整条 `0.2.0-rc.*`——而那正是 `@deepseek-ai/dsh` 当前的 `latest`，用户侧报 `ERESOLVE`。宿主开新线时**同时补一条分支**（`tests/dsh-line.spec.ts` 会挡）
 - [ ] 上界仍是 `<0.3.0-0`；若 DSH 已进入 0.3.x 线，先在真机或 tag 上复核再决定是否放宽，**不要只改数字**
 - [ ] 上界带 `-0` 后缀（写成 `<0.3.0` 等于不挡：DSH 至今全部 tag 都是预发布，围栏会静默失效）
 - [ ] 两条 README 的「受支持的宿主范围」表与 `package.json` 三者一致

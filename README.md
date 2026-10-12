@@ -207,10 +207,10 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 
 | 宿主 | peer 范围 |
 | --- | --- |
-| DSH（`@deepseek-ai/*`） | `>=0.1.7-rc.1 <0.3.0-0` |
+| DSH（`@deepseek-ai/*`） | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0` |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 
-> 范围由 `tests/dsh-line.spec.ts` 强制：上界必须带 `-0`（DSH 至今只发预发布，`<0.3.0` 不挡任何东西）。
+> 范围由 `tests/dsh-line.spec.ts` 强制，且**必须写成两条分支**：DSH 至今只发预发布，而 node-semver 只有当范围里*某个*比较符与该版本的 `major.minor.patch` 元组完全一致、且自身也带预发布标签时，才会放行预发布版本。只写 `>=0.1.7-rc.1 <0.3.0-0` 会**静默排除整条 `0.2.0-rc.*` 线**——而 `0.2.0-rc.2` 正是 `@deepseek-ai/dsh` 当前的 `latest`，用户装到就会 `ERESOLVE`。上界仍须带 `-0`（`<0.3.0` 不挡任何东西）。
 
 ## 安全说明
 
