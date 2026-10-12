@@ -231,6 +231,46 @@ describe('registerQoderWebRoutes registration', () => {
     ])
   })
 
+  it('__save 按槽位合并：保存一个区域不会抹掉另一个区域', async () => {
+    // 用户实拍「保存模型保存不了」的真凶。客户端只发它要写的那**一个**区域
+    // （它读不到另一侧的当前状态），路由此前直接把这份 body 整个写进 settings
+    // ——于是保存 cn 模型的这一次操作会静默删掉**整个 global 槽位**。
+    // 后果已经发生：磁盘上只剩 cn，global 的全部配置被抹平。
+    let written: unknown
+    const described = [{
+      ns: 'dsh-connect-qoder',
+      value: {
+        regions: {
+          cn: { enabled: true, enabledModelKeys: ['qfmodel'], pat: 'pt-cn' },
+          global: { enabled: true, enabledModelKeys: ['gmodel'], pat: 'pt-global' },
+        },
+      },
+    }]
+    const captured = await mountRoutes(deps({
+      settings: {
+        describe: () => described,
+        set: async (_field: string, value: unknown) => { written = value },
+      } as never,
+    }))
+    const handler = findHandler(captured, QODER_SAVE_PATH)
+    const { res, status } = response()
+    await handler(reqWithBody('POST', QODER_SAVE_PATH, {
+      field: 'regions',
+      // 客户端实际发送的形状：只有 cn 这一个区域
+      value: { cn: { enabledModelKeys: ['auto'] } },
+    }), res)
+    expect(status()).toBe(200)
+
+    const regions = (written as { regions: Record<string, Record<string, unknown>> }).regions
+    const cn = regions.cn!
+    // 写入的区域取新值
+    expect(cn.enabledModelKeys).toEqual(['auto'])
+    // 同槽位里请求没提到的字段保留（客户端已做过槽位内合并）
+    expect(cn.pat).toBe('pt-cn')
+    // 兄弟区域必须原样保留 —— 这是这条测试的核心
+    expect(regions.global).toEqual({ enabled: true, enabledModelKeys: ['gmodel'], pat: 'pt-global' })
+  })
+
   it('模型刷新路由优先调用会落状态的 refreshModels，而非只读的 discoverModels', async () => {
     // 回归：路由此前只调 discoverModels——把新模型答给卡片，却从不写入运行时
     // 目录；卡片随后重取 usage 文档看到的仍是旧目录，「刷新」按钮刷了个寂寞，

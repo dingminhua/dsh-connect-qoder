@@ -537,7 +537,16 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     const field = body.field
     if (typeof field !== 'string' || field === '') return json(res, 400, { error: 'field is required' })
     try {
-      await deps.settings.set(field, body.value)
+      // **必须在服务端按槽位合并。**
+      //
+      // 客户端只发它要写的那一个区域（`{ [region]: value }`），因为它无法读到
+      // 另一侧的当前状态。此前这里直接把 body.value 整个写进 settings，于是
+      // 保存 cn 模型的这一次操作会把**整个 global 槽位删掉**——用户看到的现象
+      // 是「保存模型保存不了」，而磁盘上被抹掉的是另一侧的全部配置（已发生）。
+      //
+      // 服务端有 `describe()`，能读到现值，所以这里做一次真正的按槽位合并：
+      // 请求里没提到的区域原样保留。
+      await deps.settings.set(field, mergeSlotWise(field, deps.settings.describe(), body.value))
       return json(res, 200, { ok: true })
     } catch (error: unknown) {
       return json(res, 500, { error: safeMessage(error) })
@@ -567,6 +576,48 @@ function webAccountOf(deps: QoderWebRouteDeps, region: QoderRegion) {
     source: account.source,
     selected: account.id === deps.selectedAccountId(region) || (account.source !== 'vault' && deps.selectedAccountId(region) === undefined),
   })
+}
+
+/**
+ * 按区域槽位合并一次 settings 写入。
+ *
+ * 客户端只带它要写的那一个区域（`{ [region]: value }`）——它没有另一侧的当前
+ * 状态，无法自己做合并；而宿主有 `describe()`，所以合并必须发生在这里。
+ *
+ * 规则：
+ *   - `regions.<region>` 是**槽位级**的：请求里出现的槽位整份替换（槽位内部的
+ *     字段级合并已经在客户端完成——`nextRegionModels` 从现槽位起 merge），未出现
+ *     的槽位**原样保留**；
+ *   - 若宿主当前没有这个槽位，则整份采用请求值。
+ *
+ * 这条规则是必须的，不是优化：缺了它，保存任一区域都会静默删除另一区域的全部
+ * 配置（用户实拍「保存模型保存不了」）。
+ */
+function mergeSlotWise(
+  field: string,
+  described: Array<{ ns: string, value: unknown }>,
+  incoming: unknown,
+): unknown {
+  // 非 `regions` 字段（未来扩展）：没有槽位语义，整份采用请求值。
+  if (field !== 'regions') return incoming
+  if (!isRecord(incoming)) return incoming
+
+  const current = described.find(entry => entry.value !== undefined)?.value
+  const currentRegions = isRecord(current) && isRecord(current['regions']) ? current['regions'] : undefined
+  if (currentRegions === undefined) return incoming
+
+  const merged: Record<string, unknown> = { ...currentRegions }
+  for (const [region, value] of Object.entries(incoming)) {
+    merged[region] = isRecord(value) && isRecord(currentRegions[region])
+      ? { ...(currentRegions[region] as Record<string, unknown>), ...value }
+      : value
+  }
+  return { ...(isRecord(current) ? current : {}), regions: merged }
+}
+
+/** Whether a value is a plain (non-array, non-null) object. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
 /** Build one region's main usage document. */
