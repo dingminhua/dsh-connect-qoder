@@ -2,6 +2,35 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.4.3 (2026-10-13)
+
+两条用户实拍：**国际版对话报「API 密钥无效」而卡片只说「用量已达上限」**，以及**两个区域每次保存都会让思考强度消失**。两条都不是上游的错，是我们自己把答案读丢了。
+
+### Fixed
+
+- **「API 密钥无效」是假警报：宿主的分类器读的是文案正则，而我们把上游的 `HTTP 403` 原样送了进去。**
+  - **根因（执行验证，不是推断）**：宿主对 pi-ai 失败**不按 HTTP 状态分类，而是对文案跑正则**（`app.asar` 内 `classifyPiAiError`），且 **`401|403` 那道判据排在配额那道之前**：
+
+    ```js
+    if (/\b(?:401|403)\b/.test(message)) return "AUTH";   // ← 第一道，命中即返回
+    if (isQuotaExceededError(message))   return QUOTA_EXCEEDED_CODE;
+    ```
+
+    本插件为溯源一直把上游原文（`上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}`）拼进这条文案。`110` 是**配额族**（当日用量用尽，明天自愈），403 只是上游承载该业务码的习惯 —— 于是第一道正则把配额截走判成 `AUTH`，宿主再用中立文案 `message.failure.AUTH`（**「API 密钥无效」**）覆盖掉提供方自己的解释。实测 `isQuotaExceededError` 对**同一串文本**返回 `true`：分类错是**顺序**造成的，不是判据不认。
+  - **为什么两个界面说法不一致**：卡片读的是上游本身（`refreshUsage` → `upstream.fetchUsage`），**从不经过 shim**，所以它显示的是真实配额状态；对话走 shim，在分类那一层被读成了凭据问题。两个数字都对，只是对话那侧的名字错了。
+  - **修法**：新增 `hostMessageText(kind, message)` / `hostFailureMessage(kind, status, message, suffix)`，把裸的 `401/403` 改写成 `4xx`，**只对非 `auth` 档这么做**。`auth` 必须原文送达 —— 上游真吐 `401 TOKEN_EXPIRE` 时 AUTH 正是正确答案，而「未配置 PAT」那条中文没有状态码，宿主会原样显示（比换成「API 密钥无效」更有用）。状态码**由 formatter 自己加、也由它自己净化**：调用方自己拼 `(http ${status})` 会绕过净化，第一版正是这么漏的。
+  - **覆盖四条真路径，一条都不能少**（第一版只补了其中一条）：外层 `handleRequest` catch、`resolveServing` 凭据解析 catch、`handleChat` 首字节前失败、以及**流内错误帧** `writeErrorChunk`。最后一条最容易漏：宿主对 `case "error"` 分支拿 `message.errorMessage` 跑**同一个**分类器，而此时 200 已提交、用户已经在看一个半截回复 —— 分类错在这里最难排查。
+  - **顺带修掉同一类缺陷的动态版本**：`模型 ${model} 不支持图像输入` 里的 model 来自**请求体**。目录里若存在 `gpt-401` 这类名字，原文送达会把「不支持图片」读成「API 密钥无效」。这条 400 同样过净化。
+  - **边界**：状态码必须**整词**替换（`1401`、`4030`、`v403`、`code_403` 都是溯源信息，不能动），且右边要是数字或「小数点+数字」都不算独立状态码 —— 对抗审核抓到 `401.5` 会被旧判据 `\b` 改写成非法的 `4xx.5`，已用成对环视修掉（`(?<![\w.])(?:401|403)(?!\d)(?!\.\d)`）。
+  - **测试不再手抄宿主正则**：`tests/host-piai.ts` 直接**执行**从 `app.asar` 逐字提取的源码（`tests/fixtures/host-piai-classifier.json`，带 asar 的 sha256 与 DSH 版本）。手抄的副本会跟宿主一起漂移，「测试通过」就只证明副本自洽 —— 这正是这处缺陷潜行一个版本的原因。另有一条自检把 golden 与**装机宿主**逐字比对（宿主没装则跳过），宿主升级会直接变红并提示重新提取。
+- **每次保存都把「思考强度」丢掉：客户端手写映射漏了两个字段，而读取端的判据是 `length > 0`。**
+  - **机制**（有一处必须说准）：schemastery **不剥未声明的键**，真正发生的是**缺席的 `z.array().required(false)` 被补成 `[]`**。所以链条是：卡片手写 `lastCatalog` 条目时**从没写过** `thinkingEfforts` / `defaultThinkingEffort` → 落盘缺席 → 解析补 `[]` → 读取端 `modelFromStored` 判 `length > 0` 不成立 → 档位选择器消失（用户实拍「每次保存都会思考强度不见了」）。schema 里那三个字段的声明仍然必需，但必需的理由是**判据与「缺席补 []」之间的落差**，不是剥键 —— `src/index.ts` 里原先写「zod 静默剥掉」的注释是错的，已更正。
+  - **还有一处看不见的漂移同轮修掉**：客户端写 `maxTokens`，而读取端读的是 `maxOutputTokens` —— 名字对不上，永远读不回、静默回落 32768 默认值；`nativeContextWindow` 则无人消费，纯落盘垃圾。
+  - **修法照同族 `dsh-connect-workbuddy` 的 `toPersistedWorkBuddyModel`**：**spread 整行再按名剔除卡片独有字段，不逐个字段手写白名单**。workbuddy 的注释写着「omitting it made one Save silently strip the declaration from every model」—— 同一处缺陷它已经出过一次诊。白名单只要漏一个字段，那次保存就把该字段从每个模型上抹掉，而且**没有任何东西会报错**（保存的落地校验只比对 `key` 列表）。三对重命名（`name`/`displayName`、`maxTokens`/`maxOutputTokens`、`creditMultiplier`/`priceFactor`）现在只在投影函数里出现一次，并与读取端逐字对齐。同时删掉与本函数重复、且写着读取端读不出来的字段名的死代码 `toPersistedQoderModel`。
+  - **落盘存原生窗口**（`contextWindow: model.nativeContextWindow`）是刻意的：生效窗口是用户预算的决定，读回时由 `applyContextBudgets` 重新施加；若落盘 clamp 后的值，用户撤掉预算后窗口会「焊死」回不到原生。
+  - **测试 +10（`tests/persisted-catalog.spec.tsx`）**：调用真正的 `buildModelsPayload`，把它**真实输出**喂给**插件自己导出的 `Config` schema**（不是手抄 schema），再按**读取端判据**断言读回了什么。同样照 workbuddy 补了一条「不产出值为 `undefined` 的属性」用例 —— 投影改成 spread 之后这条从「锦上添花」变成「必需」（显式 `undefined` 会被设置写入端那道严格 JSON codec 拒收，整次保存失败）。
+  - **诚实记录**：既有的 `tests/index.spec.ts` 往返用例**手写**了一份「理想的」payload 去喂 schema，它证明的是「schema 不吞字段」，而不是「客户端真的写了这些字段」—— 所以 546 个测试没有一个发现这个缺陷。真实保存路径从未被任何测试执行过，这是它长期潜伏的直接原因。变异验证：把投影退回旧手写映射 → `persisted-catalog.spec.tsx` 3 例变红，而 `index.spec.ts` 18 例**全绿**。
+
 ## 0.4.2 (2026-10-13)
 
 用户实拍：国际版账号「ddd」显示 **「✗ Qoder 拒绝了这个账号的 PAT——请添加新 PAT 或换一个账号」**，并附一句「我感觉大概率还是我们出了问题」。**这个判断是对的**：账号一切正常，PAT 没有任何问题，是我们把上游的一句「今天用满了」读成了「你的凭据坏了」。0.4.1 修的是文案自相矛盾，这一版修的是**判据本身**。
