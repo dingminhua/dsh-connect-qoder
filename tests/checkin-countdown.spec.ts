@@ -8,7 +8,10 @@
  *
  * 两条不能破的规则：
  * 1. 倒计时只来自上游的 `endAt`，**绝不**用本地零点或「上次 +24h」编一个；
- * 2. 「已领取」**不是**「今天到此为止」——所以这一格必须同时给出还剩多久。
+ * 2. 「已领取」**不是**「今天到此为止」——所以这一格必须给出还剩多久。
+ *    （0.4.1 补：给法是**一格只说一句话** —— 倒计时那格不再并排「已签到」，
+ *    因为「已签到」说的是上一窗、数字说的是下一窗什么时候开，两句并排自相
+ *    矛盾。文案本身改由 `tests/locales.spec.ts` 用真实 locale 表钉住。）
  */
 import { describe, expect, it } from 'vitest'
 import { countdownText, remainingText } from '../src/client/remaining.ts'
