@@ -21,6 +21,8 @@ grep -F "Copyright (c) 2026 LaoDing" LICENSE
 
 > 本项目以 MIT 许可证发布，版权归属必须保持为 **LaoDing**；发布前不得把 LICENSE 中的版权主体改成 npm 账号、GitHub 账号或其他名称。
 
+> ⚠️ **`pnpm run check` 只覆盖本机平台。** 第 5.5 步要求 CI 的 ubuntu **与 windows** 两个 job 都转绿才算过关 —— 0.4.0 就是本地全绿发出去的，而 windows job 那时已经连红 6 次。
+
 ### 2. 核对溯源与致谢（**不得跳过**）
 
 本项目建立在他人已公开的工作之上。每次发布前必须确认：
@@ -86,6 +88,24 @@ git push origin vX.Y.Z
 ```
 
 > ⚠️ **tag 必须指向包含本次代码的提交**。若目标 tag 已存在且指向旧提交，需先删除并强制移动，修正后用 `git rev-list -n1 vX.Y.Z` 确认指向当前 HEAD。
+
+### 5.5 CI 双平台必须转绿（**不得跳过**）
+
+第 1 步的 `pnpm run check` 只在**本机平台**跑过。CI 是 `ubuntu-latest` + `windows-latest` 两个 job，**本地绿不等于 Windows 绿**。
+
+```bash
+gh run list --limit 1 --json databaseId,headSha,conclusion -q '.[0] | "\(.databaseId) \(.headSha[0:7]) \(.conclusion)"'
+gh run watch <run-id> --exit-status --interval 15
+gh run view <run-id> --json conclusion,jobs -q '.conclusion as $c | "OVERALL: \($c)", (.jobs[] | .name + " => " + .conclusion)'
+```
+
+核对清单：
+
+- [ ] 最新一次 run 的 `headSha` **就是**第 5 步推上去的那个提交（不是更早的）
+- [ ] **两个 job 都 success**，不是只看 overall
+- [ ] 有 `skipped` 时，确认是**有意**跳过（live 测试要凭据、平台不支持的断言），而不是被静默漏掉
+
+> **为什么这一条要写进清单**：0.4.0 发布时 CI 已经连红 6 次 —— `tests/accounts.spec.ts` 断言保险库文件 `mode === 0o600`，而 node 在 Windows 上只把「只读」一位映射进 `st_mode`，普通文件一律报 `0o666`，**这条断言从被引入那天起就没在 Windows 上绿过**。它伤不到用户（写入路径确实请求了 0600），但红着的 CI 让「这次发布有没有弄坏什么」这个问题失去答案：真回归会混在既有红灯里看不见。修法见 CHANGELOG 的 0.4.1。
 
 ### 6. 发布到 npm
 
