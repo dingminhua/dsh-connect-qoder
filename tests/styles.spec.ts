@@ -6,8 +6,13 @@
  * 就表现为「这两个地方样式不统一」（用户实拍）。把它们钉在同一份断言里，
  * 以后再改就只有一处可改。
  */
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import ts from 'typescript'
 import { QODER_CARD_CSS } from '../src/client/styles.ts'
+
+const repoRoot = new URL('../', import.meta.url)
 
 /** 取出一条类规则的声明体（第一条匹配；找不到返回 undefined）。 */
 function ruleOf(css: string, className: string): string | undefined {
@@ -97,5 +102,61 @@ describe('QODER_CARD_CSS', () => {
     // 它是家族共用的规则（workbuddy 也有同名规则），不要因为「卡片里没人用」
     // 就删掉——那会制造一处与同族插件不一致的差异。
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-num')).toBeDefined()
+  })
+})
+
+describe('QODER_CARD_CSS template literal', () => {
+  /**
+   * The stylesheet is a template literal, so a stray backtick inside it
+   * TERMINATES the string early — and TypeScript does not complain, because
+   * what follows still parses as valid syntax. The result is a silently
+   * truncated CSS bundle: every rule after the backtick is gone, so those
+   * elements fall back to browser defaults with no error anywhere.
+   *
+   * That is not hypothetical. It happened in the sibling plugin
+   * (dsh-connect-workbuddy) while reworking the busy veil's colours: the new
+   * comments quoted CSS tokens in backticks, the literal split at the first
+   * one, and the veil block vanished. typecheck and the build both passed;
+   * only the "every class is styled" guard noticed.
+   *
+   * So the check is on the SOURCE, not the extracted string: parse the file and
+   * count its top-level statements. A regex or `toContain` against the
+   * extracted string cannot catch this — truncation makes the extracted string
+   * simply SHORTER, and every selector the guard knows about is still in the
+   * part that survives.
+   */
+  it('leaves no stray statements behind, which is what truncation produces', () => {
+    // A stray backtick inside the literal ends the string early, and the rest
+    // of the stylesheet is then parsed as UNRELATED SYNTAX rather than as CSS.
+    // Neither typecheck nor the build complains: the file is still valid TS,
+    // it just exports a stub stylesheet and a pile of junk expression
+    // statements.
+    //
+    // So count the file's top-level statements. A healthy styles.ts declares
+    // its CSS exports and nothing else; truncation turns the remainder into
+    // dozens of expression statements, one per token.
+    const source = readFileSync(fileURLToPath(new URL('src/client/styles.ts', repoRoot)), 'utf8')
+    const sf = ts.createSourceFile('styles.ts', source, ts.ScriptTarget.ESNext, true)
+    const strays = sf.statements.filter(st => !ts.isVariableStatement(st))
+    expect(strays.map(st => ts.SyntaxKind[st.kind])).toEqual([])
+    expect(sf.statements.length).toBe(2)
+  })
+
+  it('still carries the veil rules the shared busy overlay depends on', () => {
+    // Belt and braces for the same defect: if the literal is ever truncated
+    // again, these selectors disappear from the extracted CSS.
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-veil{')
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-veil-card{')
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-veil-spinner{')
+    // 对齐 workbuddy 4.4.2：宿主令牌 / 弧线节奏 / 静态弧线降级 —— 逐条钉住，
+    // 免得下次改动时又退回自造值。
+    expect(QODER_CARD_CSS).toContain('--dsw-alias-bg-layer-2')
+    expect(QODER_CARD_CSS).toContain('--dsw-alias-bg-mask-1')
+    expect(QODER_CARD_CSS).toContain('--dsw-elevation-prominent')
+    expect(QODER_CARD_CSS).toContain('--dsw-alias-label-secondary')
+    expect(QODER_CARD_CSS).toContain('animation:dsm-qoder-veil-spin 1.5s linear infinite')
+    expect(QODER_CARD_CSS).toContain('dsm-qoder-veil-spinner-arc')
+    // 静态弧线降级（reduced-motion），不能退成「animation:none 但留个环」。
+    expect(QODER_CARD_CSS).toContain('stroke-dasharray:18 150;stroke-dashoffset:-3')
   })
 })

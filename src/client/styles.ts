@@ -370,14 +370,53 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-addpat-doc a{color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;line-height:18px;text-decoration:none}
 .dsm-qoder-addpat-doc a:hover{text-decoration:underline}
 /* The shared busy veil: a fixed overlay for operations whose result only shows
-   up after the list re-read. It is NOT a modal. */
-.dsm-qoder-veil{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.38);cursor:progress}
-.dsm-qoder-veil-card{display:flex;flex-direction:column;align-items:center;gap:8px;max-width:min(340px,80vw);padding:16px 20px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;background:var(--dsw-alias-bg-primary,#1b1c20);box-shadow:0 8px 28px rgba(0,0,0,.35)}
-.dsm-qoder-veil-text{font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#e8e9ed);text-align:center}
-.dsm-qoder-veil-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999);text-align:center}
-.dsm-qoder-veil-spinner{width:18px;height:18px;border:2px solid var(--dsw-alias-border-l2,#3a3d45);border-top-color:var(--dsw-alias-brand-primary,#5686fe);border-radius:50%;animation:dsm-qoder-veil-spin .7s linear infinite}
+   up after the list re-read (remove / import / add). It is NOT a modal: no
+   control, no dismissal — only "this is running" and "here is why nothing
+   moved yet". Fixed positioning so it covers the card regardless of which
+   section started the operation, and a semi-transparent backdrop so the table
+   stays visible underneath — the user is watching a specific row change, and
+   hiding it would defeat the point.
+
+   The mask and the card surface are the HOST's own tokens, not this file's
+   invention. --dsw-alias-bg-mask-1 + --dsw-mask-blur is exactly what the
+   host's own overlays use (see dsh-client-ui-settings-general's Dws9Sa_mask),
+   so the veil now dims the way every other overlay in the shell does instead
+   of laying its own black wash on top. The previous hardcoded rgba(0,0,0,.38)
+   was tuned against neither theme: too weak next to the host's .24 mask in
+   light mode, and it ignored the host's blur entirely.
+
+   bg-layer-2 (not bg-primary, which does not exist in the host's token set
+   at all and therefore always fell through to this file's near-black #1b1c20)
+   is the same surface the host puts behind its panels — that near-black fallback
+   is what made the veil read as a black slab with unreadable text on it. */
+.dsm-qoder-veil{position:fixed;inset:0;z-index:60;display:flex;align-items:center;justify-content:center;background:var(--dsw-alias-bg-mask-1,rgba(0,0,0,.32));backdrop-filter:var(--dsw-mask-blur);cursor:progress}
+/* --dsw-elevation-prominent is the host's own panel shadow (a hairline stroke
+   plus two soft layers); the previous 0 8px 28px rgba(0,0,0,.35) was a
+   hand-rolled drop shadow that read as a heavy grey box. */
+.dsm-qoder-veil-card{display:flex;flex-direction:column;align-items:center;gap:8px;max-width:min(340px,80vw);padding:16px 20px;border:1px solid var(--dsw-alias-border-l2,#0000001a);border-radius:12px;background:var(--dsw-alias-bg-layer-2,#fff);box-shadow:var(--dsw-elevation-prominent,0 8px 28px rgba(0,0,0,.35))}
+.dsm-qoder-veil-text{font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary,#0f1115);text-align:center}
+/* label-secondary, not label-tertiary: this line carries the operation's
+   detail and must stay legible. tertiary is the host's dimmest tier
+   (neutral-bluish-600 on light, neutral-bluish-400 on dark) and is meant
+   for metadata, not for a sentence the user has to read while waiting. */
+.dsm-qoder-veil-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#61666b);text-align:center}
+/* The spinner proves the UI is alive when the row under it has not changed yet
+   — which is precisely the confusion the veil exists to remove. It follows the
+   host's own state spinner (dsh's _dsh-state-dot-spin): an SVG arc whose
+   dash breathes while it turns, currentColor so it inherits the tier it sits
+   in, and the same 1.5s beat. The previous 18px border-ring at .7s was roughly
+   twice the host's speed and visibly out of step with every other spinner in
+   the shell — that mismatch, more than the shape itself, is what made it look
+   cheap.
+
+   Reduced-motion users get the static arc rather than a frozen ring, matching
+   how the host degrades its own spinner. */
+.dsm-qoder-veil-spinner{width:20px;height:20px;color:var(--dsw-alias-label-secondary,#61666b);animation:dsm-qoder-veil-spin 1.5s linear infinite}
+.dsm-qoder-veil-spinner-track{opacity:.25}
+.dsm-qoder-veil-spinner-arc{stroke-dasharray:12 150;animation:dsm-qoder-veil-dash 1.5s ease-in-out infinite}
 @keyframes dsm-qoder-veil-spin{to{transform:rotate(360deg)}}
-@media (prefers-reduced-motion: reduce){.dsm-qoder-veil-spinner{animation:none}}
+@keyframes dsm-qoder-veil-dash{0%{stroke-dasharray:12 150;stroke-dashoffset:0}50%{stroke-dasharray:24 150;stroke-dashoffset:-6}to{stroke-dasharray:12 150;stroke-dashoffset:0}}
+@media (prefers-reduced-motion: reduce){.dsm-qoder-veil-spinner{animation:none}.dsm-qoder-veil-spinner-arc{animation:none;stroke-dasharray:18 150;stroke-dashoffset:-3}}
 `
 
 /**
