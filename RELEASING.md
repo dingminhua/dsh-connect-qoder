@@ -1,11 +1,18 @@
 # 发布流程（Release Flow）
 
 > 本文档是 `dsh-connect-qoder` 的**唯一权威发布流程**。发布前请通读一遍。
+>
+> 🤖 **由 AI 助手代跑发布时，请先读 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md)**：
+> 其中 §1 记着一条硬规矩 —— **`npm login` 与 `npm publish` 交给用户在自己的交互式终端执行，
+> AI 不要代跑**。0.4.3 发布当天 AI 试了 4 次全部失败（含用 `script` 伪造 pty），原因是 npm 的
+> 2FA 授权窗口**只有约 5 分钟**，人工往返转述链接赶不上；用户在自己终端跑的那一次 **49 秒**完成。
+> 该文档还记着发布状态的三态判别、`prepack` 会重新构建、以及核验产物的实操坑。
 
 ## 前置条件
 
 - npm 已登录：`npm whoami` 应显示 `dmh2002`（若报 `need auth`，先 `npm login`）。
-- 账号若开启 2FA（两步验证）：`npm publish` 时需**在浏览器确认一步**（见第 7 步）。
+- 账号若开启 2FA（两步验证）：`npm publish` 时需**在浏览器确认一步**（见第 7 步）。**这一步请在
+  自己的交互式终端里做**，理由见 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §1。
 - GitHub 仓库：`https://github.com/dingminhua/dsh-connect-qoder`（默认分支 `main`）。
 - `gh` 已登录且带 `repo` 权限：`gh auth status` 应显示 `Logged in to github.com account dingminhua`、scope 含 `repo`（第 9 步要用）。
 
@@ -142,7 +149,15 @@ npm pack --dry-run
 
 > ⚠️ **这一步必须在交互式终端里做。** npm 在 stdout 不是 TTY 时（管道 `| tail`、重定向、后台任务、CI、agent 的 shell）会**印出被遮蔽的授权链接**（`…/auth/cli/***`）并**立刻退出**，不会等待浏览器确认。需要 2FA 的发布会话请直接在自己的终端跑 `npm publish`。
 
+> ⚠️ **授权窗口只有约 5 分钟，别把链接转给别人等回复。** npm 拿到 `authId` 后每隔约 3 秒轮询
+> `GET /-/v1/done?authId=…`；**约 92 次（≈4.6 分钟）后放弃并把该 authId 作废**，之后即使确认也只会
+> 拿到 `E404`。所以「AI 跑命令 → 把链接转述给用户 → 用户切窗口确认 → 回复 AI」这条链路**必然赶不上**：
+> 0.4.3 发布当天这样试了 4 次（含用 `script` 伪造 pty 绕过 TTY 那层）**全部失败**，而用户在自己的终端
+> 里跑的那一次，**49 秒**就完成了（轮询 13 次即 `GET 200`）。实测数据见
+> [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §1。
+
 若浏览器打开的验证 URL 失效（404），重跑一次 `npm publish` 让 npm 生成新的授权链接，再在浏览器确认。
+（链接 404 = 那次 2FA 会话已过期，此时**包一个字节都没上传**，重试安全、**不需要改版本号**。）
 
 ### 8. 验证发布成功
 
@@ -216,3 +231,6 @@ gh release view vX.Y.Z --json name,tagName,isDraft,isPrerelease,assets
 - **`npm publish` 报 409，但两种报文的含义完全相反，别混为一谈**：
   - `Cannot publish over previously staged version "X.Y.Z"` —— 该版本在 registry 上处于**暂存（staged）未提交**状态。它**不是**「已发布」。常见来源是需要 2FA 而中途没走完的那次发布请求。**先别急着改版本号**——稍等重试，或在 npm 网站上批准/丢弃这次暂存。
   - `You cannot publish over the previously published versions: X.Y.Z` —— 这才是**已经发布成功**。此时第 8 步的直连核验会显示 `latest: X.Y.Z`。
+- **`npm error code E404 ... GET https://registry.npmjs.org/-/v1/done?authId=***`**：**2FA 会话过期**，不是包名错、也不是网络问题（npm 轮询约 92 次 ≈4.6 分钟后作废该 authId）。重跑 `npm publish` 生成新链接即可，**不需要改版本号**——此时包一个字节都没上传。
+- **想用 `authId` 判断「这条链接属于哪次运行」——做不到，别试**：npm **自己**就把 authId 遮蔽成 `***` 写进日志，所以它不可能在任何日志里出现。0.4.3 发布时我用「authId 在日志里搜不到」推出过『这条链接不是我的运行』——那是**无效推理**（必然搜不到）。要归属请换指纹：轮询次数（92 次 = 超时；十几次就 200 = 当场确认成功）、时间戳、`~/.zsh_history`。
+- **判定发布成败，先读日志再查 registry**：日志里**没有任何 `PUT` 行** = 请求未到达；`PUT 401` + 轮询 92 次 + `GET 404` = 2FA 超时（真失败）；`PUT 202` + "being processed" = 已受理、等约 2 分钟；`exit 0` 且输出里有 `+ @dmh2002/dsh-connect-qoder@X.Y.Z` = 真发布（暂存时**没有**这一行）。完整三态表见 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §2。
