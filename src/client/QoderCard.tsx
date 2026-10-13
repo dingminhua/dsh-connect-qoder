@@ -37,9 +37,11 @@ import {
   QODER_PROBE_PATH,
   QODER_REGIONS,
   QODER_USAGE_PATH,
+  toPersistedCatalogEntry,
   withQoderRegion,
 } from '../status-paths.ts'
 import type {
+  QoderPersistedModel,
   QoderWebModel,
   QoderWebProbeOutcome,
   QoderWebProbeResult,
@@ -101,7 +103,7 @@ if (typeof document !== 'undefined') {
 }
 
 /** One region's unsaved model edits; switching tabs never drops these. */
-interface QoderDraft {
+export interface QoderDraft {
   enabledModelKeys: Set<string>
   offModelKeys: Set<string>
   supportsImages: Set<string>
@@ -966,21 +968,28 @@ function cloneDraft(draft: QoderDraft): QoderDraft {
 }
 
 /** Build the `lastCatalog` array + enabled/off/image selections for the save. */
-function buildModelsPayload(draft: QoderDraft, models: readonly QoderWebModel[]): { lastCatalog: readonly { key: string }[] } & Record<string, unknown> {
-  const lastCatalog = models.map(model => ({
-    key: model.key,
-    displayName: model.name,
-    priceFactor: typeof model.creditMultiplier === 'number' ? model.creditMultiplier : 1,
-    contextWindow: model.contextWindow,
-    nativeContextWindow: model.nativeContextWindow,
-    maxTokens: model.maxTokens,
+export function buildModelsPayload(draft: QoderDraft, models: readonly QoderWebModel[]): { lastCatalog: readonly QoderPersistedModel[] } & Record<string, unknown> {
+  // 逐字段投影走 `toPersistedCatalogEntry`（**spread 写法**，照
+  // dsh-connect-workbuddy 的 `toPersistedWorkBuddyModel`），**不在这里手写映射**。
+  //
+  // 这里是同一处缺陷的第二次出诊：workbuddy 的注释写着「omitting it made one
+  // Save silently strip the declaration from every model」—— 手写映射只要漏一个
+  // 字段，那次保存就把该字段从每个模型上抹掉，而且**没有任何东西会报错**。
+  // 本仓库正是这样丢掉 `thinkingEfforts` / `defaultThinkingEffort` 的（用户实拍
+  // 「每次保存都会思考强度不见了」）：读取端 `modelFromStored` 的判据是
+  // `length > 0`，而缺席的声明会被 schema 补成 `[]`，档位选择器整个消失。
+  // 保存的落地校验只比对 `key` 列表（见 `writeRegionModels`），所以字段丢了
+  // 永远不会让保存失败 —— 这正是它长期潜伏的原因。
+  //
+  // 还有一处**看不见的**漂移同轮修掉：旧代码写 `maxTokens`，
+  // 而读取端读的是 `maxOutputTokens` —— 名字对不上，永远读不回、静默回落 32768。
+  // 三对重命名（name/displayName、maxTokens/maxOutputTokens、
+  // creditMultiplier/priceFactor）现在只在投影函数里出现一次，并与读取端逐字对齐。
+  // 投影与 schema 一起被测（tests/persisted-catalog.spec.tsx），漂移即变红。
+  const lastCatalog = models.map(model => toPersistedCatalogEntry(model, {
+    // 图片勾选以**草稿**为准：`supportsImages` 是待保存的用户编辑，而 model
+    // 上带的是上一次保存过的值——用后者会让刚勾的那一下在本次保存中被抹掉。
     supportsImages: draft.supportsImages.has(model.key),
-    supportsThinking: model.supportsThinking === true,
-    canDisableThinking: model.canDisableThinking === true,
-    isDefault: model.isDefault === true,
-    isFree: model.isFree === true,
-    isNew: model.isNew === true,
-    contextTiers: model.contextTiers,
   }))
   return {
     lastCatalog,

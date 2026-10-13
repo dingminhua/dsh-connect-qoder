@@ -160,6 +160,88 @@ function hostErrorCode(kind: UpstreamErrorKind): string {
   return KIND_HOST_CODE[kind] ?? ERROR_MAP[kind].code
 }
 
+/**
+ * 净化写给宿主的失败文案里**裸的 401/403 数字**。
+ *
+ * 这是国际版「API 密钥无效」假警报的根因（用户实拍：对话报密钥无效、同一条
+ * 账号在卡片里却只是「用量已达上限」）。
+ *
+ * 宿主对 pi-ai 失败**不是**按 HTTP 状态分类，而是**对文案跑正则**
+ * （app.asar 内 `classifyPiAiError`）：
+ *
+ * ```js
+ * if (/\b(?:401|403)\b/.test(message)) return "AUTH";   // ← 第一道，命中即返回
+ * if (isQuotaExceededError(message)) return QUOTA_EXCEEDED;
+ * ```
+ *
+ * 而本插件为了溯源，一直把上游原文（含 `HTTP 403 {"code":"110",…}`）拼进这条
+ * 文案。于是**配额耗尽被第一道正则截走判成 AUTH**，宿主用中立文案
+ * `message.failure.auth`（「API 密钥无效」）覆盖掉提供方消息 —— 一个明天就
+ * 自动恢复的账号被读成凭据坏了。实测 `isQuotaExceededError` 对同一串文本是
+ * `true`：分类结果是**顺序**造成的，不是判据不认。
+ *
+ * 只替换**裸数字**，且只在非 auth 类上做：
+ * - `auth` 必须原文照送。上游真的吐 `401 TOKEN_EXPIRE` 时，AUTH 正是正确答案；
+ *   而「未配置 PAT」那条中文没有状态码，宿主会显示原文（比换成「API 密钥无效」
+ *   更有用），所以这一档**不做**任何装饰。
+ * - `429`/`5xx`/`400` 不受影响：`429 → RATE_LIMIT`、`5xx → SERVER`（原地重试）、
+ *   `400 → INVALID_REQUEST` 都是期望的分类。**状态码数字必须整词替换**，
+ *   否则 `1401`、`4030` 这类业务数字会被改坏（这是溯源信息）。
+ *
+ * 边界判据是**两条否定环视**（对抗审核 S1 发现 `\b` 不够）：
+ * - `(?<![\w.])` 左侧：数字/字母/下划线/句点之前不算独立状态码，于是 `1401`、
+ *   `v403`、`a403b`、`code_403` 全部保留；`code=403`、`HTTP 403 {` 仍然命中。
+ * - `(?!\d)(?!\.\d)` 右侧：后面跟数字或「小数点+数字」时不算，于是 `4030x` 保留、
+ *   **`401.5` 这种小数不再被改写成非法的 `4xx.5`**。句末句号（`HTTP 403.`）不受
+ *   影响，因为 `(?!\.\d)` 要求点后紧跟数字。
+ *
+ * 换成 `4xx` 而不是删掉数字：状态码是给人读的溯源信息，抹掉会让「为什么失败」
+ * 变得不可查 —— 这是本项目反复吃过亏的地方。
+ */
+export function hostMessageText(kind: UpstreamErrorKind, message: string): string {
+  if (kind === 'auth') return message
+  return message.replace(SANITIZE_BARE_STATUS, '4xx')
+}
+
+/**
+ * 「裸的 401/403」的判据，只有一处定义 —— 前缀、正文、后缀都由它统一净化。
+ *
+ * 抽成常量而不是在三处各写一遍：净化一旦漏掉某一段拼接文本，那个数字就会绕过
+ * 它自己被送进宿主的正则分类器（前缀漏净化的那次回归就是这么来的）。
+ */
+const SANITIZE_BARE_STATUS = /(?<![\w.])(?:401|403)(?!\d)(?!\.\d)/gu
+
+/**
+ * 净化任意写给宿主的片段（前缀、正文、后缀都走它）。
+ *
+ * `auth` 档原文照送，所以调用方判断 kind 之后再决定要不要调它。
+ */
+function sanitizeForHost(text: string): string {
+  return text.replace(SANITIZE_BARE_STATUS, '4xx')
+}
+
+/**
+ * 写给宿主的**完整**失败文案：带 kind 名与状态码前缀，再统一净化。
+ *
+ * 为什么要带前缀：宿主只按正则猜分类，猜不中就落到 `TRANSPORT`（不可原地重试
+ * 的兜底）。留一串没有任何线索的中文（例如只净化的 `上游信封错误: HTTP 4xx
+ * {"code":"115"}`）会被猜成 `TRANSPORT`；而带上 `quota-exhausted` 之后，
+ * `isQuotaExceededError` 的 `quota ... exceeded` 判据立刻命中。
+ *
+ * **状态码由本函数负责加、也由本函数负责净化，`note` 后缀同样一起净化**
+ * （对抗审核 S3：原先 suffix 拼在净化之后，将来它若带上游信息就会绕过净化）。
+ * 前置判断放在 `auth` 那一行：那一档必须原文送达，一个字符都不能改。
+ */
+export function hostFailureMessage(
+  kind: UpstreamErrorKind,
+  status: number,
+  message: string,
+  suffix = '',
+): string {
+  if (kind === 'auth') return message
+  return sanitizeForHost(`qoder upstream ${kind} (http ${status}): ${hostMessageText(kind, message)}${suffix}`)
+}
+
 /** HTTP 状态 + error.code 双映射表（DSH 依据 code 判定原地重试 vs failover）。 */
 const ERROR_MAP: Record<UpstreamErrorKind, { status: number; code: string }> = {
   network: { status: 502, code: 'connection_error' },
@@ -210,9 +292,19 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
   const ready = new Promise<void>((resolveReady, rejectReady) => {
     const server = createServer((req, res) => {
       void handleRequest(req, res).catch((error) => {
-        const status = isQoderUpstreamError(error) ? ERROR_MAP[error.kind].status : 500
-        const code = isQoderUpstreamError(error) ? hostErrorCode(error.kind) : 'internal_error'
-        writeJson(res, status, { error: { message: String((error as Error).message ?? 'internal error'), code, type: 'qoder_error' } })
+        const upstream = isQoderUpstreamError(error)
+        const status = upstream ? ERROR_MAP[error.kind].status : 500
+        const code = upstream ? hostErrorCode(error.kind) : 'internal_error'
+        const raw = String((error as Error).message ?? 'internal error')
+        // 与下面两条路径用同一个 formatter：这条也会承载上游错误（`handleRequest`
+        // 内层未捕获的抛出），只净化而不带 kind 前缀会落到宿主的 TRANSPORT 兜底。
+        writeJson(res, status, {
+          error: {
+            message: upstream ? hostFailureMessage(error.kind, error.status, raw) : raw,
+            code,
+            type: 'qoder_error',
+          },
+        })
       })
     })
 
@@ -344,7 +436,15 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     const savedEffort = options.reasoningEffortOf ? options.reasoningEffortOf(model) : undefined
     const hasImages = messages.some(m => Array.isArray(m.content) && (m.content as Array<Record<string, unknown>>).some(p => p?.type === 'image_url'))
     if (hasImages && !supportsImages) {
-      writeJson(res, 400, { error: { message: `模型 ${model} 不支持图像输入`, code: 'invalid_request_error' } })
+      // 模型名是**请求体**带来的动态文本，一样要过净化：宿主对这条 400 也用同一个
+      // 正则分类器，而它的第一道判据是裸 401/403。若目录里存在 `gpt-401` 这类名字，
+      // 原文送达就会把「不支持图片」读成「API 密钥无效」（对抗审核 §6.2 指出）。
+      writeJson(res, 400, {
+        error: {
+          message: hostMessageText('invalid-request', `模型 ${model} 不支持图像输入`),
+          code: 'invalid_request_error',
+        },
+      })
       return
     }
 
@@ -383,8 +483,18 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         serving = { accountId: 'default', accountName: '', pat: resolveFallbackCredential() }
       }
     } catch (error) {
-      const mapped = isQoderUpstreamError(error) ? ERROR_MAP[error.kind] : { status: 500, code: 'upstream_error' }
-      writeJson(res, mapped.status, { error: { message: (error as Error).message, code: mapped.code, type: 'qoder_error' } })
+      const upstream = isQoderUpstreamError(error)
+      const mapped = upstream ? ERROR_MAP[error.kind] : { status: 500, code: 'upstream_error' }
+      const raw = String((error as Error).message ?? 'internal error')
+      // 第三处写给宿主的失败路径（凭据解析阶段）。与 handleChat 用同一个
+      // formatter：留一串没有 kind 线索的中文会被宿主猜成 TRANSPORT。
+      writeJson(res, mapped.status, {
+        error: {
+          message: upstream ? hostFailureMessage(error.kind, error.status, raw) : raw,
+          code: mapped.code,
+          type: 'qoder_error',
+        },
+      })
       return
     }
 
@@ -489,7 +599,9 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           const mapped = ERROR_MAP[error.kind]
           writeJson(res, mapped.status, {
             error: {
-              message: `qoder upstream ${error.kind} (http ${error.status})${note}: ${error.message.slice(0, 400)}`,
+              // 文案交给 `hostFailureMessage` 统一拼齐并净化：状态码由它加、也由
+              // 它净化，`note` 也从它过一遍（S3：拼在净化之后就会绕过）。
+              message: hostFailureMessage(error.kind, error.status, error.message.slice(0, 400), note),
               code: hostErrorCode(error.kind),
               type: 'qoder_error',
             },
@@ -550,8 +662,18 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     if (res.destroyed) return
     const errChunk = makeChunk(id, created, model)
     errChunk.choices[0]!.finish_reason = 'error'
-    const code = isQoderUpstreamError(error) ? ERROR_MAP[error.kind].code : 'upstream_error'
-    errChunk.error = { message: String((error as Error).message ?? 'internal error'), code, type: 'qoder_error' }
+    const upstream = isQoderUpstreamError(error)
+    const code = upstream ? ERROR_MAP[error.kind].code : 'upstream_error'
+    const raw = String((error as Error).message ?? 'internal error')
+    // 流内帧同样要净化：宿主对 pi-ai 的 `case "error"` 分支拿
+    // `message.errorMessage` 跑同一个 `classifyPiAiError`，所以这条路径漏了
+    // 净化，配额失败一样会被读成 AUTH —— 而且此时 200 已提交，用户已经在看
+    // 一个半截回复，错误分类错得更难排查。
+    errChunk.error = {
+      message: upstream ? hostFailureMessage(error.kind, error.status, raw) : raw,
+      code,
+      type: 'qoder_error',
+    }
     res.write(`data: ${JSON.stringify(errChunk)}\n\n`)
     res.write('data: [DONE]\n\n')
     res.end()

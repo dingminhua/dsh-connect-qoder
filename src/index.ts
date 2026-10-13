@@ -126,10 +126,16 @@ const modelConfig = z.object({
   /**
    * 该模型声明的思考强度档位（`['xhigh','low','medium']` 之类，已按强度升序）。
    *
-   * 必须在这里声明，否则 zod 解析保存的 `lastCatalog` 时会**静默剥掉**它 ——
-   * 客户端明明写进了 payload，宿主读回来却没有，思考强度选择器于是整个不渲染
-   * （用户实拍「拉取的思考模式又不见了」）。`contextTiers` 同理：它在客户端被
-   * 写入，但同样没被声明，于是上下文预算选择器也会随之失效。
+   * 必须在这里声明成 `required(false)`，否则思考强度选择器整个不渲染。但**机制
+   * 不是「被 zod 剥掉」**（本注释原先这么写，是错的，已由实验更正）：实测
+   * schemastery **不剥未声明的键**（`nativeContextWindow` / `maxTokens` 那些都会
+   * 原样透传），真正会发生的是**缺席的数组被补成 `[]`**。
+   *
+   * 于是缺陷链条是：客户端从不写这个字段（0.4.2 已修）→ 落盘缺席 → 解析补 `[]`
+   * → 读取端 `modelFromStored` 的判据是 `length > 0` → 档位选择器消失
+   * （用户实拍「拉取的思考模式又不见了」「每次保存都会思考强度不见了」）。
+   * 也就是说：**声明仍然必需，必需的理由是那三个字段的判据（`length > 0` / 非空串）
+   * 与「缺席补 []」之间的落差，而不是剥键。** `contextTiers` 同理。
    */
   thinkingEfforts: z.array(z.string()).required(false),
   defaultThinkingEffort: z.string().required(false),

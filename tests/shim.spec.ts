@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { createQoderShim, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
+import { classifyPiAiError, hostRendersOwnCopy, verifyFixtureAgainstInstalledHost } from './host-piai.ts'
+import { createQoderShim, hostFailureMessage, hostMessageText, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
 import { QoderUpstreamError, type QoderUpstreamClient, type UpstreamErrorKind } from '../src/upstream.ts'
 
 const shims: QoderShim[] = []
@@ -369,5 +370,256 @@ describe('Qoder shim pool failover', () => {
     const resp = await chat(shim, {})
     expect(resp.status).toBe(400)
     expect(calls.length).toBe(1)
+  })
+})
+
+// ==========================================================================
+// 国际版「API 密钥无效」假警报（用户实拍）
+//
+// 现象：对话里报「密钥无效」，而同一条账号在插件卡片里只显示「用量已达上限」。
+//
+// 根因：宿主对 pi-ai 失败**不按 HTTP 状态分类，而是对文案跑正则**
+// （app.asar 内 `classifyPiAiError`）：
+//
+//     if (/\b(?:401|403)\b/.test(message)) return "AUTH";      // 第一道
+//     if (isQuotaExceededError(message))    return QUOTA;
+//
+// 而本插件为了溯源一直把上游原文（`HTTP 403 {"code":"110",…}`）拼进这条文案。
+// `110` 是**配额族**（当日用量用尽，明天自动恢复），HTTP 403 只是上游用它承载
+// 这个业务码的习惯。于是第一道正则把配额截走判成 AUTH，宿主再用中立文案
+// `message.failure.auth`（「API 密钥无效」）**覆盖掉提供方消息** —— 一个明天
+// 就自愈的账号被读成凭据坏了，还被要求去换 PAT。
+//
+// 下面断言的是**宿主真实代码的行为**：`classifyPiAiError` 从 app.asar 逐字提取
+// 后由 `tests/host-piai.ts` 直接执行（不再手抄副本 —— 副本会跟宿主一起漂移，
+// 「测试通过」就只证明副本自洽）。来源与哈希见 tests/fixtures/host-piai-classifier.json。
+// ==========================================================================
+describe('写给宿主的失败文案：宿主正则分类器必须读对', () => {
+
+  it('golden 分类器仍与装机宿主逐字一致（宿主升级即变红，提示重新提取）', () => {
+    // 这些用例的执行体是 app.asar 提取出来的原文，而 asar 不在仓库里 —— 所以
+    // 自检直接读装机 asar 逐字比对。宿主没装（CI）时返回 undefined，跳过即可。
+    const check = verifyFixtureAgainstInstalledHost()
+    if (check !== undefined) expect(check).toEqual({ ok: true })
+  })
+
+  it('配额失败（上游用 403 承载 code 110）必须被读成配额，不是 AUTH', async () => {
+    // 现场抓到的原文：上游对当日用量用尽回 HTTP 403 + `{"code":"110",…}`。
+    const body = '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}'
+    const shim = await startShim({
+      upstream: {
+        chatStream: async () => {
+          throw new QoderUpstreamError('quota-exhausted', body, 403)
+        },
+      } as unknown as QoderUpstreamClient,
+    })
+    const resp = await chat(shim, {})
+    const data = (await resp.json()) as { error: { message: string, code: string } }
+
+    // 宿主看到的那串文本 → 必须落到 QUOTA（否则 UI 显示「API 密钥无效」）。
+    expect(classifyPiAiError(data.error.message)).toBe('QUOTA')
+    // 这才是**用户实拍的那句抱怨**的判据：落到会被中立文案覆盖的 code，用户就
+    // 看不到上游的真实解释。配额与 AUTH 都会被覆盖（只是覆盖成不同的话），所以
+    // 真正的验收是「不能是 AUTH」——
+    expect(hostRendersOwnCopy(classifyPiAiError(data.error.message))).toBe(true)
+    expect(classifyPiAiError(data.error.message)).not.toBe('AUTH')
+    // 溯源信息不能丢：原文仍在，只是裸状态码被改写成 4xx。
+    expect(data.error.message).toContain('110')
+    expect(data.error.message).toContain('上游信封错误')
+    expect(data.error.message).toContain('4xx')
+    expect(data.error.message).not.toMatch(/\b(?:401|403)\b/u)
+    expect(data.error.code).toBe('quota_exceeded')
+  })
+
+  it('限流失败（上游同样可能用 403 承载）不再被读成 AUTH', async () => {
+    const shim = await startShim({
+      upstream: {
+        chatStream: async () => {
+          throw new QoderUpstreamError('rate-limited', '上游信封错误: HTTP 403 {"code":"113"}', 403)
+        },
+      } as unknown as QoderUpstreamClient,
+    })
+    const resp = await chat(shim, {})
+    const data = (await resp.json()) as { error: { message: string, code: string } }
+    // 修复前这里读成 AUTH（「API 密钥无效」）。修复后落到宿主可原地重试的
+    // RATE_LIMIT —— 这正是限流应有的分类。
+    expect(classifyPiAiError(data.error.message)).not.toBe('AUTH')
+    expect(classifyPiAiError(data.error.message)).toBe('RATE_LIMIT')
+    // code 字段的既有翻译不动：KIND_HOST_CODE 把 rate-limited 翻成
+    // quota_exceeded，避免宿主把重试预算烧在一个以小时计的上游冷却上。
+    expect(data.error.code).toBe('quota_exceeded')
+  })
+
+  it('真正的凭据失败仍然读成 AUTH（修复不能把另一侧改坏）', async () => {
+    const shim = await startShim({
+      upstream: {
+        chatStream: async () => {
+          throw new QoderUpstreamError('auth', '401 TOKEN_EXPIRE', 401)
+        },
+      } as unknown as QoderUpstreamClient,
+    })
+    const resp = await chat(shim, {})
+    const data = (await resp.json()) as { error: { message: string, code: string } }
+    // `auth` 必须原文送达 —— AUTH 正是正确的答案，净化绝不能碰这一档。
+    expect(classifyPiAiError(data.error.message)).toBe('AUTH')
+    expect(data.error.message).toContain('401')
+    expect(data.error.code).toBe('invalid_api_key')
+  })
+
+  it('hostMessageText / hostFailureMessage：只净化非 auth 档的裸 401/403', () => {
+    expect(hostMessageText('quota-exhausted', 'HTTP 403 {"code":"110"}')).toBe('HTTP 4xx {"code":"110"}')
+    expect(hostMessageText('rate-limited', 'HTTP 403 / 429')).toBe('HTTP 4xx / 429')
+    expect(hostMessageText('auth', '401 TOKEN_EXPIRE')).toBe('401 TOKEN_EXPIRE')
+    // 5xx 不能被动：宿主按它判 SERVER（可原地重试）。
+    expect(hostMessageText('transient', 'HTTP 503 provider error')).toBe('HTTP 503 provider error')
+    // 400 保留：宿主按它判 INVALID_REQUEST（不重试）。
+    expect(hostMessageText('invalid-request', 'HTTP 400 bad')).toBe('HTTP 400 bad')
+    // 404 里含 "40" 不该被半截匹配成 4xx 之外的怪东西。
+    expect(hostMessageText('quota-exhausted', 'HTTP 404 nope')).toBe('HTTP 404 nope')
+    // 数字边界：`\b` 只认整词，长数字里的 401/403 不能被改坏（那是溯源信息）。
+    expect(hostMessageText('quota-exhausted', 'code=1401 ok')).toBe('code=1401 ok')
+    expect(hostMessageText('quota-exhausted', 'err 4030x')).toBe('err 4030x')
+    // 对抗审核 S1：`\b` 会在 `401.5` 的 `1` 与 `.` 之间成立，把它改写成非法的
+    // `4xx.5`。小数（价格、倍率、耗时）不能被篡改。
+    expect(hostMessageText('quota-exhausted', 'HTTP 401.5 half')).toBe('HTTP 401.5 half')
+    expect(hostMessageText('quota-exhausted', 'ratio 1.403 ok')).toBe('ratio 1.403 ok')
+    // 左边界：紧贴字母/下划线的不算独立状态码。
+    expect(hostMessageText('quota-exhausted', 'v403 a403b code_403')).toBe('v403 a403b code_403')
+    // 但句末句号不是小数，必须仍然净化。
+    expect(hostMessageText('quota-exhausted', 'HTTP 403.')).toBe('HTTP 4xx.')
+    // 该净化的必须净化：多次出现一次全换。
+    expect(hostMessageText('quota-exhausted', '403 then 401')).toBe('4xx then 4xx')
+    // 前缀里的状态码也由 formatter 负责净化 —— 这是第一版的漏洞（只净化原文、
+    // 漏掉了自己写进 `(http …)` 的那个 403）。
+    expect(hostFailureMessage('quota-exhausted', 403, 'boom')).toBe('qoder upstream quota-exhausted (http 4xx): boom')
+    expect(hostFailureMessage('quota-exhausted', 403, 'boom')).not.toMatch(/\b403\b/u)
+    // 对抗审核 S3：`suffix` 也必须在净化范围之内，否则将来它带上上游信息就绕过。
+    expect(hostFailureMessage('quota-exhausted', 403, 'boom', ' HTTP 403 extra')).toBe(
+      'qoder upstream quota-exhausted (http 4xx): boom HTTP 4xx extra',
+    )
+    // auth 档不带任何装饰：它一个字都不许改（连 suffix 也不加）。
+    expect(hostFailureMessage('auth', 401, '未配置 Qoder PAT')).toBe('未配置 Qoder PAT')
+    expect(hostFailureMessage('auth', 401, '401 TOKEN_EXPIRE', ' HTTP 403')).toBe('401 TOKEN_EXPIRE')
+    // 429 保留：宿主按它判 RATE_LIMIT。
+    expect(hostFailureMessage('rate-limited', 429, 'slow down')).toBe('qoder upstream rate-limited (http 429): slow down')
+  })
+
+  it('流内错误帧（200 已提交后的 SSE error）同样被净化', async () => {
+    // 宿主对 pi-ai 的 `case "error"` 分支拿 message 跑同一个 classifyPiAiError，
+    // 所以这条路径漏了净化，配额失败一样会被读成 AUTH。
+    const upstream = {
+      chatStream: async (_c: string, _m: string, _msgs: unknown[], options: { onDelta: (d: Delta) => void }) => {
+        options.onDelta(delta('partial'))
+        throw new QoderUpstreamError(
+          'quota-exhausted',
+          '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}',
+          403,
+        )
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({ upstream })
+    const resp = await chat(shim, {})
+    // 已提交字节 → 错误进流，HTTP 200 不变。
+    expect(resp.status).toBe(200)
+    const chunks = parseSse(await resp.text()) as Array<{ error?: { code: string, message: string } }>
+    const errorChunk = chunks.find(chunk => chunk.error !== undefined)
+    expect(errorChunk?.error?.code).toBe('quota_exceeded')
+    const message = errorChunk!.error!.message
+    expect(classifyPiAiError(message)).toBe('QUOTA')
+    expect(classifyPiAiError(message)).not.toBe('AUTH')
+    // 溯源信息不丢：业务码 110 与上游原文仍在。
+    expect(message).toContain('110')
+    expect(message).toContain('Billing daily count exceeded')
+  })
+
+  it('凭据解析阶段的失败（第三条路径）也被净化并带上 kind 线索', async () => {
+    const shim = await startShim({
+      resolveServing: async () => {
+        throw new QoderUpstreamError('quota-exhausted', '上游信封错误: HTTP 403 {"code":"115"}', 403)
+      },
+    })
+    const resp = await chat(shim, {})
+    const data = (await resp.json()) as { error: { message: string } }
+    // 去掉 kind 前缀会落到 TRANSPORT（宿主的兜底），所以前缀是必须的。
+    expect(classifyPiAiError(data.error.message)).toBe('QUOTA')
+    expect(data.error.message).toContain('115')
+    expect(data.error.message).not.toMatch(/\b403\b/u)
+  })
+
+  it('未配置 PAT：原文送达，不被换成宿主的中立「API 密钥无效」', async () => {
+    // `resolveFallbackCredential` 抛的 auth。这条中文没有状态码，宿主判不出 AUTH
+    // 就会**原样显示**它（TRANSPORT 兜底），对人来说比「API 密钥无效」更有用，
+    // 所以 auth 档刻意不加任何装饰。
+    const shim = await startShim({ credential: () => undefined as unknown as string })
+    const resp = await chat(shim, {})
+    const data = (await resp.json()) as { error: { message: string, code: string } }
+    expect(resp.status).toBe(401)
+    expect(data.error.code).toBe('invalid_api_key')
+    expect(data.error.message).toContain('PAT')
+    expect(classifyPiAiError(data.error.message)).not.toBe('AUTH')
+  })
+
+  it('请求体带来的模型名不能让 400 被读成 AUTH（同一类缺陷的动态版本）', async () => {
+    // 对抗审核 §6.2：`模型 ${model} 不支持图像输入` 里的 model 来自**请求体**，
+    // 是唯一一条带动态插值的静态校验文案。目录里若存在 `gpt-401` 这类名字，
+    // 原文送达会把「不支持图片」读成「API 密钥无效」。
+    //
+    // 注意分类发生在 **pi-ai 拼上响应状态码之后**：单看 message 是
+    // `PI_AI_ERROR`（没有 400 也没有关键词），`400 <msg>` 才是宿主真正看到的
+    // 文本 —— 所以断言必须带上状态码前缀，否则测的不是真实管线。
+    const shim = await startShim()
+    const resp = await chat(shim, {
+      model: 'gpt-401',
+      messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:x' } }] }],
+    })
+    expect(resp.status).toBe(400)
+    const data = (await resp.json()) as { error: { message: string, code: string } }
+    expect(classifyPiAiError(`${resp.status} ${data.error.message}`)).toBe('INVALID_REQUEST')
+    expect(classifyPiAiError(`${resp.status} ${data.error.message}`)).not.toBe('AUTH')
+    // 模型名本身仍可读（改的只是那个裸状态码数字）。
+    expect(data.error.message).toContain('gpt-4xx')
+    expect(data.error.code).toBe('invalid_request_error')
+  })
+
+  it('真正的 TOKEN_EXPIRE（上游原文自带 401）仍判 AUTH', async () => {
+    const shim = await startShim({
+      upstream: {
+        chatStream: async () => {
+          throw new QoderUpstreamError('auth', '401 TOKEN_EXPIRE', 401)
+        },
+      } as unknown as QoderUpstreamClient,
+    })
+    const resp = await chat(shim, {})
+    const data = (await resp.json()) as { error: { message: string, code: string } }
+    // auth 档原文照送 → 宿主判 AUTH，这正是该账号真被拒时的正确答案。
+    expect(classifyPiAiError(data.error.message)).toBe('AUTH')
+    expect(data.error.message).toContain('TOKEN_EXPIRE')
+    expect(data.error.code).toBe('invalid_api_key')
+  })
+
+  it('整条真实管线：pi-ai 会把响应状态码前缀到文案上，净化后仍判对', async () => {
+    // pi-ai 的 `ApiError.makeMessage` 是 `return `${status} ${msg}`` —— 所以宿主
+    // 分类器看到的文本 = **shim 的响应状态码 + shim 的 message**。
+    //
+    // 这带来一个必须钉住的前提：配额族**必须以 429 送达**（`ERROR_MAP` 如此），
+    // 否则那个被前缀上去的状态码自己就是 AUTH 的判据，净化文案也救不回来。
+    const shim = await startShim({
+      upstream: {
+        chatStream: async () => {
+          throw new QoderUpstreamError(
+            'quota-exhausted',
+            '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}',
+            403,
+          )
+        },
+      } as unknown as QoderUpstreamClient,
+    })
+    const resp = await chat(shim, {})
+    // 前提一：响应状态不是 401/403（否则 pi-ai 前缀上去就注定被判 AUTH）。
+    expect(resp.status).toBe(429)
+    const data = (await resp.json()) as { error: { message: string } }
+    // 前提二：拼上 pi-ai 的前缀之后，分类仍然是配额。
+    expect(classifyPiAiError(`${resp.status} ${data.error.message}`)).toBe('QUOTA')
+    expect(classifyPiAiError(`${resp.status} ${data.error.message}`)).not.toBe('AUTH')
   })
 })

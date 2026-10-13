@@ -469,19 +469,103 @@ export interface QoderWebModel {
 }
 
 /**
- * Project one card row into its persisted `lastCatalog` shape: the native
- * context window becomes the stored `contextWindow`, and the card-only
- * presentation fields (`nativeContextWindow`) are removed BY KEY. They must
- * never be set to `undefined`: explicit `undefined` values survive
- * `structuredClone` and are rejected by the settings write path's strict JSON
- * codec (`client api: settings/mutate rejected "ops"`), which fails the whole
- * save.
+ * The `lastCatalog` entry the Host's `modelConfig` schema actually declares.
+ *
+ * 只是**读取端视角的类型**（`modelFromStored` 解析出来的形状），不是投影的
+ * 白名单 —— 投影按 workbuddy 的 spread 写法，白名单化就又会漂移。
+ *
+ * 布尔项与卡片行同样标成可选：投影 spread 卡片行，行的可选性就是落盘的可选性。
+ * 运行时它们其实**总是**带值（`webModelOf` 从 `QoderModelInfo` 的必填布尔项
+ * 无条件赋值），由 `tests/persisted-catalog.spec.tsx` 的「无 `undefined` 值」
+ * 用例（照 workbuddy 同名用例）钉住 —— 那才是真正的保护，类型标注只是描摹。
  */
-export function toPersistedQoderModel(
+export interface QoderPersistedModel {
+  key: string
+  displayName: string
+  priceFactor: number
+  contextWindow: number
+  maxOutputTokens: number
+  supportsImages?: boolean
+  supportsThinking?: boolean
+  canDisableThinking?: boolean
+  isDefault?: boolean
+  isFree?: boolean
+  isNew?: boolean
+  thinkingEfforts?: readonly string[]
+  defaultThinkingEffort?: string
+  contextTiers?: readonly number[]
+}
+
+/**
+ * Project one card row into its persisted `lastCatalog` entry.
+ *
+ * **写法照 `dsh-connect-workbuddy` 的 `toPersistedWorkBuddyModel`**：spread 整行
+ * 再按名剔除卡片独有字段，**不逐个字段手写白名单**。这是同一处缺陷的第二次
+ * 出诊 —— workbuddy 的注释写着「omitting it made one Save silently strip the
+ * declaration from every model」：白名单只要漏一个字段，那次保存就把该字段从
+ * 每个模型上抹掉，而且**没有任何东西会报错**。本仓库正是这样丢掉
+ * `thinkingEfforts` / `defaultThinkingEffort` 的（用户实拍「每次保存都会思考
+ * 强度不见了」）：卡片手写映射漏了这两个键，而读取端 `modelFromStored` 的判据是
+ * `length > 0`、缺席的声明会被 schema 补成 `[]`，于是档位选择器整个消失。
+ * 改成白名单只是把「漏」换了个位置，所以**必须**是 spread。
+ *
+ * 三处字段名在落盘时与卡片行不同，必须重命名（读取端 `modelFromStored` 只认
+ * 落盘名）：`name → displayName`、`maxTokens → maxOutputTokens`、
+ * `creditMultiplier → priceFactor`。**这三对名字必须与读取端逐字一致**，
+ * 否则解析出 `undefined` → 回落默认值（`modelFromStored` 对
+ * `maxOutputTokens` 默认 32 768，旧代码写的 `maxTokens` 因此从没被读到过）。
+ *
+ * 剔除的卡片独有键：
+ * - `nativeContextWindow` —— 它的值已经装进 `contextWindow`（落盘存**原生**
+ *   窗口，生效窗口由 `applyContextBudgets` 在读取时重新施加，见 issue 语境）。
+ * - `maxTokens` / `name` / `creditMultiplier` —— 已重命名，原名不能带上去。
+ *
+ * **绝不写成 `undefined` 值**：显式 `undefined` 会挺过 `structuredClone`，被设置
+ * 写入端那道严格 JSON codec 拒收（`client api: settings/mutate rejected "ops"`），
+ * 整次保存失败。这里用解构剔除（真的没有这个键），而不是赋 `undefined`。可选键
+ * 缺席时由 schema 的 `required(false)` 兜底，不需要在这里补默认值。
+ *
+ * `supportsImages` 是**覆盖**而非派生：卡片的待保存草稿持有用户尚未保存的勾选，
+ * 而 model 上带的是上次保存过的值；从 model 派生会把用户刚勾的那一下在本次保存
+ * 中抹掉。它是上游自己的声明（`is_vl`），随条目落盘、但运行时能力由独立的
+ * `imageModelKeys` 盖印决定（同 workbuddy 的 `supportsImages` / `multimodal` 之分）。
+ */
+export function toPersistedCatalogEntry(
   model: QoderWebModel,
-): Omit<QoderWebModel, 'nativeContextWindow'> {
-  const { nativeContextWindow, ...rest } = model
-  return { ...rest, contextWindow: nativeContextWindow }
+  overrides: { supportsImages?: boolean } = {},
+): QoderPersistedModel {
+  const {
+    name,
+    maxTokens,
+    creditMultiplier,
+    nativeContextWindow,
+    thinkingEfforts,
+    defaultThinkingEffort,
+    contextTiers,
+    supportsImages,
+    ...rest
+  } = model
+  return {
+    ...rest,
+    displayName: name,
+    maxOutputTokens: maxTokens,
+    priceFactor: typeof creditMultiplier === 'number' ? creditMultiplier : 1,
+    // 落盘存**原生**窗口：生效窗口是用户预算决定的事，读回来时重新施加，
+    // 所以这里不能写 `model.contextWindow`（那是已应用预算的生效值）。
+    contextWindow: nativeContextWindow,
+    supportsImages: overrides.supportsImages ?? supportsImages === true,
+    // 可选字段按缺席剔除，绝不留 `undefined`（严格 JSON codec）。空数组/空串
+    // 也算「没声明」：读取端判据就是 `length > 0` 与非空串。
+    ...thinkingEfforts === undefined || thinkingEfforts.length === 0
+      ? {}
+      : { thinkingEfforts: [...thinkingEfforts] },
+    ...defaultThinkingEffort === undefined || defaultThinkingEffort === ''
+      ? {}
+      : { defaultThinkingEffort },
+    ...contextTiers === undefined || contextTiers.length === 0
+      ? {}
+      : { contextTiers: [...contextTiers] },
+  }
 }
 
 // ---------------------------------------------------------------------------

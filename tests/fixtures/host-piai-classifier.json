@@ -1,0 +1,15 @@
+{
+  "_comment": "DSH 宿主的 pi-ai 失败分类器原文，逐字从 app.asar 提取。测试直接 eval 这段源码，因此断言的是宿主的真实行为。",
+  "source": {
+    "app": "DeepSeek Harness.app/Contents/Resources/app.asar",
+    "dshVersion": "0.2.0-rc.2",
+    "asarSha256": "18d5036bbb58eaff41d351ede99314b8d06505aec06fb2e164c49874ada30f9e",
+    "extractedAt": "2026-10-13"
+  },
+  "quotaCodeConstant": {
+    "QUOTA": "Account-token quota replenished through the first-party billing page",
+    "ACCOUNT_QUOTA": "subscription/plan quota"
+  },
+  "isQuotaExceededError": "function isQuotaExceededError(detail) {\n\treturn /\\binsufficient[\\s_-]+(?:quota|balance|credits?)\\b/i.test(detail) || /\\b(?:quota|usage[\\s_-]+limit)[\\s_-]+(?:exceeded|exhausted|reached)\\b/i.test(detail) || /\\bexceed(?:ed|s)?[\\s_-]+(?:(?:your|the)[\\s_-]+)?(?:current[\\s_-]+)?quota\\b/i.test(detail) || /\\b(?:balance|credits?)[\\s_-]+(?:exhausted|depleted)\\b/i.test(detail) || /\\bout[\\s_-]+of[\\s_-]+(?:credits?|budget)\\b/i.test(detail);\n}",
+  "classifyPiAiError": "function classifyPiAiError(message) {\n\tif (/\\b(?:401|403)\\b/.test(message)) return \"AUTH\";\n\tif (isQuotaExceededError(message)) return QUOTA_EXCEEDED_CODE;\n\tif (/\\b429\\b|rate.?limit/i.test(message)) return \"RATE_LIMIT\";\n\tif (/\\b413\\b|failed to buffer the request body:\\s*length limit exceeded|payload too large|request body too large/i.test(message)) return \"INVALID_REQUEST\";\n\tif (/\\b400\\b|invalid.?request/i.test(message)) return \"INVALID_REQUEST\";\n\tif (/\\b5\\d\\d\\b/.test(message)) return \"SERVER\";\n\tif (/\\btime(?:d)?\\s*out\\b|timeout/i.test(message)) return \"TIMEOUT\";\n\tif (/stream ended (?:before|without)\\b/i.test(message)) return \"TRANSPORT\";\n\tif (/\\b(?:network|connection|socket|fetch)\\b|\\bECONN[A-Z]+\\b/i.test(message) || /\\b(?:other side closed|HTTP2 request did not get a response|WebSocket closed unexpectedly)\\b/i.test(message) || /\\bterminated\\b|premature close/i.test(message)) return \"TRANSPORT\";\n\treturn \"PI_AI_ERROR\";\n}"
+}
