@@ -71,3 +71,39 @@ describe('签到单元格的文案（用户实拍「已签到 · 00:39:22 后刷
     }
   })
 })
+
+// ==========================================================================
+// out-of-credit 那一档的措辞（本轮第二个错）
+//
+// 修好误判之后，110 会正确落到 out-of-credit —— 但既有的文案是「积分不足 /
+// Not enough credits」，而这个账号**实测还有 500 积分**、`isQuotaExceeded:
+// false`：官方 110 是「达到当日用量**次数**限制」，与积分余额无关。照发就是
+// 第二句自相矛盾的话（0.4.1 刚为第一句发过补丁）。
+// ==========================================================================
+describe('out-of-credit 档不说「积分不足」', () => {
+  it.each(['zh', 'en'] as const)('%s：行标签与排除芯片用同一口径', lang => {
+    const label = qoderLocales[lang]['row.probeOutOfCreditUnknown']
+    const chip = qoderLocales[lang]['row.poolExcludedOutOfCredit']
+    // 「积分 / credit」这个名词不能出现在这一档：它断言了一件上游没说的事。
+    expect(label).not.toMatch(/积分|credit/i)
+    expect(chip).not.toMatch(/积分|credit/i)
+    // 两处必须是同一说法，否则同一张卡片上两个词指同一件事。
+    expect(label).toContain(chip)
+  })
+
+  it('带恢复时刻的版本也不带「积分包」这个限定', () => {
+    // {at} 可能来自上游的重置句子，而非积分包到期 —— 限定错了就是编造来源。
+    for (const lang of ['zh', 'en'] as const) {
+      const at = render(qoderLocales[lang]['row.probeOutOfCreditAt'], { at: '10-14 00:00' })
+      expect(at).toContain('10-14 00:00')
+      expect(at).not.toMatch(/积分|credit/i)
+    }
+  })
+
+  it('凭据被拒那一档保持原样 —— 只有 105 才是 PAT 的事', () => {
+    // 这条不是要弱化它，而是钉住「改分类不该顺手改掉真凭据被拒的措辞」。
+    for (const lang of ['zh', 'en'] as const) {
+      expect(qoderLocales[lang]['row.probeCredentialRejected']).toMatch(/PAT/)
+    }
+  })
+})

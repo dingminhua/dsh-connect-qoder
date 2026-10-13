@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { QoderUpstreamClient } from './upstream.ts'
-import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError } from './upstream.ts'
+import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
@@ -35,7 +35,7 @@ import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thi
 import { imageDefaultFor } from './native-modality.ts'
 import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
 import { createQoderAdapter, type QoderAdapter, QODER_PROVIDERS, QODER_PROVIDER_DISPLAY_NAMES, regionOfProvider } from './adapter.ts'
-import { probeModel, probeUserMessage, type QoderProbeClient, type QoderProbeError } from './probe.ts'
+import { probeModel, probeUserMessage, redactUpstreamText, type QoderProbeClient, type QoderProbeError } from './probe.ts'
 import {
   registerQoderWebRoutes,
   type QoderPoolDeps,
@@ -613,12 +613,12 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           : { accountId: serving.id, accountName: serving.accountName, pat: serving.pat }
       },
       failoverAccount: async tried => nextFailoverCredential(region, tried),
-      onServingFailure: (accountId, kind, _message) => {
-        const outcome = FAIL_OVER_OUTCOME[kind]
-        if (outcome !== undefined && accountId !== '') {
-          poolRuntime[accountId] = { outcome, atMs: Date.now(), source: 'live-request' }
-          void writePoolProbes(region, { [accountId]: poolRuntime[accountId]! })
-          log(`pool ${region}: ${maskPat(accountId)} marked ${outcome} by live request`)
+      onServingFailure: (accountId, kind, message) => {
+        const probe = liveRequestProbe(kind, message)
+        if (probe !== undefined && accountId !== '') {
+          poolRuntime[accountId] = probe
+          void writePoolProbes(region, { [accountId]: probe })
+          log(`pool ${region}: ${maskPat(accountId)} marked ${probe.outcome} by live request`)
         }
       },
       // 不提供 poolServingNotice：不在回复流里注入「将由账号 … 回答本次问题」。
@@ -1395,4 +1395,32 @@ const FAIL_OVER_OUTCOME: Record<string, QoderWebProbeOutcome> = {
   'quota-exhausted': 'out-of-credit',
   network: 'unavailable',
   transient: 'unavailable',
+}
+
+/**
+ * 一次**真实请求**失败要写进账号池的那条测量；kind 不可映射时返回 undefined
+ * （不写：内容策略拒绝是「这一次输入」的事实，不是账号的事实，见
+ * `exclusionOf` 的 policy-rejected 分支）。
+ *
+ * 抽成模块级纯函数并导出，是因为它此前是 `onServingFailure` 里的一段内联字面量，
+ * 而那段代码有一个**已经发生过的**缺陷：上游原文被丢掉（参数写成 `_message`），
+ * 于是池里只有一句结论、没有依据 —— 用户实拍那条 `credential-rejected` 记录连
+ * `message` 都没有，卡片只能空口指控「PAT 被拒」，而真相（`code 110` 当日用量
+ * 用尽）就在被丢掉的那串字符里。探针路径早就带原文（`redactUpstreamText`），
+ * 两条路径写同一个文件却只有一个带。
+ *
+ * 按本项目的既有教训（「判据与动作打包，于是动作有没有真的发生也能被断言」），
+ * 把它做成可测函数而不是留在接线里：接线变异掉，测试照样全绿过一次了。
+ */
+export function liveRequestProbe(kind: UpstreamErrorKind, message: string): QoderPoolProbe | undefined {
+  const outcome = FAIL_OVER_OUTCOME[kind]
+  if (outcome === undefined) return undefined
+  return {
+    outcome,
+    atMs: Date.now(),
+    source: 'live-request',
+    // 空串不写：那是「没有原因」，与「原因是空」是两件事（卡片按 undefined 说
+    // 「上游未给出」）。非空一律脱敏后带上 —— pt- 形态的凭据绝不能进落盘文件。
+    ...(message === '' ? {} : { message: redactUpstreamText(message) }),
+  }
 }

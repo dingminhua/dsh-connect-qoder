@@ -150,8 +150,13 @@ export const en = {
   'row.probeOkMs': '✓ Usable ({ms})',
   'row.probeRateLimitedUnknown': '✗ Rate limited · the upstream gave no time for when it frees up',
   'row.probeRateLimitedAt': '✗ Rate limited · usable again after {at}',
-  'row.probeOutOfCreditUnknown': '✗ Not enough credits · the upstream gave no time for when it frees up',
-  'row.probeOutOfCreditAt': '✗ Not enough credits · quota refreshes {at}',
+  // "Usage limit reached" rather than "Not enough credits": this bucket carries
+  // the whole quota family (official codes 110 daily limit / 113 quota exhausted
+  // / 115-119 credits / 122 billing group). The account measured for 110 still
+  // had **500 credits** and `isQuotaExceeded: false` — "not enough credits"
+  // would be a second self-contradicting sentence.
+  'row.probeOutOfCreditUnknown': '✗ Usage limit reached · the upstream gave no time for when it frees up',
+  'row.probeOutOfCreditAt': '✗ Usage limit reached · recovers {at}',
   'row.probeCredentialRejected': '✗ Qoder refused this account\'s PAT — add a new one or pick another account',
   'row.probePolicyRejected': '✗ Qoder\'s server refused this request under its content policy — re-adding the PAT will not help',
   'row.probeNotFound': '✗ The upstream does not know this model',
@@ -165,7 +170,11 @@ export const en = {
   // ---- Account pool ----
   'row.poolTitle': 'Account pool',
   'row.poolNoCandidate': 'No account in this pool can be used right now.',
-  'row.poolNoCandidateHint': 'Members are rate-limited, out of credits, rejected, or unreachable. Rate limits, drained quotas and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. Only a rejected credential needs a new PAT.',
+  // "Usage limit reached" rather than "out of credits", matching the
+  // poolExcludedOutOfCredit chip: this bucket covers the whole quota family
+  // (incl. official code 110, the daily limit), and the account measured for it
+  // still had 500 credits — two different words in one sentence would collide.
+  'row.poolNoCandidateHint': 'Members are rate-limited, at their usage limit, rejected, or unreachable. Rate limits, usage limits and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. Only a rejected credential needs a new PAT.',
   'row.poolEmptyHint': 'This region has no accounts yet. Use “Add PAT” above to paste one, or “Export / import accounts” to bring them over from another machine — the pool, the model tests and the daily check-in all need at least one account.',
   'row.poolTestAll': 'Test all accounts',
   'row.poolCheckinAll': 'Claim daily credits',
@@ -216,7 +225,10 @@ export const en = {
   'row.poolCreditSoon': '{count} expiring within 3 days',
   'row.poolCreditNearest': 'Nearest package expires {at}',
   'row.poolExcludedRateLimited': 'Rate limited',
-  'row.poolExcludedOutOfCredit': 'Out of credits',
+  // Same reason as `probeOutOfCredit*`: this bucket covers the whole quota
+  // family, and the account measured for code 110 still had 500 credits —
+  // "Out of credits" would contradict the credits number on the very same row.
+  'row.poolExcludedOutOfCredit': 'Usage limit reached',
   'row.poolExcludedRejected': 'Rejected',
   'row.poolExcludedUnusable': 'Unusable',
   'row.poolRetryAt': 'Back after {at}',
@@ -444,8 +456,13 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.probeOkMs': '✓ 可用（{ms}）',
   'row.probeRateLimitedUnknown': '✗ 被限流 · 上游未给出何时恢复',
   'row.probeRateLimitedAt': '✗ 被限流 · {at} 之后可再用',
-  'row.probeOutOfCreditUnknown': '✗ 积分不足 · 上游未给出何时恢复',
-  'row.probeOutOfCreditAt': '✗ 积分不足 · 积分包 {at} 刷新',
+  // 「用量已达上限」而不是「积分不足」：这一档收的是整个配额族（官方码表 110
+  // 当日次数用尽 / 113 配额耗尽 / 115-119 Credits 耗尽 / 122 Billing Group 上限）。
+  // 实测 110 那个账号**还有 500 积分**、`isQuotaExceeded: false` —— 说「积分不足」
+  // 是第二句自相矛盾的话（本轮刚为第一句发过 0.4.1）。恢复时刻也可能来自上游
+  // 的重置句子而非积分包到期，所以 {at} 不带「积分包」这个限定。
+  'row.probeOutOfCreditUnknown': '✗ 用量已达上限 · 上游未给出何时恢复',
+  'row.probeOutOfCreditAt': '✗ 用量已达上限 · {at} 恢复',
   'row.probeCredentialRejected': '✗ Qoder 拒绝了这个账号的 PAT——请添加新 PAT 或换一个账号',
   'row.probePolicyRejected': '✗ Qoder 服务端按内容策略拒绝了这次请求——重新添加 PAT 无效',
   'row.probeNotFound': '✗ 上游不认识这个模型',
@@ -459,7 +476,10 @@ export const zh: Record<QoderSettingsKey, string> = {
   // ---- 账号池 ----
   'row.poolTitle': '账号池',
   'row.poolNoCandidate': '账号池里目前没有可用的账号。',
-  'row.poolNoCandidateHint': '成员要么在限流冷却中、要么积分耗尽、要么凭据被拒、要么上游无响应。限流、积分耗尽与瞬时故障都会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底，不需要你操作；只有「凭据被拒」需要换一个新 PAT。',
+  // 用「用量已达上限」而不是「积分耗尽」，与 `poolExcludedOutOfCredit` 芯片同一
+  // 口径：这档收的是整个配额族（含官方 110 当日次数用尽），而实测那个账号
+  // **还有 500 积分** —— 一句话里两个说法会当面对撞。
+  'row.poolNoCandidateHint': '成员要么在限流冷却中、要么用量已达上限、要么凭据被拒、要么上游无响应。限流、用量上限与瞬时故障都会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底，不需要你操作；只有「凭据被拒」需要换一个新 PAT。',
   'row.poolEmptyHint': '这个区域还没有账号。用上面的「添加 PAT」粘贴一个，或用「导出 / 导入账号」把别的机器上的账号搬过来 —— 账号池、模型测试与每日签到都需要至少一个账号。',
   'row.poolTestAll': '一键测试所有账号',
   'row.poolCheckinAll': '一键签到所有账号',
@@ -508,7 +528,9 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolCreditSoon': '{count} 积分 3 天内过期',
   'row.poolCreditNearest': '最近积分包 {at} 过期',
   'row.poolExcludedRateLimited': '被限流',
-  'row.poolExcludedOutOfCredit': '积分耗尽',
+  // 与 `probeOutOfCredit*` 同一理由：这一档收的是整个配额族，实测 110 的账号
+  // 还有 500 积分 —— 芯片说「积分耗尽」会与同一行的积分数字当面对撞。
+  'row.poolExcludedOutOfCredit': '用量已达上限',
   'row.poolExcludedRejected': '被拒绝',
   'row.poolExcludedUnusable': '不可用',
   'row.poolRetryAt': '{at} 之后可再用',

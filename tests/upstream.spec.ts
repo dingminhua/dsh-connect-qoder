@@ -4,6 +4,8 @@ import {
   parseStreamDelta,
   classifyHttpStatus,
   classifyBusinessCode,
+  classifyFailure,
+  businessCodeOf,
   isContentPolicy,
   parseUsage,
   QoderUpstreamError,
@@ -153,6 +155,82 @@ describe('error classification', () => {
     expect(classifyBusinessCode('105')).toBe('auth')
     expect(classifyBusinessCode('115')).toBe('quota-exhausted')
     expect(classifyBusinessCode('9999')).toBe('unknown')
+  })
+
+  // ==========================================================================
+  // 「Qoder 拒绝了这个账号的 PAT」误判（用户实拍，国际版）
+  //
+  // 实测上游对**当日用量用尽**回的是 HTTP 403 + body `{"code":"110",…}`，而旧
+  // 实现只看状态：403 → auth → credential-rejected → 叫用户去换 PAT。那个账号
+  // 实测一切正常（换令牌 ✓、15 个模型 ✓、500 积分 ✓），只是今天用满了。
+  // 官方码表里 105 才是凭据过期，110/113/115-119/122 全是用量与配额族。
+  // ==========================================================================
+
+  describe('业务码优先于 HTTP 状态（classifyFailure）', () => {
+    // 现场抓到的那一条，逐字照抄（scripts/probe-cosy.mjs global --chat，2026-10-13）。
+    const DAILY_LIMIT_BODY = '{"code":"110","message":"Billing daily count exceeded"}'
+
+    it('实测的 403 + code 110 判成配额，不是凭据被拒', () => {
+      expect(classifyFailure(403, DAILY_LIMIT_BODY)).toBe('quota-exhausted')
+      // 变异检查：把 classifyFailure 改回 classifyHttpStatus，这条立刻红。
+      expect(classifyHttpStatus(403, DAILY_LIMIT_BODY)).toBe('auth')
+    })
+
+    it('整条 SSE 信封路径也走同一个判断（用户实拍就是从这里来的）', () => {
+      const frame = JSON.stringify({ body: DAILY_LIMIT_BODY, statusCodeValue: 403 })
+      try {
+        parseStreamDelta(frame)
+        expect.unreachable('应该抛错')
+      } catch (error) {
+        expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
+        // 业务码要留在错误上：卡片与池记录都靠它溯源。
+        expect((error as QoderUpstreamError).code).toBe('110')
+      }
+    })
+
+    it('真正的凭据过期（105）仍然判成 auth —— 修复不能把另一侧改坏', () => {
+      expect(classifyFailure(403, '{"code":"105","message":"Login expired"}')).toBe('auth')
+      expect(classifyFailure(401, '{"code":"105","message":"Login expired"}')).toBe('auth')
+    })
+
+    it('认不出的码回落到 HTTP 状态（行为与改动前一致）', () => {
+      // sash 面的 TOKEN_EXPIRE 是**字符串**码，不在官方数值码表里：必须仍按
+      // 状态判成 auth，否则「凭据真被拒」也会被吞掉。
+      expect(classifyFailure(401, '{"code":"TOKEN_EXPIRE","message":"token is not active"}')).toBe('auth')
+      expect(classifyFailure(403, 'not json at all')).toBe('auth')
+      expect(classifyFailure(403, '')).toBe('auth')
+      expect(classifyFailure(429, '{"code":"99999"}')).toBe('rate-limited')
+    })
+
+    it('配额族全覆盖（官方码表 110/113/115-119/122 + 早期实测的 402/6004）', () => {
+      for (const code of ['110', '113', '115', '116', '117', '118', '119', '122', '402', '6004']) {
+        expect(classifyFailure(403, `{"code":"${code}"}`)).toBe('quota-exhausted')
+      }
+    })
+
+    it('请求类与瞬时类也按码分（406 内容策略 / 80411 输入过长 / 10500 服务内部错）', () => {
+      expect(classifyFailure(400, '{"code":"406","message":"blocked"}')).toBe('content-policy')
+      expect(classifyFailure(403, '{"code":"80411","message":"input too long"}')).toBe('invalid-request')
+      expect(classifyFailure(403, '{"code":"10500","message":"internal"}')).toBe('transient')
+    })
+  })
+
+  describe('businessCodeOf', () => {
+    it('字符串码与裸数字码都收（上游两种写法都见过）', () => {
+      expect(businessCodeOf('{"code":"110"}')).toBe('110')
+      expect(businessCodeOf('{"code":110}')).toBe('110')
+    })
+
+    it('取不到就返回 undefined，绝不猜一个', () => {
+      expect(businessCodeOf('')).toBeUndefined()
+      expect(businessCodeOf('plain text')).toBeUndefined()
+      expect(businessCodeOf('{ not json')).toBeUndefined()
+      expect(businessCodeOf('{"message":"no code here"}')).toBeUndefined()
+      // 非整数不是上游的错误码形态。
+      expect(businessCodeOf('{"code":1.5}')).toBeUndefined()
+      // 数组体没有 code 字段可言：首字符不是 `{` 就直接否掉。
+      expect(businessCodeOf('[1,2,3]')).toBeUndefined()
+    })
   })
 })
 
@@ -512,5 +590,159 @@ describe('每日签到（sash campaigns）', () => {
     ], { status: 200, body: { status: 'CLAIMED' } })
     await client.claimDailyCredits('pt-x')
     expect(calls.find(c => c.url.endsWith('/claim'))?.url).toContain('/campaigns/benefit/claim')
+  })
+})
+
+// ==========================================================================
+// 每条**真路径**都按业务码分（不是只有纯函数被覆盖）
+//
+// 这是本项目反复踩过的坑：判据（classifyFailure）写在纯函数里、测得很足，
+// 而六个调用点各接线一次 —— 只要有一处仍用 classifyHttpStatus，那条路径
+// 就照旧把 403 判成凭据被拒，而全量测试照样绿。第一轮就是这样：只改
+// chatStream 那一行，43 条测试全过。下面按端点逐条钉，每条都让**上游真的
+// 回 403 + code 110**，断言抛出来的 kind 与 code。
+//
+// 顺带钉住「认不出的码不能被改坏」：sash 面的 `TOKEN_EXPIRE` 是字符串码，
+// 不在官方数值码表里，必须仍按状态判成 auth —— 否则真过期的凭据会被说成
+// 「这次没读到」。
+// ==========================================================================
+describe('真路径按业务码分类（六个调用点逐一钉住）', () => {
+  const DAILY = '{"code":"110","message":"Billing daily count exceeded"}'
+
+  /** 让指定 URL 片段回 `status` + `body`，其余端点照常应答。 */
+  function failingStub(failWhen: (u: string) => boolean, status: number, body: string): QoderUpstreamClient {
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url)
+      if (failWhen(u)) {
+        return new Response(body, { status, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('/api/v1/jobToken/exchange')) {
+        return new Response(JSON.stringify({
+          token: 'jt-SASH', expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-CHAT', refreshToken: 'jrt-x', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // 其余一律给个能解析的空 JSON：本组只关心失败那一发。
+      return new Response(JSON.stringify({ campaigns: [], models: [], qoderUsage: {} }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+    return new QoderUpstreamClient('global', { fetch: fetchImpl })
+  }
+
+  /** 跑一次并取回抛出的错误（不抛则直接失败——这些路径必须抛）。 */
+  async function thrown(run: () => Promise<unknown>): Promise<QoderUpstreamError> {
+    try {
+      await run()
+    } catch (error) {
+      expect(error, '上游错误应当抛出').toBeInstanceOf(QoderUpstreamError)
+      return error as QoderUpstreamError
+    }
+    return expect.unreachable('应该抛出 QoderUpstreamError') as never
+  }
+
+  it('exchangeJobToken：换令牌本身回 403+110 时不判成凭据被拒', async () => {
+    // 直接打 exchangeJobToken（它是公开方法）：用 fetchUsage 包一层的话会先落进
+    // 「403 → 回退直连」的分支，而直连在桩里是 200，于是测不到换令牌那一条。
+    const client = failingStub(u => u.includes('jobToken'), 403, DAILY)
+    const error = await thrown(() => client.exchangeJobToken('pt-x'))
+    expect(error.kind).toBe('quota-exhausted')
+    expect(error.code).toBe('110')
+  })
+
+  it('jobTokenGet（积分主路径）：403+110 判配额 —— 这条直通卡片的「PAT 已不被接受」', async () => {
+    // 危害最大的一个：`refreshUsage` 把 `kind === 'auth'` 记成
+    // credential-rejected，卡片于是说「PAT 已不被 Qoder 接受」。
+    const client = failingStub(u => u.includes('/me/usage'), 403, DAILY)
+    const error = await thrown(() => client.fetchUsage('pt-x'))
+    expect(error.kind).toBe('quota-exhausted')
+    expect(error.code).toBe('110')
+  })
+
+  it('sashRequest（积分回退路径）：两条都失败时抛出的仍是配额，不是凭据', async () => {
+    // 回退路径 fetchUsageDirect 也走同一处分类：主路径与回退都回 403+110 时，
+    // 报出去的 kind 决定用户被引导去干什么。
+    const client = failingStub(u => u.includes('/me/usage'), 403, DAILY)
+    const error = await thrown(() => client.fetchUsage('pt-x'))
+    expect(error.kind).not.toBe('auth')
+  })
+
+  it('campaigns：活动列表面 403+110 同样不判成凭据被拒', async () => {
+    const campaigns = await thrown(() => failingStub(u => u.includes('/campaigns'), 403, DAILY).fetchCampaigns('pt-x'))
+    expect(campaigns.kind).toBe('quota-exhausted')
+  })
+
+  it('claim：领取那一发 403+110 不判成凭据被拒（用 claimable 活动让它走到 /claim）', async () => {
+    // claimDailyCredits 先列活动：列表必须给出一个 CLAIMABLE 的 CLAIM_BENEFIT，
+    // 否则它直接返回 unavailable，从不发 /claim —— 那就测不到领取那一条。
+    const claimable = { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100 } }
+    const fetchImpl = (async (url: string | URL) => {
+      const u = String(url)
+      if (u.endsWith('/claim')) {
+        return new Response(DAILY, { status: 403, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('/api/v1/jobToken/exchange')) {
+        return new Response(JSON.stringify({
+          token: 'jt-SASH', expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-CHAT', refreshToken: 'jrt-x', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('/campaigns')) {
+        return new Response(JSON.stringify({ campaigns: [claimable] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    const client = new QoderUpstreamClient('global', { fetch: fetchImpl })
+    const claim = await thrown(() => client.claimDailyCredits('pt-x'))
+    expect(claim.kind).toBe('quota-exhausted')
+  })
+
+  it('fetchModels（模型列表）：403+110 判配额 —— 否则「加模型」也会被当成凭据被拒', async () => {
+    // bearerGet 是 models 目录的主取数路径：上游回 403+110 时，卡片就会在
+    // 「模型列表」上再报一句 PAT 被拒，用户会在每个刷新的入口重复撞上。
+    const client = failingStub(u => u.includes('/model/list'), 403, DAILY)
+    const error = await thrown(() => client.fetchModels('pt-x'))
+    expect(error.kind).toBe('quota-exhausted')
+    expect(error.code).toBe('110')
+  })
+
+  it('chatStream：上游回非 200 + code 110 时判配额，并把码带在错误上', async () => {
+    const client = failingStub(u => u.includes('/sse/') || u.includes('chat'), 403, DAILY)
+    const error = await thrown(() => client.chatStream('pt-any', 'qfmodel', [{ role: 'user', content: 'hi' }], { onDelta: () => {} }))
+    expect(error.kind).toBe('quota-exhausted')
+    expect(error.status).toBe(403)
+    expect(error.code).toBe('110')
+  })
+
+  it('真被拒的那一侧不能被改坏：401 + 字符串码 TOKEN_EXPIRE 仍判 auth', async () => {
+    // 官方码表里没有 TOKEN_EXPIRE 这个码：businessCodeOf 取得到值但
+    // classifyBusinessCode 认不出 → 回落 HTTP 状态 → auth。这条是「修复不能
+    // 把过期凭据说成没问题」的保险。
+    const client = failingStub(u => u.includes('/me/usage'), 401, '{"code":"TOKEN_EXPIRE","message":"token is not active"}')
+    const error = await thrown(() => client.fetchUsage('pt-x'))
+    expect(error.kind).toBe('auth')
+  })
+
+  it('SSE 信封（HTTP 200 建流后包错误）也按码分 —— 用户实拍就是从这里来的', () => {
+    const frame = JSON.stringify({ body: DAILY, statusCodeValue: 403 })
+    try {
+      parseStreamDelta(frame)
+      expect.unreachable('应该抛出')
+    } catch (error) {
+      expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
+      expect((error as QoderUpstreamError).code).toBe('110')
+    }
   })
 })

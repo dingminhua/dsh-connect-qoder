@@ -372,7 +372,7 @@ export class QoderUpstreamClient {
     const resp = await this.fetchImpl(url, { method: 'POST', headers, body })
     const text = await resp.text()
     if (resp.status !== 200) {
-      throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `jobToken 交换失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `jobToken 交换失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
     }
     let data: Record<string, unknown>
     try {
@@ -608,7 +608,10 @@ export class QoderUpstreamClient {
     })
     if (resp.status !== 200) {
       const errText = await resp.text()
-      throw new QoderUpstreamError(classifyHttpStatus(resp.status, errText), `聊天请求失败: HTTP ${resp.status} ${truncate(errText, 300)}`, resp.status)
+      // 用 classifyFailure 而不是 classifyHttpStatus：chat 面的「当日用量用尽」
+      // 就是从这里进来的（实测 HTTP 403 + body `{"code":"110",…}`），只看状态会
+      // 把它判成凭据被拒，进而把好的账号永久踢出池。
+      throw new QoderUpstreamError(classifyFailure(resp.status, errText), `聊天请求失败: HTTP ${resp.status} ${truncate(errText, 300)}`, resp.status, businessCodeOf(errText))
     }
     if (!resp.body) {
       throw new QoderUpstreamError('transient', '聊天响应没有 body')
@@ -712,7 +715,7 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200) {
-      throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
     }
     try {
       return JSON.parse(text) as Record<string, unknown>
@@ -850,7 +853,7 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200 && resp.status !== 201) {
-      throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
     }
     try {
       return JSON.parse(text) as Record<string, unknown>
@@ -941,7 +944,7 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200) {
-      throw new QoderUpstreamError(classifyHttpStatus(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status)
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
     }
     try {
       return JSON.parse(text) as Record<string, unknown>
@@ -991,7 +994,10 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
   const scv = wrapper.statusCodeValue
   if (scv !== undefined && scv !== null && Number(scv) !== 200) {
     const detail = typeof wrapper.body === 'string' ? wrapper.body : dataPayload.slice(0, 400)
-    throw new QoderUpstreamError(classifyHttpStatus(Number(scv), detail), `上游信封错误: HTTP ${scv} ${truncate(detail, 300)}`, Number(scv))
+    // **这条路径就是本轮 bug 的现场**：用户实拍那句「Qoder 拒绝了这个账号的
+    // PAT」，来自这里对 `statusCodeValue: 403` + body `{"code":"110",…}` 的分类。
+    // 信封里的业务码比信封状态更具体，所以优先按码分（见 classifyFailure）。
+    throw new QoderUpstreamError(classifyFailure(Number(scv), detail), `上游信封错误: HTTP ${scv} ${truncate(detail, 300)}`, Number(scv), businessCodeOf(detail))
   }
   const innerStr = wrapper.body
   if (typeof innerStr !== 'string' || innerStr === '') return undefined
@@ -1087,12 +1093,94 @@ export function classifyHttpStatus(status: number, detail: string): UpstreamErro
   return 'unknown'
 }
 
-/** 业务 code → 错误分类。 */
+/**
+ * 从上游错误体里取**业务码**（`{"code":"110","message":"…"}`）。
+ *
+ * 上游在这一点上有过两种写法：字符串 `"110"` 与裸数字 `110`，都见过；这里
+ * 一律归一成字符串。取不到（不是 JSON、没有 code、code 不是串/数）返回
+ * `undefined` —— 调用方据此回落到 HTTP 状态分类，**绝不**把「读不出码」当成
+ * 某种结论。
+ */
+export function businessCodeOf(detail: string): string | undefined {
+  const trimmed = detail.trim()
+  if (!trimmed.startsWith('{')) return undefined
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(trimmed)
+  } catch {
+    return undefined
+  }
+  if (typeof parsed !== 'object' || parsed === null) return undefined
+  const raw = (parsed as Record<string, unknown>).code
+  if (typeof raw === 'string' && raw !== '') return raw
+  // 只接受整数码：`code: 1.5` 之类的东西不是上游的错误码，不该被当成认识的码。
+  if (typeof raw === 'number' && Number.isInteger(raw)) return String(raw)
+  return undefined
+}
+
+/**
+ * 一次失败的分类：**业务码优先于 HTTP 状态**，状态只作兜底。
+ *
+ * 这是本轮的根因所在（用户实拍：国际版「Qoder 拒绝了这个账号的 PAT」）。实测
+ * 上游对**当日用量用尽**回的是
+ *
+ * ```
+ * HTTP 403 {"code":"110","message":"Billing daily count exceeded"}
+ * ```
+ *
+ * 而旧实现只看状态：`403 → auth → credential-rejected → 「请添加新 PAT」`。
+ * 那句话不只是文案难听 —— `credential-rejected` 在账号池里是**无条件永久排除**
+ * （`exclusionOf` 连冷却期都不看，理由写得很对：令牌被拒，等也没用）。于是
+ * 一个只是今天用满、明天自动恢复的账号被踢出池且**不会自愈**，同时被要求去做
+ * 一件根本无效的事（换 PAT）。
+ *
+ * 官方码表（docs.qoder.com/zh/cli/sdk/errors）里 `105` 才是「登录态或 Access
+ * Token 已过期」；`110`/`113`/`115`–`119`/`122` 全是**用量与配额**族。也就是说
+ * 「403 就是凭据坏了」这个推断在协议层面根本不成立。
+ *
+ * 认识的码说了算；不认识的（如 `TOKEN_EXPIRE` 这类字符串码）回落状态分类，
+ * 行为与改动前一致。
+ */
+export function classifyFailure(status: number, detail: string): UpstreamErrorKind {
+  const code = businessCodeOf(detail)
+  if (code !== undefined) {
+    const byCode = classifyBusinessCode(code)
+    if (byCode !== 'unknown') return byCode
+  }
+  return classifyHttpStatus(status, detail)
+}
+
+/** 业务 code → 错误分类（官方码表，见 {@link classifyFailure}）。 */
 export function classifyBusinessCode(code: string): UpstreamErrorKind {
-  if (code === '105') return 'auth' // Login expired
-  if (code === '115' || code === '402' || code === '6004') return 'quota-exhausted'
+  if (code === '105') return 'auth' // 登录态或 Access Token 已过期
+  // 用量与配额族：等周期重置或补额度，**不是**凭据问题。
+  // 402 / 6004 是 Go 参考实现与本项目早期实测带回来的，保留。
+  if (QUOTA_CODES.has(code)) return 'quota-exhausted'
+  if (code === '406') return 'content-policy' // 敏感内容或模型拒绝
+  // 请求本身无法满足：改输入或改配置，原地重试无意义。
+  if (REQUEST_CODES.has(code)) return 'invalid-request'
+  // 500 请求或网络失败 / 10408 超时 / 10500 模型服务内部错误 / 10605 排队。
+  if (TRANSIENT_CODES.has(code)) return 'transient'
   return 'unknown'
 }
+
+const QUOTA_CODES: ReadonlySet<string> = new Set([
+  '110', // 达到当日用量限制（本轮实测到的那一个）
+  '113', // 用量配额耗尽
+  '115', // 达到免费用户配额
+  '116', // 团队管理员 Credits 耗尽
+  '117', // 团队成员 Credits 耗尽
+  '118', // 个人 Credits 耗尽
+  '119', // 所选模型的免费额度已用完
+  '122', // Billing Group 的 Credits 达到上限
+  '402',
+  '6004',
+])
+
+/** 416 范围/结构无法满足 · 430 能力不支持 · 80411 输入过长 · 80412 媒体过多。 */
+const REQUEST_CODES: ReadonlySet<string> = new Set(['416', '430', '80411', '80412'])
+
+const TRANSIENT_CODES: ReadonlySet<string> = new Set(['500', '10408', '10500', '10605'])
 
 const CONTENT_POLICY_MARKERS = [
   'DataInspectionFailed',

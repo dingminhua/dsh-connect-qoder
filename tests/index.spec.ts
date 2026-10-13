@@ -688,3 +688,59 @@ async function readCardModels(
   const doc = JSON.parse(String(res.body())) as { models: Array<{ key: string, thinkingEfforts?: string[] }> }
   return doc.models
 }
+
+// ==========================================================================
+// 真实请求失败写进账号池的那条测量（liveRequestProbe）
+//
+// 抽成纯函数才有办法钉住：这段逻辑此前是 onServingFailure 里的内联字面量，
+// 而它有一个**已经真实发生**的缺陷 —— 上游原文被丢掉（参数写成 `_message`），
+// 池里只剩一句结论。用户实拍的那条记录是
+//   {"outcome":"credential-rejected","atMs":…,"source":"live-request"}
+// 连 message 字段都没有，卡片于是只能空口指控「Qoder 拒绝了这个账号的 PAT」，
+// 而真相（`code 110` = 当日用量用尽）就在被丢掉的那串字符里。
+// ==========================================================================
+describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => {
+  // 现场抓到的原文，逐字照抄（scripts/probe-cosy.mjs global --chat，2026-10-13）。
+  const CAPTURED = '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}'
+
+  it('配额耗尽映射成 out-of-credit，且**带上游原文**（这是本轮的修复点）', () => {
+    const probe = Qoder.liveRequestProbe('quota-exhausted', CAPTURED)
+    expect(probe?.outcome).toBe('out-of-credit')
+    expect(probe?.source).toBe('live-request')
+    // 业务码必须在：它是这条测量唯一的可溯源依据，去掉它卡片就只剩结论。
+    expect(probe?.message).toContain('110')
+    expect(probe?.message).toContain('Billing daily count exceeded')
+  })
+
+  it('auth 仍映射成 credential-rejected（真被拒的那一侧不能被改坏）', () => {
+    expect(Qoder.liveRequestProbe('auth', '401 TOKEN_EXPIRE')?.outcome).toBe('credential-rejected')
+  })
+
+  it('内容策略拒绝**不写池**：那是这一次输入的事实，不是账号的事实', () => {
+    // 写了就会把一个只被审核挡过一次的账号判成不可用。
+    expect(Qoder.liveRequestProbe('content-policy', 'DataInspectionFailed')).toBeUndefined()
+    expect(Qoder.liveRequestProbe('invalid-request', 'bad input')).toBeUndefined()
+    expect(Qoder.liveRequestProbe('unknown', 'huh')).toBeUndefined()
+  })
+
+  it('空原因不写成空串：卡片据此说「上游未给出」，而不是显示一个空消息', () => {
+    const probe = Qoder.liveRequestProbe('rate-limited', '')
+    expect(probe?.outcome).toBe('rate-limited')
+    expect('message' in probe!).toBe(false)
+  })
+
+  it('落盘前脱敏：PAT 绝不能进探针文件', () => {
+    // redactUpstreamText 只抹 `code=`/`token=` 这类**带等号**的形态；裸 pt- 凭据
+    // 有独立规则。这条钉住「带原文」这个新行为没有把密钥一起带进去。
+    const probe = Qoder.liveRequestProbe('auth', 'rejected credential pt-ABCDEFGHIJ0123456789 for this account')
+    expect(probe?.message).not.toContain('pt-ABCDEFGHIJ0123456789')
+    expect(probe?.message).toContain('[redacted credential]')
+  })
+
+  it('时间戳是本次测量的时刻，不沿用上次', () => {
+    const before = Date.now()
+    const probe = Qoder.liveRequestProbe('network', 'boom')
+    expect(probe!.atMs).toBeGreaterThanOrEqual(before)
+    expect(probe!.atMs).toBeLessThanOrEqual(Date.now())
+  })
+})
