@@ -148,14 +148,43 @@ describe('QODER_CARD_CSS template literal', () => {
     expect(QODER_CARD_CSS).toContain('.dsm-qoder-veil{')
     expect(QODER_CARD_CSS).toContain('.dsm-qoder-veil-card{')
     expect(QODER_CARD_CSS).toContain('.dsm-qoder-veil-spinner{')
-    // 对齐 workbuddy 4.4.2：宿主令牌 / 弧线节奏 / 静态弧线降级 —— 逐条钉住，
-    // 免得下次改动时又退回自造值。
-    expect(QODER_CARD_CSS).toContain('--dsw-alias-bg-layer-2')
-    expect(QODER_CARD_CSS).toContain('--dsw-alias-bg-mask-1')
-    expect(QODER_CARD_CSS).toContain('--dsw-elevation-prominent')
-    expect(QODER_CARD_CSS).toContain('--dsw-alias-label-secondary')
-    expect(QODER_CARD_CSS).toContain('animation:dsm-qoder-veil-spin 1.5s linear infinite')
-    expect(QODER_CARD_CSS).toContain('dsm-qoder-veil-spinner-arc')
+  })
+
+  it('遮罩用的是宿主令牌，不是本文件的自造值（对齐 workbuddy 4.4.2）', () => {
+    // 逐条钉在**规则自己的声明体**上，而不是 `toContain` 全文：这些令牌
+    // （尤其 `--dsw-alias-bg-layer-2`）在文件别处大量出现，全文包含断言即使
+    // 把遮罩退回自造值也照样通过 —— 那是空转。变异验证：把卡片底色改回
+    // `--dsw-alias-bg-primary` 时，只有下面这种按规则取的断言会转红。
+    const veil = ruleOf(QODER_CARD_CSS, 'dsm-qoder-veil')
+    expect(veil).toContain('background:var(--dsw-alias-bg-mask-1')
+    expect(veil).toContain('backdrop-filter:var(--dsw-mask-blur)')
+    // 自造的黑幕与「没有主题意识的」写死值不许回来。
+    expect(veil).not.toContain('rgba(0,0,0,.38)')
+
+    const card = ruleOf(QODER_CARD_CSS, 'dsm-qoder-veil-card')
+    expect(card).toContain('background:var(--dsw-alias-bg-layer-2')
+    expect(card).toContain('box-shadow:var(--dsw-elevation-prominent')
+    // `--dsw-alias-bg-primary` 在宿主令牌集里**根本不存在**，用它等于一路回退
+    // 到近黑板子 —— 这正是用户看到「黑底看不清字」的根因。
+    expect(card).not.toContain('--dsw-alias-bg-primary')
+
+    const hint = ruleOf(QODER_CARD_CSS, 'dsm-qoder-veil-hint')
+    expect(hint).toContain('color:var(--dsw-alias-label-secondary')
+    expect(hint).not.toContain('label-tertiary')
+  })
+
+  it('spinner 是宿主同款弧线 + 1.5s 节奏，降级为静态弧线', () => {
+    // 旧实现是 18px CSS border 环、`.7s` 匀速转 —— 比宿主自己的状态转圈快近
+    // 一倍，放在一起明显不同拍。这条把「形状 + 节奏 + 降级」一起钉住。
+    const spinner = ruleOf(QODER_CARD_CSS, 'dsm-qoder-veil-spinner')
+    expect(spinner).toContain('animation:dsm-qoder-veil-spin 1.5s linear infinite')
+    expect(spinner).not.toContain('border:2px solid')
+    // 几何与 dash 呼吸在子元素上（track / arc）。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-veil-spinner-track')).toContain('opacity:.25')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-veil-spinner-arc')).toContain('stroke-dasharray:12 150')
+    // keyframes 必须两条都在：只有 spin 没有 dash 就成了匀速硬转。
+    expect(QODER_CARD_CSS).toContain('@keyframes dsm-qoder-veil-dash{')
+    expect(QODER_CARD_CSS).toContain('@keyframes dsm-qoder-veil-spin{')
     // 静态弧线降级（reduced-motion），不能退成「animation:none 但留个环」。
     expect(QODER_CARD_CSS).toContain('stroke-dasharray:18 150;stroke-dashoffset:-3')
   })

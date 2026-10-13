@@ -609,6 +609,10 @@ describe('每日签到（sash campaigns）', () => {
 describe('真路径按业务码分类（六个调用点逐一钉住）', () => {
   const DAILY = '{"code":"110","message":"Billing daily count exceeded"}'
 
+  // 本组统一用 `cn` 区域：分类逻辑（classifyFailure）与区域无关，而 `global`
+  // 会去 `deviceRiskHeaders()` 找本机 UMID 组件 —— CI 上没有它直接抛普通 Error，
+  // 就测不到「上游回 403+110 该抛哪种 QoderUpstreamError」了。设备风控本身由
+  // `tests/device-risk.spec.ts` 单独覆盖，不在这里混进分类断言。
   /** 让指定 URL 片段回 `status` + `body`，其余端点照常应答。 */
   function failingStub(failWhen: (u: string) => boolean, status: number, body: string): QoderUpstreamClient {
     const fetchImpl = (async (url: string | URL) => {
@@ -632,7 +636,7 @@ describe('真路径按业务码分类（六个调用点逐一钉住）', () => {
         status: 200, headers: { 'content-type': 'application/json' },
       })
     }) as unknown as typeof fetch
-    return new QoderUpstreamClient('global', { fetch: fetchImpl })
+    return new QoderUpstreamClient('cn', { fetch: fetchImpl })
   }
 
   /** 跑一次并取回抛出的错误（不抛则直接失败——这些路径必须抛）。 */
@@ -704,7 +708,7 @@ describe('真路径按业务码分类（六个调用点逐一钉住）', () => {
       }
       return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
     }) as unknown as typeof fetch
-    const client = new QoderUpstreamClient('global', { fetch: fetchImpl })
+    const client = new QoderUpstreamClient('cn', { fetch: fetchImpl })
     const claim = await thrown(() => client.claimDailyCredits('pt-x'))
     expect(claim.kind).toBe('quota-exhausted')
   })
