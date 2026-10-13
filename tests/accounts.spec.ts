@@ -36,9 +36,23 @@ afterEach(async () => {
 const store = (region: 'cn' | 'global' = 'cn') => new QoderAccountStore(region)
 
 describe('qoderAccountsPath + file permissions', () => {
-  it('keys the vault file by region and writes mode 0600', async () => {
+  it('keys the vault file by region', () => {
     expect(qoderAccountsPath('cn')).not.toBe(qoderAccountsPath('global'))
     expect(qoderAccountsPath('cn')).toContain('.qoder-accounts.cn.json')
+  })
+
+  /**
+   * 0600 只在 POSIX 上可断言（CI 的 windows job 在这里红：`expected 438 to be 384`）。
+   *
+   * **不是写入路径的 bug**：`src/accounts.ts` 确实请求了 `mode: 0o600`。是 Windows
+   * 的 `st_mode` 表达不了 —— node 只把「只读」一位映射过来，普通文件一律报
+   * `0o666`（438），写进去是什么都读不回来。文件保护在 Windows 上由
+   * `%USERPROFILE%` 的 NTFS ACL 承担，与 mode 位无关。
+   *
+   * 所以这里**跳过**，而不是改成断言 `0o666` —— 那等于把平台限制当成「正确行为」
+   * 钉住，将来写入路径真的丢掉 0600 也测不出来。跳过会留在 CI 报告里，看得见。
+   */
+  it.skipIf(process.platform === 'win32')('writes the vault with mode 0600', async () => {
     await store('cn').add('pt-12345678abcdef', 'Alpha')
     const perms = (await stat(qoderAccountsPath('cn'))).mode & 0o777
     // 0600: owner read/write only. 目录项上 0o777 也可能带 0700 的 dirMode，
