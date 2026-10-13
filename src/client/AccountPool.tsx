@@ -624,30 +624,30 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                     </span>
                   )}
                 </span>
-                {/* 签到单元格（仅在有签到列时渲染）。三态，不是两态：还没读到
-                    的账号说「未知」而不是断言「未签到」——后者会与用户刚亲眼看到
-                    的领取结果矛盾。
-                    **已领取**那一格还带**下一窗的倒计时**：领取不是「今天到此为止」，
-                    只是这一窗从可领变成已领；下一窗什么时候开是上游活动行的 `endAt`
-                    （实测当天 10:00 → 次日 09:59 UTC+8），也就是用户在 Qoder 网页上
-                    看到的那个 `09:22:23`（用户实拍）。倒计时走秒，每 20 秒的
-                    `nowMs` 心跳重绘一次；到点后换回「可领取」。上游没给时间就**只**
-                    说「已领取」，绝不编一个本地的。 */}
+                {/* 签到单元格（仅在有签到列时渲染）。**一格只说一句话**，四态：
+                    · 没读到 → 「未知」（说「未签到」会与用户刚亲眼看到的领取结果矛盾）
+                    · 已领取但上游没给开窗时刻 → 「已签到」（绝不编一个本地倒计时）
+                    · 倒计时中 → **只有**「HH:MM:SS 后可再领」
+                    · 到点 → **只有**「现在可以领取」
+
+                    后两态**不再并排「已签到」**（用户实拍：「已签到 · 00:39:22 后刷新」）。
+                    「已签到」说的是**上一窗**，而那个数字是**下一窗什么时候开** —— 两个
+                    不同窗口的状态并排，读起来就是「今天已经签完了，可 39 分钟后又有事
+                    可做」，自相矛盾。去掉它不丢任何事实：「**再**领」这个词本身就蕴含
+                    「已经领过」。旧文案里的「后刷新」也一并改掉 —— 它字面说的是这一行
+                    数据多久刷新，而数字其实是可再领的时刻。 */}
                 {checkinOn
                   ? <span className="dsm-qoder-pool-checkin">
                       {account.checkedInToday === undefined
                         ? <span className="dsm-qoder-pool-unknown" title={t('row.poolNeverTested')}>{t('row.poolCheckinUnknown')}</span>
                         : account.checkedInToday
-                          ? <span>
-                              <span className="dsm-qoder-pool-checked">{t('row.poolCheckedIn')}</span>
-                              {checkinCountdown.state === 'ticking'
-                                ? <span className="dsm-qoder-pool-checkin-next" title={t('row.poolCheckinNextHint')}>
-                                    {t('row.poolCheckinNext', { countdown: checkinCountdown.text })}
-                                  </span>
-                                : checkinCountdown.state === 'due'
-                                  ? <span className="dsm-qoder-pool-checkin-due">{t('row.poolCheckinDue')}</span>
-                                  : null}
-                            </span>
+                          ? checkinCountdown.state === 'ticking'
+                            ? <span className="dsm-qoder-pool-checkin-next" title={t('row.poolCheckinNextHint')}>
+                                {t('row.poolCheckinNext', { countdown: checkinCountdown.text })}
+                              </span>
+                            : checkinCountdown.state === 'due'
+                              ? <span className="dsm-qoder-pool-checkin-due" title={t('row.poolCheckinDueHint')}>{t('row.poolCheckinDue')}</span>
+                              : <span className="dsm-qoder-pool-checked">{t('row.poolCheckedIn')}</span>
                           : t('row.poolNotCheckedIn')}
                     </span>
                   : null}

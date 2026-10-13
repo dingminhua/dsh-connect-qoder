@@ -197,12 +197,20 @@ export const en = {
   'row.poolCheckedIn': 'Checked in',
   'row.poolNotCheckedIn': 'Not checked in',
   'row.poolCheckinUnknown': '—',
-  // The countdown is the UPSTREAM's refresh time (campaign `endAt`), not a local
-  // guess: the daily window runs 10:00 → next day 09:59 (UTC+8), which is what the
-  // Qoder web page shows.
-  'row.poolCheckinNext': '· next in {countdown}',
-  'row.poolCheckinNextHint': 'This daily window has been claimed. The next one opens at the time the upstream stated (the same countdown the Qoder web page shows).',
-  'row.poolCheckinDue': '· claimable now',
+  // The countdown is the UPSTREAM's next-window opening time (campaign `endAt`),
+  // not a local guess: the daily window runs 10:00 → next day 09:59 (UTC+8), which
+  // is what the Qoder web page shows.
+  //
+  // **The copy has to name what the number refers to** (user screenshot: "Checked
+  // in · refreshes in 00:39:22"). "Refreshes in" describes when this ROW reloads,
+  // while the number is when you can CLAIM again — side by side they contradict
+  // each other: done for today, yet refreshing in 39 minutes.
+  'row.poolCheckinNext': 'Claimable again in {countdown}',
+  'row.poolCheckinNextHint': 'This daily window has been claimed. The number is when the NEXT window opens (claim again then) — the same countdown the Qoder web page shows, not how often this row refreshes.',
+  // Once the window opens, do not repeat "Checked in": that was the PREVIOUS
+  // window, and "Checked in · claimable now" contradicts itself.
+  'row.poolCheckinDue': 'Claimable now',
+  'row.poolCheckinDueHint': 'The next window has opened, so this account can claim again now. "Checked in" referred to the previous window, so it is not repeated here.',
   'row.poolNeverTested': 'Not tested yet',
   'row.poolTestedAt': 'Tested {at}',
   'row.poolCreditSoon': '{count} expiring within 3 days',
@@ -483,11 +491,18 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolCheckedIn': '已签到',
   'row.poolNotCheckedIn': '未签到',
   'row.poolCheckinUnknown': '—',
-  // 倒计时是**上游给的**刷新时刻（活动行的 `endAt`），不是本地猜的：每日活动窗是
-  // 10:00 → 次日 09:59（UTC+8），也就是 Qoder 网页上显示的那个数。
-  'row.poolCheckinNext': '· {countdown} 后刷新',
-  'row.poolCheckinNextHint': '这一窗已经领过了。下一窗在上游给出的时刻开放 —— 与 Qoder 网页上的倒计时是同一个数。',
-  'row.poolCheckinDue': '· 现在可以领取',
+  // 倒计时是**上游给的**下一窗开窗时刻（活动行的 `endAt`），不是本地猜的：每日活动
+  // 窗是 10:00 → 次日 09:59（UTC+8），也就是 Qoder 网页上显示的那个数。
+  //
+  // **措辞必须点明这个数字是什么**（用户实拍：「已签到 · 00:39:22 后刷新」）。
+  // 「后刷新」字面说的是这一行数据什么时候更新，而数字其实是**什么时候可以再签** ——
+  // 两者混在一格，读起来就成了「已经签完了，却又 39 分钟后刷新」，自相矛盾。
+  'row.poolCheckinNext': '{countdown} 后可再签到',
+  'row.poolCheckinNextHint': '这一窗已经签到过了。这个数字是下一窗什么时候开（到点就能再签），与 Qoder 网页上的倒计时是同一个数 —— 不是「这一行多久刷新」。',
+  // 到点之后**不再重复「已签到」**：那是上一窗的状态，而此刻下一窗已经开了。
+  // 两者并排（「已签到 · 现在可以签到」）就是一句自相矛盾的话。
+  'row.poolCheckinDue': '现在可以签到',
+  'row.poolCheckinDueHint': '下一窗已经开了，这个账号现在可以再签。「已签到」说的是上一窗，所以这里不再重复它。',
   'row.poolNeverTested': '尚未测试',
   'row.poolTestedAt': '测试于 {at}',
   'row.poolCreditSoon': '{count} 积分 3 天内过期',

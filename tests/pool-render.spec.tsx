@@ -422,16 +422,20 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       return mountPool({ pool })
     }
 
-    it('已签到的行显示「已签到 · HH:MM:SS 后刷新」', async () => {
+    it('倒计时中的那一格**只说倒计时**，不再并排「已签到」（用户实拍）', async () => {
+      // 用户实拍「已签到 · 00:39:22 后刷新」并指出：39 分钟后**可以签到**，所以这句
+      // 不能显示「已签到」。「已签到」说的是上一窗，数字说的是下一窗什么时候开 ——
+      // 两个不同窗口的状态并排就是自相矛盾。去掉它不丢事实：「**再**签到」本身
+      // 已经蕴含「这一窗签过了」。
       const refreshAt = Date.now() + ((9 * 3600 + 22 * 60 + 23) * 1000)
       const { container, unmount } = await mountAt(Date.now(), claimedPool(refreshAt))
       try {
         const cell = container.querySelector('.dsm-qoder-pool-checkin')
-        expect(cell?.textContent).toContain('row.poolCheckedIn')
-        // 倒计时在，且是上游那个时刻。
         expect(cell?.textContent).toContain('row.poolCheckinNext')
-        const next = cell?.querySelector('.dsm-qoder-pool-checkin-next')
-        expect(next?.textContent).toContain('countdown=09:22:23')
+        // 倒计时在，且是上游那个时刻。
+        expect(cell?.querySelector('.dsm-qoder-pool-checkin-next')?.textContent).toContain('countdown=09:22:23')
+        // 关键：这一格里没有「已签到」。变异检查：把它加回去，这条立刻红。
+        expect(cell?.textContent).not.toContain('row.poolCheckedIn')
       } finally {
         vi.useRealTimers()
         await unmount()
@@ -453,7 +457,7 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       }
     })
 
-    it('倒计时走完 → 「现在可以领取」，而不是一个 00:00:00', async () => {
+    it('倒计时走完 → 「现在可以签到」，而不是一个 00:00:00，也不是「已签到 · 现在可以签到」', async () => {
       const now = Date.now()
       const { container, unmount } = await mountAt(now, claimedPool(now - 1000))
       try {
@@ -461,6 +465,9 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
         expect(cell?.querySelector('.dsm-qoder-pool-checkin-due')?.textContent).toBe('row.poolCheckinDue')
         // 关键：不能显示一个「00:00:00」假装还在倒计时。
         expect(cell?.textContent).not.toContain('00:00:00')
+        // 同样关键：到点之后「已签到」是**上一窗**的事，与「现在可以签到」并排自相
+        // 矛盾（用户实拍指出的就是这个位置）。变异检查：把「已签到」并回来即红。
+        expect(cell?.textContent).not.toContain('row.poolCheckedIn')
       } finally {
         vi.useRealTimers()
         await unmount()
