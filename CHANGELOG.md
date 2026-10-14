@@ -2,6 +2,24 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.5.0 (2026-10-14)
+
+> 版本号是 **minor** 而不是 patch：这一版新增了一个**用户可见的设置**（`regions.<region>.creditPosition`，积分读数的位置）和一个**新的渲染席位**（`conversation.composer.dock`），配置 schema 也多了一个字段。按语义化版本这是特性，不是修错 —— 与同族 `dsh-connect-workbuddy` 对同一改动走 **4.5.0**（minor）的判断保持一致。
+
+对上同族 `dsh-connect-workbuddy` 的 **4.5.0（issue #62）**：那个项目收到报告——**装了第三方插件（`dsh-auto-continue`）之后，输入框里的积分余额就不显示了**——根因是**位置本身**，于是把积分读数做成「两个位置可选」。本插件此前只注册了同一个席位，因此带着同一个潜在缺陷，这一版把该改动对齐过来。
+
+### Added
+
+- **积分读数位置可选：输入框工具栏 / 输入框下方**（对齐 workbuddy issue #62，其 commit `f16b05f`）。
+  - **根因不是插件冲突，而是席位语义**：`conversation.input.left`（输入框工具栏）是**共享的 list 插槽**——shell 自己的控件和任何其他 bundle 都注册在那里，而 **list 插槽无法保证每个占用者都可见**。所以「另一个插件装进来，读数就没了」不是谁把谁挤掉的偶发，而是该席位结构上就不作保证。本插件此前只注册这一个席位，因而同样暴露。已用**装机运行时代码**核对（不是推断）：`dsh-client-ui-conversation/lib/client.js` 里两个席位都是 `{kind:"list", scope:"session"}`，且 `conversation.composer.dock` 的渲染条件是 `variant === "composer" && input !== undefined && sessionId !== undefined`。
+  - **新增设置 `regions.<region>.creditPosition = 'composer' | 'stats'`，默认 `composer`** —— 默认值取该设置存在之前**唯一**的席位，所以**升级不会移动屏幕上任何东西**（读盘走本地读取而非 schema 默认值，配置在此之前写下的也读作 `composer`）。用联合类型而非布尔：第三个席位是可预见的，`showAtTop: boolean` 只能迁移、不能扩展。
+  - **两个席位都无条件注册，决定权收在 gate 一处**（席位不符即 `return null`）。反过来「按设置只注册被选中的席位」意味着每次改设置都要**重新注册插槽**，而本仓库已写明这种绑定是脆的（晚到的 settings 命名空间必须产生新注册而非改闭包）。
+  - **`stats` 席位 = `conversation.composer.dock`**，`order: 10` 排在 shell 自己的轮次/tok/s/缓存命中统计（注册在 0）**之后**：自带统计仍在最左，读数是**追加**而不是顶替。
+  - **判定顺序是「归属 → 两个开关 → 席位」**：被关掉的区域在两个席位都**不**渲染，而不是先在非当前席位画一帧再被区域判定拒掉（那会让用户看到读数闪一下）。
+  - **卡片新增二选一控件**，与「在对话框显示积分」开关同处一行、紧随其后；读数走 **Host 的 usage 应答**而不是浏览器设置镜像——与那个开关同一个实测理由（在受影响的部署上镜像从不拾取经 Host 保存端点写入的值，控件会一直显示旧席位）。写入沿用 `writeRegionCreditPosition` 的**回读校验**。关掉积分开关时控件**置灰而非消失**：两个席位此时都不渲染，位置无从谈起，但「有这个选项」这件事本身不该从界面上蒸发。
+  - **测试 +14**：新增 `tests/credit-position.spec.tsx`（10 例）钉住读写往返（含「设置存在之前写下的配置读作 `composer`」与 volatile 代理的 `===` 陷阱）、按区域而非全局、兄弟字段与另一区域不被写入吃掉、归属判定，以及**gate 只在被点名的席位渲染**；`tests/card-render.spec.tsx`（+4 例）钉住卡片控件的值来自 Host 应答、回落 composer、写入 body 的形状（`{field:'regions', value:{<region>:{…}}}`）与置灰。变异验证：删掉席位判定 → 2 例红；读取端恒返回 `composer` → 4 例红；默认值改成 `stats` → 1 例红；卡片写错字段名 → 1 例红；卡片读数硬编码 → 1 例红。全量 581 通过 / 7 跳过。
+  - **未做（如实记录）**：没有实机核对运行中的插槽树 —— 该席位是否真的在 UI 上出现，需要 `pnpm run dev:web` 加页面刷新，本轮只验证了插槽名、`kind/scope` 与渲染条件（读的是装机产物），以及 gate/卡片的决策逻辑。
+
 ## 0.4.3 (2026-10-13)
 
 两条用户实拍：**国际版对话报「API 密钥无效」而卡片只说「用量已达上限」**，以及**两个区域每次保存都会让思考强度消失**。两条都不是上游的错，是我们自己把答案读丢了。
