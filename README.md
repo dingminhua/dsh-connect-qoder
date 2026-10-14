@@ -47,7 +47,7 @@
 - **账号转移（导入 / 导出）** —— 按区域把 vault 账号导出为传输文件，预览后按索引导入；跨区域域名（`qoder.com.cn` / `qoder.sh`）正向匹配，不匹配的记录计入 `skipped`。
 - **思考强度与上下文预算** —— 上游按模型声明 `thinking_config.efforts`，卡片只列出**真实存在**的档位（Qwen 系 `low/medium/xhigh`、DeepSeek/GLM 系 `low/high/max`），选定即保存、每个请求自动带上（与 Qoder 客户端同一发送字段，双写顶层与 `parameters`）；上下文档位同样只来自上游 `context_config` 声明的档位，未声明时不渲染控件、不编造选项。
 - **诚实的模型能力** —— 上游的 `is_vl` 是**平台**的图片输入声明而非模型原生能力（内置目录里几乎全是 `true`，连纯文本模型也是）。图片输入按**精确 model id** 的人工核对表只对文档确认多模态的模型预勾选，未核实的一律不勾，并在开关 tooltip 里说明「为什么没勾」；「关闭思考」同样只对上游显式声明、且不在已知拒绝集里的模型提供。宁可少给一个选项，也不要让用户按下去就失败。
-- **composer 积分读数** —— 会话输入区（`conversation.input.left`）按区域显示 `QD CN` / `QD AI` 与当前账号余额（如 `QD CN · 92`），点开是逐账号的余额表，点某一行即切换到该账号；受每区域「在对话框显示积分」开关控制（默认开，opt-out）。
+- **composer 积分读数（位置可选）** —— 会话输入区按区域显示 `QD CN` / `QD AI` 与当前账号余额（如 `QD CN · 92`），点开是逐账号的余额表，点某一行即切换到该账号；受每区域「在对话框显示积分」开关控制（默认开，opt-out）。**读数可放在两个位置之一**（卡片上的二选一下拉，每区域独立，默认不变）：**输入框工具栏**（`conversation.input.left`，更近、更易扫一眼）或**输入框下方**（`conversation.composer.dock`，即 shell 渲染轮次 / tok/s / token / 缓存命中那一行的常驻栏，读数是追加在自带统计之后）。之所以可选：输入框工具栏是**共享的 list 插槽**，另一个把东西停在那里的插件可能把读数挤到看不见——此时切到「输入框下方」即可（对齐 workbuddy issue #62）。
 
   <img src="docs/assets/dsh-connect-qoder-composer-credits.png" width="360" alt="对话输入框的积分面板：QD CN 逐账号余额表、刷新积分按钮与最近刷新时间" />
 - **命令行诊断与现场验证** —— `dsh-connect-qoder doctor|status|logout [--json] [--region cn|global]`：`doctor` 报 PAT 来源、cosy 指纹派生、pi-ai 代际、宿主心跳存活与 vault 账号计数；`status` 报凭据来源、上游可达性与当前剩余积分；`logout` 清除指定区域的 vault 账号与账号池测量副本。另有 `pnpm run probe:cosy`（不依赖宿主直连 cosy 链路验证）与 `pnpm run probe:vault`（只读 dump vault / 账号池测量，PAT 只显示掩码）。

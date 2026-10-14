@@ -43,6 +43,7 @@ import {
   regionOfStatusUrl,
   transferActionOf,
   type QoderWebRegion,
+  type QoderCreditPosition,
   type QoderWebUsage,
   type QoderWebAccount,
   type QoderWebAccountCredit,
@@ -181,6 +182,13 @@ export interface QoderSettingsDeps {
 export interface QoderWebRouteDeps {
   regionEnabled(region: QoderRegion): boolean
   regionCreditsShown(region: QoderRegion): boolean
+  /**
+   * WHERE this region's credit readout sits.
+   *
+   * Optional, and absent reads as `composer` —— 该设置存在之前唯一的席位，
+   * 所以早于本设置的宿主渲染得与从前完全一样。
+   */
+  creditPosition?(region: QoderRegion): QoderCreditPosition
   regionUsable?(region: QoderRegion, usable: boolean): void
   store(region: QoderRegion): QoderAccountDeps
   credentialSources(region: QoderRegion): { settingsPat?: string | undefined, envPat?: string | undefined }
@@ -713,6 +721,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
       accounts: accounts.map(webAccountOf(deps, region)),
       enabled: deps.regionEnabled(region),
       showCreditsInMainUi: deps.regionCreditsShown(region),
+      creditPosition: deps.creditPosition?.(region) ?? 'composer',
       message: selectionLost
         ? '所选账号已不存在，请重新选择或填写 PAT'
         : '请填写 Qoder PAT（或设置环境变量）',
@@ -769,6 +778,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     region,
     enabled: deps.regionEnabled(region),
     showCreditsInMainUi: deps.regionCreditsShown(region),
+    creditPosition: deps.creditPosition?.(region) ?? 'composer',
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
     accounts: accounts.map(webAccountOf(deps, region)),

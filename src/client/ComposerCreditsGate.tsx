@@ -17,8 +17,8 @@
  */
 import { useEffect, useState } from 'react'
 import { ComposerCredits, QODER_COMPOSER_PROVIDERS } from './ComposerCredits.tsx'
-import { regionCreditsShownOf, regionEnabledOf, unwrapVolatileDeep } from '../status-paths.ts'
-import type { QoderWebRegion } from '../status-paths.ts'
+import { regionCreditPositionOf, regionCreditsShownOf, regionEnabledOf, unwrapVolatileDeep } from '../status-paths.ts'
+import type { QoderCreditPosition, QoderWebRegion } from '../status-paths.ts'
 import type { Translate } from './locales.ts'
 
 /** The slice of the `modelSelection` projection this decision needs. */
@@ -41,6 +41,17 @@ export interface ComposerScopeLike {
 }
 
 /**
+ * The settings tree this plugin writes, unwrapped to a plain object.
+ *
+ * `unwrapVolatileDeep` first: the scope's value is a live cosmokit reference,
+ * and reading fields off it without unwrapping yields proxies whose `===`
+ * comparison against a string is false.
+ */
+function scopeValueOf(scope: ComposerScopeLike | undefined): unknown {
+  return scope === undefined ? undefined : unwrapVolatileDeep(scope.getSnapshot().value)
+}
+
+/**
  * Which region's readout this session should show, or undefined for none.
  */
 export function composerCreditsRegionOf(
@@ -50,7 +61,7 @@ export function composerCreditsRegionOf(
   const provider = selectedProviderOf(projection)
   const region = provider === undefined ? undefined : QODER_COMPOSER_PROVIDERS[provider]
   if (region === undefined) return undefined
-  const value = scope === undefined ? undefined : unwrapVolatileDeep(scope.getSnapshot().value)
+  const value = scopeValueOf(scope)
   if (!regionCreditsShownOf(value, region)) return undefined
   if (!regionEnabledOf(value, region)) return undefined
   return region
@@ -58,6 +69,15 @@ export function composerCreditsRegionOf(
 
 export interface ComposerCreditsGateProps {
   t: Translate
+  /**
+   * WHICH seat this registration occupies.
+   *
+   * The component is registered once per seat and renders only in the seat the
+   * setting names, so switching seats is a settings write rather than a slot
+   * re-registration. Absent means `composer` —— 该设置存在之前唯一的席位，
+   * 这让所有既有调用方与测试都留在旧行为上。
+   */
+  position?: QoderCreditPosition
   /** Settings scope from the configForms mirror; the card writes the same field. */
   settingsScope?: ComposerScopeLike
   /**
@@ -69,7 +89,7 @@ export interface ComposerCreditsGateProps {
 }
 
 export function ComposerCreditsGate(props: ComposerCreditsGateProps) {
-  const { t, settingsScope, useProjection } = props
+  const { t, position, settingsScope, useProjection } = props
   const [, setRevision] = useState(0)
   useEffect(
     () => {
@@ -84,6 +104,10 @@ export function ComposerCreditsGate(props: ComposerCreditsGateProps) {
 
   const region = composerCreditsRegionOf(projection, settingsScope)
   if (region === undefined) return null
+  // The seat test comes AFTER ownership and the on/off switches, so a region
+  // that is switched off renders nothing in EITHER seat (rather than the
+  // inactive seat briefly drawing before the region test rejects it).
+  if (regionCreditPositionOf(scopeValueOf(settingsScope), region) !== (position ?? 'composer')) return null
 
   const provider = selectedProviderOf(projection) as string
   return <ComposerCredits t={t} provider={provider} region={region} {...settingsScope === undefined ? {} : { settingsScope }} />

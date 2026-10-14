@@ -75,6 +75,10 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-credits-switch{display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-credits-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
 .dsm-qoder-credits-switch input:disabled{opacity:.4;cursor:default}
+/* 读数位置二选一：与积分开关同一行、紧随其后（用户要的是同处一行紧凑摆放）。 */
+.dsm-qoder-credit-position-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-qoder-credit-position{max-width:150px;padding:2px 6px;font-size:12px}
+.dsm-qoder-credit-position:disabled{opacity:.4;cursor:default}
 .dsm-qoder-tab-off{opacity:.55}
 .dsm-qoder-usage-account-actions{display:flex;gap:8px;margin:10px 0 0}
 .dsm-qoder-account-confirm{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}

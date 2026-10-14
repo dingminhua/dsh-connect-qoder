@@ -796,3 +796,176 @@ describe('cn / global 两个 tab 的渲染对等', () => {
     }
   })
 })
+
+// ==========================================================================
+// 积分读数席位：卡片上的二选一控件（对齐 workbuddy issue #62）
+// ==========================================================================
+
+/**
+ * 这个控件曾经完全不存在 —— 读数被**焊死**在输入框工具栏那一个席位上，而那是
+ * 一个共享的 list 插槽，另一个插件停在那里就可能把读数挤没。
+ *
+ * 这里钉的不是「有没有渲染一个 select」，而是三件会真正骗到用户的事：
+ *   1. **值来自 Host 的 usage 应答**，不是浏览器设置镜像 —— 后者在受影响的部署上
+ *      从不拾取经 Host 保存端点写入的值，控件会一直显示旧席位；
+ *   2. **写的是 `regions.<region>.creditPosition`**，且只动目标区域；
+ *   3. **开关关掉时控件置灰**（而不是消失）—— 两个席位此时都不渲染，位置无从谈起，
+ *      但「有这个选项」这件事本身不该从界面上消失。
+ */
+describe('积分读数席位控件', () => {
+  /** Drive the card with one usage answer whose `creditPosition` we control. */
+  const withPosition = (position: unknown): Record<string, unknown> => ({
+    status: 'signed-in',
+    accountId: 'a1',
+    accountName: 'A1',
+    region: 'cn',
+    enabled: true,
+    showCreditsInMainUi: true,
+    ...position === undefined ? {} : { creditPosition: position },
+    selectionExplicit: false,
+    accounts: [{ id: 'a1', accountName: 'A1', source: 'settings', selected: true }],
+    models: [modelOf({})],
+    enabledModelKeys: ['qwen3-coder'],
+    offModelKeys: [],
+    imageModelKeys: [],
+    // 控件由账号池的标题行渲染（`creditsSwitch` 是传给 AccountPool 的节点），
+    // 没有 pool 就整段不渲染——这正是第一版用例拿到 null 的原因。
+    pool: {
+      enabled: false,
+      checkinSupported: true,
+      targetModelId: '',
+      targetModelSource: 'none',
+      memberAccountIds: [],
+      effectiveMemberAccountIds: [],
+      accounts: [],
+      catalog: [],
+    },
+  })
+
+  const stubUsage = (doc: (region: string) => Record<string, unknown>, record?: string[]): void => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        record?.push(region)
+        return { ok: true, status: 200, json: async () => doc(region) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+  }
+
+  it('渲染二选一控件，值取自 Host 的 usage 应答', async () => {
+    stubUsage(region => withPosition('stats'))
+    const { container, unmount } = await mountCard()
+    try {
+      const select = container.querySelector<HTMLSelectElement>('select.dsm-qoder-credit-position')
+      expect(select).not.toBeNull()
+      // 关键：值来自 Host 应答。若改成读浏览器设置镜像，这里会是 composer。
+      expect(select!.value).toBe('stats')
+      const values = Array.from(select!.querySelectorAll('option')).map(o => o.value)
+      expect(values).toEqual(['composer', 'stats'])
+      // 与积分开关同处一行（用户要求：紧挨着放，不新起一行）。
+      expect(select!.closest('.dsm-qoder-credit-position-switch')).not.toBeNull()
+      expect(container.querySelector('.dsm-qoder-credit-position-switch')!.parentElement)
+        .toBe(container.querySelector('.dsm-qoder-credits-switch')!.parentElement)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('缺席或不可识别时回落 composer（升级不移屏 / 手工改坏不至于没有值）', async () => {
+    stubUsage(region => withPosition(undefined))
+    const a = await mountCard()
+    try {
+      expect(a.container.querySelector<HTMLSelectElement>('select.dsm-qoder-credit-position')!.value).toBe('composer')
+    } finally {
+      await a.unmount()
+    }
+    stubUsage(region => withPosition('sidebar'))
+    const b = await mountCard()
+    try {
+      expect(b.container.querySelector<HTMLSelectElement>('select.dsm-qoder-credit-position')!.value).toBe('composer')
+    } finally {
+      await b.unmount()
+    }
+  })
+
+  it('改选席位写入 regions.<region>.creditPosition，且只动目标区域', async () => {
+    // 记录 Host 保存端点收到的 payload。这是唯一能证明「写对了字段、没吃掉
+    // 兄弟字段」的地方——读取端测试证明不了写入端。
+    const saves: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            ...withPosition('composer'),
+            region,
+            // global 带着自己的、不同的席位：写入若越界，下面的断言会抓到。
+            ...region === 'global' ? { creditPosition: 'stats' } : {},
+          }),
+        } as Response
+      }
+      if (url.includes('/plugins/dsh-connect-qoder/__save') || url.includes('/settings')) {
+        saves.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+        return { ok: true, status: 200, json: async () => ({ regions: { cn: { creditPosition: 'stats' } } }) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    // 必须给 scope：`changeCreditPosition` 在没有写权限时直接 return（卡片
+    // 从不假装写入）。`mountCard` 不带 scope，所以这里自己挂载。
+    const wrote: Record<string, unknown> = { cn: { accountId: 'a1', showCreditsInMainUi: true } }
+    const settingsScope = {
+      getSnapshot: () => ({ status: 'ready', value: { regions: wrote }, writable: true }),
+      subscribe: () => () => {},
+      set: async () => true,
+    }
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    try {
+      await act(async () => {
+        root.render(React.createElement(QoderCard, { t, view: 'page', settingsScope } as any))
+      })
+      const select = container.querySelector<HTMLSelectElement>('select.dsm-qoder-credit-position')!
+      await act(async () => {
+        select.value = 'stats'
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      await act(async () => { await Promise.resolve() })
+      // Host 保存端点的 body 形状是 `{ field: 'regions', value: { <region>: <slot> } }`
+      // —— 区域槽在 `value` 下，不在顶层 `regions` 下。
+      const regionWrites = saves
+        .filter(s => (s as { field?: unknown }).field === 'regions')
+        .map(s => (s as { value?: Record<string, unknown> }).value)
+        .filter((r): r is Record<string, unknown> => r !== undefined)
+      expect(regionWrites.length).toBeGreaterThan(0)
+      const cn = regionWrites[0]!.cn as Record<string, unknown>
+      expect(cn.creditPosition).toBe('stats')
+      // 兄弟字段没被这次写入吃掉。
+      expect(cn.accountId).toBe('a1')
+      expect(cn.showCreditsInMainUi).toBe(true)
+      // 另一个区域不在这次写入里。
+      expect(regionWrites[0]!.global).toBeUndefined()
+    } finally {
+      await act(async () => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('积分开关关掉时控件置灰而不是消失', async () => {
+    stubUsage(region => ({ ...withPosition('composer'), showCreditsInMainUi: false }))
+    const { container, unmount } = await mountCard()
+    try {
+      const select = container.querySelector<HTMLSelectElement>('select.dsm-qoder-credit-position')
+      // 仍在 DOM 里（选项本身不该消失），但不可操作。
+      expect(select).not.toBeNull()
+      expect(select!.disabled).toBe(true)
+    } finally {
+      await unmount()
+    }
+  })
+})

@@ -42,6 +42,7 @@ import {
 } from '../status-paths.ts'
 import type {
   QoderPersistedModel,
+  QoderCreditPosition,
   QoderWebModel,
   QoderWebProbeOutcome,
   QoderWebProbeResult,
@@ -51,6 +52,7 @@ import type {
 import type { QoderAccountScope } from './account-selection.ts'
 import {
   writeAccountSlot,
+  writeRegionCreditPosition,
   writeRegionCreditsShown,
   writeRegionEnabled,
   writeRegionModels,
@@ -533,6 +535,21 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     })
   }
 
+  /**
+   * Move this region's readout to another seat.
+   *
+   * A settings write, not a slot re-registration: both seats are registered
+   * unconditionally and the gate picks between them, so this returns as soon as
+   * the Host accepts it.
+   */
+  function changeCreditPosition(position: QoderCreditPosition): void {
+    if (scope === undefined) return
+    setSiblingBusy(true)
+    void writeRegionCreditPosition(scope, activeRegion, position, slotWith(scope, activeRegion, { creditPosition: position })).finally(() => {
+      if (mounted.current) setSiblingBusy(false)
+    })
+  }
+
   function renderRejected(usage: Extract<QoderWebUsage, { status: 'signed-in' }>): ReactElement | null {
     const recovery = usage.recovery
     // 与 workbuddy 同构：usage-error 容器 + strong/p，三态说明互斥
@@ -886,6 +903,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     // 「在对话框显示积分」开关：卡片持有写权限与区域，所以由卡片构造、交给
     // 账号池渲染在标题行右端（用户要求：放到账号池标题旁边，省一行空间）。
     const creditsSwitch = (
+      <>
       <label
         className="dsm-qoder-credits-switch"
         title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}
@@ -898,6 +916,23 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         />
         {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
       </label>
+      {/* 读数位置二选一：与开关同一行、紧随其后。只在开关打开时有意义——
+          关掉时两个席位都不渲染，位置无从谈起，所以置灰而不是藏起来（藏起来
+          会让「有这个选项」这件事本身消失）。 */}
+      <span className="dsm-qoder-credit-position-switch">
+        <select
+          className="dsm-qoder-credit-position"
+          aria-label={t('row.creditPositionAria', { region: activeRegion === 'cn' ? 'QD CN' : 'QD AI' })}
+          title={t('row.creditPositionHint')}
+          value={creditsPositionOf(usage)}
+          disabled={!regionOn || !creditsShownOf(usage) || !canWrite(scope) || siblingBusy || poolBusy}
+          onChange={(event) => { changeCreditPosition(event.target.value === 'stats' ? 'stats' : 'composer') }}
+        >
+          <option value="composer">{t('row.creditPositionComposer')}</option>
+          <option value="stats">{t('row.creditPositionStats')}</option>
+        </select>
+      </span>
+      </>
     )
     return (
       <AccountPool
@@ -955,6 +990,20 @@ function creditsShownOf(usage: QoderWebUsage | undefined): boolean {
   if (usage.status === 'signed-out') return usage.showCreditsInMainUi !== false
   if (usage.status === 'signed-in') return usage.showCreditsInMainUi !== false
   return true
+}
+
+/**
+ * Which seat this region's readout uses, read from the HOST's answer.
+ *
+ * Read from the usage document rather than the browser settings mirror, for the
+ * same measured reason as the switch above: on affected deployments that mirror
+ * never picks up writes made through the Host save endpoint, so a control
+ * reading it would keep showing the old seat.
+ */
+function creditsPositionOf(usage: QoderWebUsage | undefined): QoderCreditPosition {
+  if (usage === undefined) return 'composer'
+  if (usage.status === 'error') return 'composer'
+  return usage.creditPosition === 'stats' ? 'stats' : 'composer'
 }
 
 function cloneDraft(draft: QoderDraft): QoderDraft {

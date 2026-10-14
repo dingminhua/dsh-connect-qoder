@@ -24,7 +24,7 @@ import {
   QODER_SAVE_PATH,
   unwrapVolatileDeep,
 } from '../status-paths.ts'
-import type { QoderWebRegion } from '../status-paths.ts'
+import type { QoderCreditPosition, QoderWebRegion } from '../status-paths.ts'
 
 /**
  * The slice of the bound settings scope this module writes through.
@@ -206,6 +206,25 @@ export async function writeRegionCreditsShown(
   await writeField(scope, 'regions', region, slot, readBack => {
     const stored = readBack as Record<string, unknown> | null | undefined
     return stored !== null && stored !== undefined && stored['showCreditsInMainUi'] === shown
+  })
+}
+
+/**
+ * Write one region's credit-readout SEAT, with the same landed-check.
+ *
+ * The read-back check matters for the same measured reason it does for the
+ * switch: the settings mirror can silently drop a write, and a control that
+ * keeps showing the old seat is worse than one that reports failure.
+ */
+export async function writeRegionCreditPosition(
+  scope: QoderAccountScope,
+  region: QoderWebRegion,
+  position: QoderCreditPosition,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['creditPosition'] === position
   })
 }
 

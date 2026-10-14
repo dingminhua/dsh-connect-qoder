@@ -58,6 +58,7 @@ import {
   type QoderWebCreditPackage,
   type QoderWebAccountCredit,
   type QoderWebRecovery,
+  type QoderCreditPosition,
 } from './status-paths.ts'
 import { qoderAccountId, maskPat, patFromEnv } from './credentials.ts'
 import { QoderAccountStore, type QoderStoredAccount } from './accounts.ts'
@@ -158,6 +159,24 @@ const regionConfig = z.object({
   accountId: z.string().default(''),
   /** 是否在主界面展示积分（composer 面板）；opt-out。 */
   showCreditsInMainUi: z.boolean().default(true),
+  /**
+   * 积分读数放在哪个席位。
+   *
+   * 两个席位，因为第一个不总是可用：
+   *
+   *   - `composer` —— 输入框工具栏（`conversation.input.left`），与 shell 自带
+   *     控件共享该 list 插槽。它更近、更易扫一眼，且是默认值，所以没主动选过的
+   *     人升级后界面不动。
+   *   - `stats` —— 输入框卡片下方的常驻栏（`conversation.composer.dock`），
+   *     即 shell 渲染「轮次 / tok/s / token / 缓存命中」那一行。那个 list 插槽的
+   *     自带占用者单独注册，因此另一个把东西停在输入框那行的第三方插件，无法把
+   *     这个读数挤到消失。
+   *
+   * 参考 dsh-connect-workbuddy 的 issue #62：装了第三方插件后读数从输入框那行
+   * 消失，根因是「席位本身」——list 插槽无法保证每个占用者都可见。把席位变成
+   * 用户的选择，正是让一个插件的存在不再决定另一个插件的可见性。
+   */
+  creditPosition: z.union([z.const('composer'), z.const('stats')]).default('composer').description('积分读数的位置："composer" = 输入框工具栏（默认），"stats" = 输入框卡片下方的常驻栏，与 shell 自己的 token 统计同行。若输入框那行被其他插件占用，选 "stats"。'),
   /** 用户勾选的模型 key 集合。 */
   enabledModelKeys: z.array(z.string()).default([]),
   /**
@@ -257,6 +276,17 @@ export function regionEnabled(config: { regions?: Record<string, unknown> | null
 function regionCreditsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
   const state = regionStateOf(config, region)
   return state.showCreditsInMainUi !== false
+}
+
+/**
+ * 某区域的积分读数放在哪个席位。
+ *
+ * 本地读取而不是依赖 schema 默认值：这样在设置存在之前写下的配置读出来是
+ * `composer` —— 当时唯一的席位 —— 所以升级不会移动屏幕上的任何东西。
+ */
+function creditPosition(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): QoderCreditPosition {
+  const state = regionStateOf(config, region)
+  return state.creditPosition === 'stats' ? 'stats' : 'composer'
 }
 
 /** 某区域是否配置了凭据（设置 PAT 或环境变量其一）。 */
@@ -1247,6 +1277,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     registerQoderWebRoutes(ctxWithWeb, {
       regionEnabled: region => regionEnabled(config, region),
       regionCreditsShown: region => regionCreditsShown(config, region),
+      creditPosition: region => creditPosition(config, region),
       regionUsable: (region, usable) => {
         if (!usable) log(`region ${region} is signed out`)
       },

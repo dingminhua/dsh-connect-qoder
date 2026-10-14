@@ -127,15 +127,55 @@ export function apply(ctx: QoderClientContext): void {
           // `settingsScope` rides along so the gate can honor the card's
           // per-region switch without a second writer.
           inject: () => settingsScope === undefined
-            ? { t }
-            : { t, settingsScope },
+            ? { t, position: 'composer' as const }
+            : { t, position: 'composer' as const, settingsScope },
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-qoder] composer credits slot failed to register (host provider unaffected):', error)
       }
     }
 
+    /**
+     * 同一个读数，注册在输入框卡片下方的常驻栏（`conversation.composer.dock`）。
+     *
+     * 与输入框席位一样**无条件注册**，因为「两个席位选哪个」这个决定在 gate 里：
+     * 它只在设置点名的席位渲染、在另一个席位 return null。只注册被选中的席位，
+     * 就意味着每次改设置都要重新注册插槽——而本仓库已写明这种绑定是脆的（晚到的
+     * settings 命名空间必须产生新注册而非改闭包）。
+     *
+     * 参考：dingminhua/dsh-connect-workbuddy 的 `registerStatsCredits`（issue #62，
+     * MIT，Copyright (c) 2026 LaoDing）。Qoder 沿用同一形态；不同在于读数标注与
+     * provider 路由（`qoder` / `qoder-global`）。
+     *
+     * 这个席位为什么存在：输入框工具栏是**共享的 list 插槽**，任何其他 bundle 都
+     * 注册在那里，而 list 插槽无法保证每个占用者都可见——第三方插件把读数挤没的
+     * 报告正是这么来的。这一行是 shell 渲染自己「轮次 / tok/s / token / 缓存命中」
+     * 的地方，本来就是用户读会话数字的位置；`order` 10 排在 shell 统计（注册在 0）
+     * 之后，所以自带统计仍在最左，读数是**追加**而不是顶替。
+     */
+    const registerStatsCredits = (): void => {
+      try {
+        ctx.slots.inject('conversation.composer.dock' as never, () => (ctx.slots as unknown as {
+          register(
+            options: { name: string; id: string; order: number; locale: string; inject: () => QoderCardInjected },
+            component: unknown,
+          ): () => void
+        }).register({
+          name: 'conversation.composer.dock',
+          id: 'dsh-connect-qoder-stats-credits',
+          order: 10,
+          locale: namespace,
+          inject: () => settingsScope === undefined
+            ? { t, position: 'stats' as const }
+            : { t, position: 'stats' as const, settingsScope },
+        }, ComposerCreditsGate))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-qoder] stats credits slot failed to register (host provider unaffected):', error)
+      }
+    }
+
     registerComposerCredits()
+    registerStatsCredits()
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     console.error('[dsh-connect-qoder] client apply failed:', error)

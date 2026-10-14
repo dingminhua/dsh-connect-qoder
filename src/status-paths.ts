@@ -887,6 +887,8 @@ export type QoderWebUsage =
      * the old value.
      */
     showCreditsInMainUi?: boolean
+    /** WHERE this region's readout sits; absent means `composer`. */
+    creditPosition?: QoderCreditPosition
     message?: string
     /** The persisted account id matches no stored credential. */
     selectionLost?: boolean
@@ -914,6 +916,8 @@ export type QoderWebUsage =
     enabled?: boolean
     /** See the signed-out variant. */
     showCreditsInMainUi?: boolean
+    /** See the signed-out variant: WHERE this region's readout sits. */
+    creditPosition?: QoderCreditPosition
     source?: 'settings' | 'env' | 'vault'
     /** A saved per-region choice is in effect (false = following the default). */
     selectionExplicit: boolean
@@ -1095,6 +1099,48 @@ export function nextRegionEnabled(
   enabled: boolean,
 ): Record<string, unknown> {
   return nextRegionSlots(regionsMapOf(value), region, { ...regionSlotOf(value, region), enabled })
+}
+
+/**
+ * The two seats this region's credit readout can occupy.
+ *
+ * 参考：dsh-connect-workbuddy 的 `WorkBuddyCreditPosition`（issue #62，MIT，
+ * Copyright (c) 2026 LaoDing）—— 位置是**用户的**选择，因为第一个席位本身不
+ * 一定可用。
+ *
+ * `composer` 是输入框工具栏（`conversation.input.left`）；`stats` 是输入框
+ * 卡片下方的常驻栏（`conversation.composer.dock`），即 shell 渲染「轮次 / tok/s /
+ * token / 缓存命中」那一行。用联合类型而不是布尔，因为第三个席位是可预见的，
+ * 而 `showAtTop: boolean` 只能迁移、不能扩展。
+ */
+export type QoderCreditPosition = 'composer' | 'stats'
+
+/**
+ * Which seat one region's readout uses, defaulting to the composer tool row.
+ *
+ * 默认 `composer` 是刻意的：它是该设置存在之前**唯一**的席位，所以升级不会
+ * 移动任何人屏幕上的东西。
+ */
+export function regionCreditPositionOf(value: unknown, region: QoderWebRegion): QoderCreditPosition {
+  return regionSlotOf(value, region)['creditPosition'] === 'stats' ? 'stats' : 'composer'
+}
+
+/**
+ * Build the next `regions` settings value for one region's credit seat.
+ *
+ * Same merge rule as {@link nextRegionCreditsShown}: only the target region's
+ * field changes, so every other field of that slot and every other region's slot
+ * survive the write.
+ */
+export function nextRegionCreditPosition(
+  value: unknown,
+  region: QoderWebRegion,
+  position: QoderCreditPosition,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    creditPosition: position,
+  })
 }
 
 /**
