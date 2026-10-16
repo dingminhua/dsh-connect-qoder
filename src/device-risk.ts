@@ -18,6 +18,7 @@
 
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import type { QoderRegion } from './upstream.ts'
 
@@ -28,6 +29,20 @@ const MAX_OUTPUT_BYTES = 1024 * 1024
 
 /** 组件调用超时。参考实现用 25s，这里保持一致。 */
 const COMPONENT_TIMEOUT_MS = 25_000
+
+/**
+ * 组件进程的 spawn 选项。
+ *
+ * `windowsHide` 与 `host-heartbeat.ts` 的 `PROCESS_PROBE_OPTIONS` 同因（家族
+ * 教训，见其注释）：DSH Desktop 宿主是 Electron GUI 进程（无 console），
+ * Windows 会给这种父进程的控制台子程序**新建一个可见窗口** —— 每次读设备
+ * 身份都会闪一个黑框。POSIX 上该选项被忽略。
+ */
+export const RISK_PROCESS_OPTIONS = {
+  timeout: COMPONENT_TIMEOUT_MS,
+  maxBuffer: MAX_OUTPUT_BYTES,
+  windowsHide: true,
+} as const
 
 /**
  * 进程内缓存的存活时间。
@@ -50,6 +65,11 @@ export interface QoderDeviceRisk {
  * 区域与 App 的对应关系沿用参考实现：国际版优先 `Qoder`，国内版优先 `Qoder CN`。
  * 两个 App 都装时，各自优先自己那个 —— 设备身份与区域是绑定的，用错一侧的组件
  * 会被风控拒绝。
+ *
+ * 这里是 **macOS** 的安装位置；Windows 的安装位置（`%LOCALAPPDATA%\Programs\…`）
+ * 由 {@link windowsUmidCandidates} 动态展开后**追加**在 macOS 候选之后 —— Windows
+ * 上没有 `/Applications` 目录，不追加的话 find 永远落空，国际版积分/签到就会
+ * 因为「取不到设备身份」而读不到。
  */
 const UMID_CANDIDATES: Readonly<Record<QoderRegion, readonly string[]>> = {
   cn: [
@@ -60,6 +80,22 @@ const UMID_CANDIDATES: Readonly<Record<QoderRegion, readonly string[]>> = {
     '/Applications/Qoder.app/Contents/Resources/umid/runtime-info',
     '/Applications/Qoder CN.app/Contents/Resources/umid/runtime-info',
   ],
+}
+
+/**
+ * Windows 上 Qoder 客户端的 UMID 组件位置（`%LOCALAPPDATA%\Programs\<App>\resources\
+ * umid\runtime-info.exe`），区域 → App 的优先级与 macOS 候选一致。
+ *
+ * `%LOCALAPPDATA%` 可能未定义（无窗口会话 / CI），此时返回空数组 —— 调用方照常
+ * 走「macOS 候选 + 环境变量」的既有路径，不报错。
+ */
+function windowsUmidCandidates(region: QoderRegion): string[] {
+  const local = process.env.LOCALAPPDATA
+  if (!local) return []
+  const pathOf = (app: string): string => join(local, 'Programs', app, 'resources', 'umid', 'runtime-info.exe')
+  return region === 'cn'
+    ? [pathOf('Qoder CN'), pathOf('Qoder')]
+    : [pathOf('Qoder'), pathOf('Qoder CN')]
 }
 
 /** 允许用户显式指定组件路径（参考实现的 `QODER_UMID_PATH` 同规）。 */
@@ -80,7 +116,7 @@ const cache: Partial<Record<QoderRegion, Cached>> = {}
 export function findDeviceRiskComponent(region: QoderRegion): string | undefined {
   const custom = process.env[UMID_PATH_ENV]
   if (typeof custom === 'string' && custom !== '' && existsSync(custom)) return custom
-  for (const candidate of UMID_CANDIDATES[region]) {
+  for (const candidate of [...UMID_CANDIDATES[region], ...windowsUmidCandidates(region)]) {
     if (existsSync(candidate)) return candidate
   }
   return undefined
@@ -109,7 +145,7 @@ export async function readDeviceRisk(region: QoderRegion, nowMs = Date.now()): P
 
   let stdout: string
   try {
-    const result = await run(component, [], { timeout: COMPONENT_TIMEOUT_MS, maxBuffer: MAX_OUTPUT_BYTES })
+    const result = await run(component, [], RISK_PROCESS_OPTIONS)
     stdout = result.stdout
   } catch (error: unknown) {
     throw new Error(`设备风控组件执行失败: ${String((error as Error)?.message ?? error)}`)

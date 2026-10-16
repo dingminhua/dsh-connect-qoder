@@ -8,11 +8,11 @@
  * 真实读取的那条只在组件存在时跑（CI 上没有就跳过断言，但仍然断言降级行为）。
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import { existsSync } from 'node:fs'
 import {
   findDeviceRiskComponent,
   readDeviceRisk,
   resetDeviceRiskCache,
+  RISK_PROCESS_OPTIONS,
   RISK_TTL_MS,
 } from '../src/device-risk.ts'
 import { QODER_REGIONS, QoderUpstreamClient } from '../src/upstream.ts'
@@ -59,6 +59,15 @@ describe('readDeviceRisk', () => {
 
   it('缓存 TTL 是 50 分钟（避免每次签到都 fork 进程）', () => {
     expect(RISK_TTL_MS).toBe(50 * 60 * 1000)
+  })
+
+  it('组件进程带 windowsHide（Electron 宿主 spawn 控制台程序会闪黑窗，家族教训）', () => {
+    // 与 host-heartbeat.ts 的 PROCESS_PROBE_OPTIONS 同因同测：Windows 上不带
+    // windowsHide，GUI 宿主的每次设备身份读取都会闪一个可见控制台窗口。
+    // 这个断言在任意平台都成立（POSIX 上该选项被忽略，但值必须写在选项里）。
+    expect(RISK_PROCESS_OPTIONS.windowsHide).toBe(true)
+    expect(RISK_PROCESS_OPTIONS.timeout).toBeGreaterThan(0)
+    expect(RISK_PROCESS_OPTIONS.maxBuffer).toBeGreaterThan(0)
   })
 
   it.runIf(findDeviceRiskComponent('global') !== undefined)(
@@ -195,10 +204,9 @@ describe('本机组件探测', () => {
     const cn = findDeviceRiskComponent('cn')
     const global = findDeviceRiskComponent('global')
     // 组件存在时，各自的优先路径必须命中自己那一侧（设备身份与区域绑定）。
-    if (cn !== undefined) expect(cn).toContain('Qoder CN.app')
-    if (global !== undefined) {
-      const hasGlobalApp = existsSync('/Applications/Qoder.app/Contents/Resources/umid/runtime-info')
-      if (hasGlobalApp) expect(global).toContain('Qoder.app')
-    }
+    // macOS 路径带 `.app`（`Qoder CN.app` / `Qoder.app`），Windows 路径带
+    // `Programs\Qoder CN\` / `Programs\Qoder\` —— 断言只认目录名里的 App 名。
+    if (cn !== undefined) expect(cn).toMatch(/Qoder CN/i)
+    if (global !== undefined) expect(global).toMatch(/[\\/]Qoder([\\/]|\.app)/i)
   })
 })
