@@ -29,6 +29,7 @@ import {
   unwrapVolatileDeep,
 } from '../src/status-paths.ts'
 import { ComposerCreditsGate, composerCreditsRegionOf } from '../src/client/ComposerCreditsGate.tsx'
+import { ComposerCredits } from '../src/client/ComposerCredits.tsx'
 
 const act: typeof actFromReact = ((React as unknown as { act?: typeof actFromReact }).act
   ?? actTestUtils) as typeof actFromReact
@@ -181,5 +182,103 @@ describe('积分读数席位', () => {
 
   it('GATE：position 缺席时按 composer 处理（旧调用方与旧宿主的兼容面）', async () => {
     expect((await drawGate({ scope: scopeOf({ regions: { cn: {} } }) })).drawn).toBe(1)
+  })
+})
+
+// ==========================================================================
+// composer 页脚：显示数据的真实读取时刻，并在刷新失败时说明数字是旧的
+// ==========================================================================
+
+/**
+ * 截图里 800 之所以看起来可信，是因为页脚写着「最近刷新 00:22」—— 那是**客户端
+ * fetch 返回的时刻**，刷新失败时它照样往前走。数字是旧的、时间显示刚刚，用户
+ * 无从判断哪个能信。
+ *
+ * 现在宿主把数据的真实读取时刻（`creditsAtMs`）带出来：两者不一致就标「未更新」，
+ * 并把宿主的 `refreshError` 覆盖层显示成失败提示（旧数字仍在，只是被说明）。
+ */
+describe('composer 页脚的数据时刻', () => {
+  /** 挂载 ComposerCredits、点开面板，回报页脚与错误行的文本。 */
+  async function openPanel(doc: Record<string, unknown>): Promise<{ foot: string, error: string | null, total: string }> {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/account-credits')) {
+        return { ok: true, status: 200, json: async () => [] } as Response
+      }
+      return { ok: true, status: 200, json: async () => doc } as Response
+    }))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    try {
+      await act(async () => {
+        root.render(React.createElement(ComposerCredits, { t, provider: 'qoder', region: 'cn' } as any))
+      })
+      const trigger = container.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-credits-trigger')!
+      await act(async () => { trigger.click() })
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      // 面板 portal 到 body，所以从 document 找。
+      const panel = document.querySelector('.dsm-qoder-composer-panel') as HTMLElement
+      expect(panel).not.toBeNull()
+      return {
+        foot: panel.querySelector('.dsm-qoder-composer-panel-foot')?.textContent ?? '',
+        error: panel.querySelector('.dsm-qoder-composer-panel-error')?.textContent ?? null,
+        total: trigger.textContent ?? '',
+      }
+    } finally {
+      await act(async () => { root.unmount() })
+      container.remove()
+      document.body.innerHTML = ''
+    }
+  }
+
+  const signedInDoc = (over: Record<string, unknown>): Record<string, unknown> => ({
+    status: 'signed-in',
+    accountId: 'a1',
+    accountName: 'ddd',
+    region: 'cn',
+    enabled: true,
+    accounts: [],
+    models: [],
+    enabledModelKeys: [],
+    offModelKeys: [],
+    imageModelKeys: [],
+    credits: { total: 738, packages: [], expiringSoon: 0 },
+    ...over,
+  })
+
+  it('数据时刻与 fetch 时刻一致时，页脚不加「未更新」', async () => {
+    const view = await openPanel(signedInDoc({ creditsAtMs: Date.now() }))
+    expect(view.foot).toContain('composer.lastRefresh')
+    expect(view.foot).not.toContain('composer.dataStale')
+    expect(view.error).toBeNull()
+    expect(view.total).toContain('738')
+  })
+
+  it('数据比 fetch 更老时标「未更新」，但数字保留', async () => {
+    // 刷新失败：宿主保留上一次的好快照（atMs 是旧的），客户端必须把这件事说出来。
+    const old = Date.now() - 10 * 60_000
+    const view = await openPanel(signedInDoc({
+      creditsAtMs: old,
+      refreshError: 'credits read returned no data (timeout)',
+    }))
+    expect(view.total).toContain('738')
+    expect(view.foot).toContain('composer.dataStale')
+    expect(view.error).toContain('composer.refreshFailed')
+  })
+
+  it('refreshError 单独出现（数据时刻恰好新鲜）也要显示失败提示', async () => {
+    const view = await openPanel(signedInDoc({
+      creditsAtMs: Date.now(),
+      refreshError: 'credits read returned no data (timeout)',
+    }))
+    expect(view.error).toContain('composer.refreshFailed')
+    expect(view.total).toContain('738')
+  })
+
+  it('旧宿主不给 creditsAtMs 时退回 fetch 时刻，且不谎报「未更新」', async () => {
+    const view = await openPanel(signedInDoc({}))
+    expect(view.foot).toContain('composer.lastRefresh')
+    expect(view.foot).not.toContain('composer.dataStale')
   })
 })

@@ -744,3 +744,244 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
     expect(probe!.atMs).toBeLessThanOrEqual(Date.now())
   })
 })
+
+// ==========================================================================
+// /usage 每次请求现场刷积分（对齐 workbuddy）：保旧值 + 并发合流
+// ==========================================================================
+
+/**
+ * 截图里的 800 vs 738：触发器读宿主 usageCache（只在四个时机被写，聊天扣费后
+ * 永远不变），面板表格每账号现场读上游。修法是让 /usage 路由每次请求先刷再读。
+ *
+ * 但「每次请求都刷」会放大一个既有缺陷：`fetchUsage` 把超时/5xx 吞成 undefined
+ * （只有 401/403 抛出），而旧写法把 undefined 直接写进缓存 —— 一次网络抖动能把
+ * 「数字旧」变成「没数字」。所以刷新必须保旧值，并把失败记成覆盖层。
+ *
+ * 这两条都在**真实挂载**上钉：路由级测试给的是假 dep，证明不了宿主侧的缓存写入。
+ */
+describe('/usage 每次请求现场刷积分', () => {
+  /**
+   * 积分读的上游形状：`parseUsage` 认的是 `userQuota` / `addOnQuota` /
+   * `orgResourcePackage` 三个桶，`creditsOf` 把桶里的 `total - used` 相加。
+   * （第一版这里抄了签到测试的 `{data:{creditConsume}}`，解析不出任何桶，
+   * creditsOf 恒为 0 —— 三条用例全因此红，与实现无关。）
+   */
+  const usageBody = (remaining: number): string => JSON.stringify({
+    userQuota: { total: remaining + 62, used: 62, remaining },
+  })
+
+  /**
+   * 上游积分读的替身。
+   *
+   * 两个设计点都是被上一版的假失败教出来的：
+   *   - **每次成功读给一个递减的新数字**（而不是固定脚本）：挂载期会先烧掉几次
+   *     读（applySelection），脚本会被推到末位并 clamp，于是「两次请求读到同一
+   *     个数」——看着像修复没生效，其实是 fixture 的取值方式。递减函数让断言与
+   *     「挂载烧掉几次」彻底无关。
+   *   - **latencyMs**：合流只在刷新真的重叠时才有意义。瞬时返回的替身会让四个
+   *     请求各自排队刷一次，测出来永远是「没合流」。
+   */
+  function stubUpstream(latencyMs = 0): {
+    calls: () => number
+    failNextRead: () => void
+  } {
+    const realFetch = globalThis.fetch
+    let n = 0
+    let failOnce = false
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        n += 1
+        const seq = n
+        if (latencyMs > 0) await new Promise(resolve => setTimeout(resolve, latencyMs))
+        if (failOnce) {
+          failOnce = false
+          return new Response('upstream boom', { status: 500 })
+        }
+        return new Response(usageBody(800 - seq * 10), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+    return { calls: () => n, failNextRead: () => { failOnce = true } }
+  }
+
+  /** 等上游读计数静置（连续 QUIESCENT_MS 不再变化），替代固定睡眠。 */
+async function waitForQuiescent(
+  upstream: { calls: () => number },
+  quietMs = 250,
+  timeoutMs = 10_000,
+): Promise<void> {
+  const started = Date.now()
+  let last = upstream.calls()
+  let changedAt = Date.now()
+  for (;;) {
+    await new Promise(resolve => setTimeout(resolve, 25))
+    const now = upstream.calls()
+    if (now !== last) {
+      last = now
+      changedAt = Date.now()
+    }
+    if (Date.now() - changedAt >= quietMs) return
+    if (Date.now() - started > timeoutMs) throw new Error('上游读计数迟迟不静置')
+  }
+}
+
+/** 真实挂载一次，返回 /usage 路由与读它的助手（等挂载期那几读落定）。 */
+  async function mountUsageRoute(upstream: { calls: () => number }): Promise<{
+    read: () => Promise<{
+      credits?: { total: number }
+      creditsAtMs?: number
+      creditsError?: string
+      refreshError?: string
+    }>
+  }> {
+    const routes: CapturedRoute[] = []
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('webServer', {
+      register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+    } as never)
+    await mountQoder(ctx, { regions: { cn: { pat: 'pt-refresh-per-request' } } })
+    const usageRoute = routes.find(r => r.path.includes('/usage'))!
+    // 挂载会触发若干次 usage 读（applySelection 等），必须等它们**全部落定**再开始
+    // —— 否则一次迟到的挂载读会混进「请求引起的那次」，并发合流那条就会多数。
+    //
+    // 这里等的是「计数不再变化」而不是固定 900ms：固定睡眠在全量并行跑、机器负载
+    // 高时并不安全（实测出现过一次偶发红）。静置窗口 250ms 足够覆盖替身的 0/40ms
+    // 延迟，且比盲等更快。
+    await waitFor(() => upstream.calls() >= 1)
+    await waitForQuiescent(upstream)
+    return {
+      read: async () => {
+        const res = fakeResponse()
+        await usageRoute.handler(
+          { method: 'GET', url: `${usageRoute.path}?region=cn`, headers: {} },
+          res.node,
+        )
+        return JSON.parse(String(res.body())) as {
+          credits?: { total: number }
+          creditsAtMs?: number
+          creditsError?: string
+          refreshError?: string
+        }
+      },
+    }
+  }
+
+  it('每次 /usage 请求都会真的再读一次上游，并把新数带进文档', async () => {
+    const upstream = stubUpstream()
+    try {
+      const { read } = await mountUsageRoute(upstream)
+      const first = await read()
+      const second = await read()
+      // 关键：两次请求读到**不同**的数字。旧实现两次都是同一个缓存值 —— 也就是
+      // 截图里那个永远不动的 800。
+      expect(first.credits?.total).toBeGreaterThan(0)
+      expect(second.credits?.total).toBeLessThan(first.credits?.total!)
+      // 数据时刻必须随刷新前进，否则页脚无法判断数字新旧。
+      expect(second.creditsAtMs ?? 0).toBeGreaterThanOrEqual(first.creditsAtMs ?? 0)
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+
+  it('上游瞬时失败时保留上一次的好数字，只加 refreshError 覆盖层', async () => {
+    const upstream = stubUpstream()
+    try {
+      const { read } = await mountUsageRoute(upstream)
+      const good = await read()
+      const held = good.credits?.total
+      expect(held).toBeGreaterThan(0)
+
+      upstream.failNextRead()
+      const afterBlip = await read()
+      // 这一次上游 500。旧写法会把缓存写成 undefined → 面板从「数字旧」变成
+      // 「没数字」；改成每请求一刷之后这条路径会被放大成常态，所以必须保旧值。
+      expect(afterBlip.credits?.total).toBe(held)
+      // 失败如实说出来，但不冒充「凭据被拒」：那是另一回事，需要相反的劝告。
+      expect(afterBlip.refreshError).toBeDefined()
+      expect(afterBlip.creditsError).toBeUndefined()
+
+      // 覆盖层必须自己消失：下一次成功读之后不能再挂着「刷新失败」。
+      const recovered = await read()
+      expect(recovered.refreshError).toBeUndefined()
+      expect(recovered.credits?.total).toBeLessThan(held!)
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+
+  it('并发打同一区域的请求合流成一次上游读', async () => {
+    // 40ms 延迟让四个请求真的重叠（瞬时返回时它们会排队，测不出合流）。
+    const upstream = stubUpstream(40)
+    try {
+      const { read } = await mountUsageRoute(upstream)
+      const before = upstream.calls()
+      const docs = await Promise.all([read(), read(), read(), read()])
+      const reads = upstream.calls() - before
+      // 卡片 60s 轮询 + composer 300s + 面板打开会几乎同时打到同一区域；没有合流
+      // 就是 4 次上游读。
+      expect(reads).toBe(1)
+      // 合流不能改变结果：四个文档都得是同一份新数据。
+      const totals = new Set(docs.map(d => d.credits?.total))
+      expect(totals.size).toBe(1)
+      expect([...totals][0]).toBeGreaterThan(0)
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+})
+
+// ==========================================================================
+// withHardTimeout：积分读的整体硬超时（超时=没读到，auth 失败仍要抛出）
+// ==========================================================================
+
+/**
+ * `/usage` 现在每次请求都刷积分，而 `fetchUsage` 的 signal 只管得住 sash 那半段：
+ * 会话过期时前半段（jobToken 交换）挂住，signal 还没生效。所以外层再套一个整体
+ * race。这里钉住它的三种结局 —— 第三种最要紧：**超时**降级成 undefined（保旧值），
+ * 但**凭据被拒必须照旧抛出**，被一起吞掉就会把「PAT 坏了」显示成「这次没读到」。
+ */
+describe('withHardTimeout', () => {
+  it('promise 先结算时原样给值', async () => {
+    expect(await Qoder.withHardTimeout(Promise.resolve('v'), 50)).toBe('v')
+  })
+
+  it('挂住的 promise 超时后结算为 undefined（走保旧值路径）', async () => {
+    const hung = new Promise<string>(() => { /* 永不结算 */ })
+    const started = Date.now()
+    expect(await Qoder.withHardTimeout(hung, 25)).toBeUndefined()
+    expect(Date.now() - started).toBeGreaterThanOrEqual(20)
+  })
+
+  it('超时前失败仍然抛出：auth 不能被降级成「没读到」', async () => {
+    await expect(Qoder.withHardTimeout(Promise.reject(new Error('401 TOKEN_EXPIRE')), 50))
+      .rejects.toThrow('TOKEN_EXPIRE')
+  })
+
+  it('超时之后才到的 rejection 不会变成 unhandled rejection', async () => {
+    const realError = new Error('late failure')
+    let rejectOuter: ((e: Error) => void) | undefined
+    const slow = new Promise<string>((_, reject) => { rejectOuter = reject })
+    const raced = Qoder.withHardTimeout(slow, 20)
+    // 先让超时结算，再让原 promise 失败 —— 若没有处理器，进程会报 unhandled。
+    await new Promise(resolve => setTimeout(resolve, 40))
+    expect(await raced).toBeUndefined()
+    rejectOuter!(realError)
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(await raced).toBeUndefined()
+  })
+})

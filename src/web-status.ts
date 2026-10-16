@@ -223,7 +223,26 @@ export interface QoderWebRouteDeps {
    */
   refreshModels?(region: QoderRegion): Promise<QoderModelInfo[]>
   /** A cached usage read for one region. */
-  usage(region: QoderRegion): { usage?: { credits: QoderWebCredits, atMs: number }, error?: string } | undefined
+  usage(region: QoderRegion): {
+    usage?: { credits: QoderWebCredits, atMs: number }
+    error?: string
+    /** The last RE-READ failed but the snapshot below is intact (see refreshError). */
+    staleError?: string
+  } | undefined
+  /**
+   * Re-read this region's credits from upstream **into the cache** the `usage`
+   * dep reads from, awaited before the document is assembled.
+   *
+   * 对齐 workbuddy：那边的 usage 路由每次请求都现场并发拉积分
+   * （`web-status.ts` 的 `Promise.allSettled` + `toCredits`）。Qoder 移植时把这一处
+   * 换成了纯缓存读，而缓存只在「启动 / 配置写入 / 刷新模型 / 签到」四个时机被写，
+   * 于是聊天扣费后触发器上的数字**永远不会自己变新**，而面板表格（每账号现场读）
+   * 是新的 —— 同一个账号在同一个面板里显示两个数（用户实拍 800 vs 738）。
+   *
+   * Optional: a host that does not wire this dep falls back to the old pure
+   * cache read and the document still builds.
+   */
+  refreshUsage?(region: QoderRegion): Promise<void>
   /** Probe one model through the region's selected credential. */
   probeModel?(region: QoderRegion, modelId: string, signal?: AbortSignal): Promise<QoderWebProbeResult>
   /** Fetch one region's per-account credit balances fresh (composer panel). */
@@ -694,6 +713,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * This region's usage entry, refreshed from upstream first.
+ *
+ * 对齐 workbuddy：那边的 usage 路由每次请求都现场拉积分，所以数字总是新的。Qoder
+ * 移植时换成了纯缓存读，而缓存只在「启动 / 配置写入 / 刷新模型 / 签到」四个时机
+ * 被写 —— 聊天扣费后触发器上的数字**永远不会自己变新**，而面板表格（每账号现场
+ * 读）是新的，于是同一个账号在同一个面板里显示两个数（用户实拍 800 vs 738）。
+ *
+ * 三条约束，缺一不可：
+ *   1. **失败绝不能把文档打回空白**。`refreshUsage` 的失败由宿主记成覆盖层
+ *      （`staleError` → 文档的 `refreshError`），这里只 await、不抛；
+ *   2. **dep 缺席（旧宿主）时退回原来的缓存读**，行为与从前一致；
+ *   3. 刷新**之后**才读缓存，否则读到的还是上一轮的旧快照 —— 修了等于没修。
+ */
+async function freshUsageEntryOf(deps: QoderWebRouteDeps, region: QoderRegion): Promise<
+  { usage?: { credits: QoderWebCredits, atMs: number }, error?: string, staleError?: string } | undefined
+> {
+  try {
+    await deps.refreshUsage?.(region)
+  } catch {
+    // 刷新链本身出错（不该发生：宿主侧已把上游异常收进缓存），照常回落到缓存读。
+  }
+  return deps.usage(region)
+}
+
 /** Build one region's main usage document. */
 export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion): Promise<QoderWebUsage> {
   const sources = deps.credentialSources(region)
@@ -748,7 +792,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     }
   })
 
-  const usageEntry = deps.usage(region)
+  const usageEntry = await freshUsageEntryOf(deps, region)
   const offKeysRaw = deps.offModelKeys(region)
   const offModelKeys = catalog.filter(m => offKeysRaw.includes(m.key) || !m.supportsThinking).map(m => m.key)
 
@@ -788,6 +832,14 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     imageModelKeys: deps.imageModelKeys(region).filter(key => catalog.some(m => m.key === key)),
     ...(usageEntry?.usage?.credits === undefined ? {} : { credits: usageEntry.usage.credits }),
     ...(usageEntry?.error !== undefined ? { creditsError: redactQoderText(usageEntry.error) } : {}),
+    // 上次**重读**失败、但快照完好：卡片/composer 显示旧数字并说明它旧，而不是
+    // 把数字抹掉。这个覆盖层与 `refreshError` 字段在契约里写了几版，宿主此前
+    // 从没人赋值（卡片分支一直是死代码）。
+    ...(usageEntry?.staleError === undefined ? {} : { refreshError: redactQoderText(usageEntry.staleError) }),
+    // 数据的**真实读取时刻**。composer 页脚此前显示的是「客户端 fetch 返回的
+    // 时刻」，于是刷新失败时它会跟着更新 —— 看起来像数据是新的。宿主手里一直
+    // 有 `atMs`，只是在上面那行被丢掉了。
+    ...(usageEntry?.usage?.atMs === undefined ? {} : { creditsAtMs: usageEntry.usage.atMs }),
     ...(credentialRejected && recovery ? { credentialRejected: true, recovery } : {}),
     contextBudgets: budgets,
     thinkingEfforts: deps.thinkingEfforts(region),

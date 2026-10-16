@@ -87,6 +87,40 @@ export const name = 'dsh-connect-qoder'
 /** The model registry and settings service required before providers register. */
 export const inject = ['llm', 'settings']
 
+/**
+ * 积分读（`sash/api/v2/me/usage`）的超时上限。
+ *
+ * 这个读现在发生在**每次** `/usage` 路由请求上（卡片 60s 轮询 + composer 300s +
+ * 面板打开），所以它不能再无界：上游挂住会把整张卡片与 composer 读数一起挂住。
+ */
+const USAGE_FETCH_TIMEOUT_MS = 8_000
+
+/**
+ * 给一个 promise 加硬超时，超时**按「这次没读到」处理**（resolve undefined），
+ * 而不是抛错。
+ *
+ * 两条理由：
+ *   1. `fetchUsage` 先 `ensureSession()` 再带 signal 打 sash，signal 只管得住后半段
+ *      —— 会话过期时前半段（jobToken 交换）挂住，signal 还没生效。整体 race 才封得住。
+ *   2. 超时必须落到**保旧值**那条分支，而不是 catch 分支：后者会把缓存写成
+ *      `usage: undefined`，于是「网络慢」被显示成「没有积分数据」。
+ *
+ * 迟到的 rejection 要单独吞掉：promise 已经按超时结算之后，它再 reject 就是一次
+ * 没人处理的 rejection。
+ */
+export function withHardTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T | undefined> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  return new Promise<T | undefined>((resolve, reject) => {
+    timer = setTimeout(() => { resolve(undefined) }, timeoutMs)
+    // 这条 then 的两个回调就是 rejection 的处理者：超时之后 promise 才失败时，
+    // `reject` 对已结算的 promise 是空操作，而 promise 本身始终挂着处理器，
+    // 不会变成 unhandled rejection。
+    promise.then(resolve, reject)
+  }).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
+}
+
 /** The namespace the HOST actually serves this plugin under (workbuddy probe). */
 export function settingsNamespaceOf(ctx: unknown): string {
   const id = (ctx as { fiber?: { entry?: { options?: { id?: unknown } } } })?.fiber?.entry?.options?.id
@@ -533,7 +567,16 @@ export function apply(ctx: Context, config: Config): void {
   let stopped = false
 
   const stacks = {} as Record<QoderRegion, QoderRegionStack>
-  const usageCache: Partial<Record<QoderRegion, { usage: QoderUsage | undefined; atMs: number; error?: string }>> = {}
+  const usageCache: Partial<Record<QoderRegion, {
+    usage: QoderUsage | undefined
+    atMs: number
+    error?: string
+    /**
+     * 上一次**重读**失败了，但 `usage` 快照完好。路由把它映射成文档的
+     * `refreshError` 覆盖层，卡片据此说「刷新失败了，显示的是上次数据」。
+     */
+    staleError?: string
+  }>> = {}
   const registration: Record<QoderRegion, { adapter?: AdapterRegistrationHandle, directory?: DirectoryRegistrationHandle }> = { cn: {}, global: {} }
   /**
    * 今日签到状态快照（区域 → 成员 id → 是否已领）。签到批次回写、成员表读取。
@@ -894,20 +937,51 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   }
 
   /** Cached usage read for one region. */
-  function usageEntryOf(region: QoderRegion): { usage?: { credits: QoderWebCredits, atMs: number }, error?: string } | undefined {
+  function usageEntryOf(region: QoderRegion): {
+    usage?: { credits: QoderWebCredits, atMs: number }
+    error?: string
+    staleError?: string
+  } | undefined {
     const entry = usageCache[region]
     if (entry === undefined) return undefined
     return {
       ...(entry.usage === undefined ? {} : { usage: { credits: creditsOf(entry.usage), atMs: entry.atMs } }),
       ...(entry.error === undefined ? {} : { error: entry.error }),
+      ...(entry.staleError === undefined ? {} : { staleError: entry.staleError }),
     }
   }
 
   const refreshUsage = async (region: QoderRegion): Promise<void> => {
     const serving = await resolveServing(region)
     if (!serving) return
+    const prior = usageCache[region]
     try {
-      const usage = await stacks[region].upstream.fetchUsage(serving.pat)
+      // 超时兜底：这个读现在发生在**每次** /usage 请求上（卡片 60s 轮询 +
+      // composer 300s），上游挂住不能把路由一起挂住。
+      //
+      // 为什么是整体 race 而不是只传 signal：`fetchUsage` 先 `ensureSession()`、
+      // 再带着 signal 打 sash —— signal 只管得住后半段。会话过期时前半段要去做
+      // jobToken 交换，它挂住的话 signal 还没生效，路由就无限期吊着（卡片每 60s
+      // 再打一次，会一层层堆上去）。超时后走下面的保旧值路径。
+      const usage = await withHardTimeout(
+        stacks[region].upstream.fetchUsage(serving.pat, AbortSignal.timeout(USAGE_FETCH_TIMEOUT_MS)),
+        USAGE_FETCH_TIMEOUT_MS,
+      )
+      if (usage === undefined) {
+        // 「这次没读到」（超时 / 5xx / 网关抖动），不是「凭据坏了」。旧写法把
+        // undefined 直接写进缓存，面板于是从「数字旧」变成「没数字」——以前这条
+        // 只在四个时机被触发所以少见，改成每请求一刷之后会被放大成常态。
+        // 所以保留上一次的好快照与它的读取时刻（atMs 不更新：它标的是**数据**何时
+        // 读到的，不是本次尝试的时刻），并把失败记成覆盖层 —— `refreshError` 这个
+        // 字段与卡片分支早就写在契约里，此前从没人赋值。
+        usageCache[region] = {
+          usage: prior?.usage,
+          atMs: prior?.atMs ?? Date.now(),
+          ...prior?.error === undefined ? {} : { error: prior.error },
+          staleError: prior?.staleError ?? 'credits read returned no data (timeout / transient upstream failure)',
+        }
+        return
+      }
       usageCache[region] = { usage, atMs: Date.now() }
     } catch (error: unknown) {
       // `auth` 必须记为 `credential-rejected`，不能塞一个笼统的 kind 字符串：
@@ -921,6 +995,26 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         error: kind === 'auth' ? 'credential-rejected' : (kind ?? 'unknown'),
       }
     }
+  }
+
+  /**
+   * 在飞的积分刷新（区域 → promise）。
+   *
+   * `/usage` 现在每次请求都要现场刷一次积分，而这个路由的调用方不止一个：卡片
+   * 60s 轮询、composer 300s 轮询、面板打开、手动刷新。它们可能几乎同时打到同一
+   * 区域 —— 没有合流的话，一次面板打开会连带触发好几条上游读。
+   */
+  const usageRefreshInFlight: Partial<Record<QoderRegion, Promise<void>>> = {}
+
+  /** One upstream credits read per region at a time; late callers join it. */
+  const refreshUsageCoalesced = (region: QoderRegion): Promise<void> => {
+    const running = usageRefreshInFlight[region]
+    if (running !== undefined) return running
+    const next = refreshUsage(region).finally(() => {
+      if (usageRefreshInFlight[region] === next) delete usageRefreshInFlight[region]
+    })
+    usageRefreshInFlight[region] = next
+    return next
   }
 
   /** The region's catalog projected into the pool target picker's shape. */
@@ -1301,6 +1395,11 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       discoverModels,
       refreshModels: refreshRegionForRoute,
       usage: usageEntryOf,
+      // /usage 路由每次请求先现场刷一次积分再读缓存（对齐 workbuddy）。此前
+      // 缓存只在四个时机被写，聊天扣费后触发器数字永远不变，而面板表格（每
+      // 账号现场读）会变 —— 同一个账号两个数（用户实拍 800 vs 738）。
+      // 走合流版：卡片/composer/面板会几乎同时打到同一区域。
+      refreshUsage: refreshUsageCoalesced,
       probeModel: probeModelOf,
       accountCredits: accountCreditsOf,
       pool: buildPoolDeps(),

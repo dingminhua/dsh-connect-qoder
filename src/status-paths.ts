@@ -945,6 +945,15 @@ export type QoderWebUsage =
      */
     refreshError?: string
     /**
+     * WHEN these credits were actually read upstream (ms epoch), not when the
+     * browser last fetched this document.
+     *
+     * composer 页脚此前显示的是「客户端 fetch 返回的时刻」，所以刷新失败时它照样
+     * 往前走一步 —— 数字是旧的、时间却显示刚刚，用户无从判断哪个能信。宿主手里
+     * 一直有这个值（缓存条目的 `atMs`），只是此前在路由里被丢掉。
+     */
+    creditsAtMs?: number
+    /**
      * The upstream refused the credential itself (a 401/403 / business 105),
      * as opposed to a transient upstream fault. Distinguishes "your PAT is
      * not usable" from "the request failed", which need opposite advice.

@@ -863,3 +863,106 @@ describe('buildWebUsage', () => {
     expect(usage.selectionExplicit).toBe(true)
   })
 })
+
+// ==========================================================================
+// 积分的「每次请求现场刷」（对齐 workbuddy 的 usage 路由）
+// ==========================================================================
+
+/**
+ * 用户实拍：面板表格里 `ddd = 738`，同一个面板顶部的触发器却是 `QD AI · 800`。
+ * 两条链：触发器读宿主的 usageCache（此前只在「启动 / 配置写入 / 刷新模型 / 签到」
+ * 四个时机被写，聊天扣费后**永远不会自己变新**），面板表格每账号现场读上游。
+ *
+ * 这里钉的是路由的**顺序与降级**，四条都不可省：
+ *   1. 先刷后读 —— 反了就是「修了等于没修」（仍然回旧数）；
+ *   2. 每次请求都刷 —— 只刷一次的话，第二次请求又回退成旧数；
+ *   3. 旧宿主没给 refreshUsage 时照常出文档 —— 这是可选 dep，不能变成硬依赖；
+ *   4. 刷新链抛错也不能把文档打回空白 —— 那比「数字旧」更糟。
+ */
+describe('usage route refreshes credits per request', () => {
+  /** 一份可变的「宿主缓存」：refreshUsage 写它，usage 读它。 */
+  function liveCache(start: { total: number, atMs: number, staleError?: string }): {
+    cache: { total: number, atMs: number, staleError?: string }
+    deps: (overrides?: Partial<QoderWebRouteDeps>) => QoderWebRouteDeps
+    calls: { refresh: number }
+  } {
+    const cache = { ...start }
+    const calls = { refresh: 0 }
+    const base = (): QoderWebRouteDeps => deps({
+      usage: () => ({
+        usage: { credits: { total: cache.total, packages: [], expiringSoon: 0 }, atMs: cache.atMs },
+        ...cache.staleError === undefined ? {} : { staleError: cache.staleError },
+      }),
+      refreshUsage: async () => {
+        calls.refresh += 1
+        cache.total = 738
+        cache.atMs = 123
+      },
+    })
+    return { cache, deps: base, calls }
+  }
+
+  it('reads the cache AFTER refreshing, so the document carries the new number', async () => {
+    const h = liveCache({ total: 800, atMs: 1 })
+    const usage = await buildWebUsage(h.deps(), 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    // 800 = 缓存里的旧数；738 = refreshUsage 写进去的新数。
+    // 顺序读反（或忘了 await）就是 800 —— 这正是截图里那个错数字。
+    expect(usage.credits?.total).toBe(738)
+    expect(h.calls.refresh).toBe(1)
+  })
+
+  it('refreshes on EVERY request, not once per process', async () => {
+    const h = liveCache({ total: 800, atMs: 1 })
+    await buildWebUsage(h.deps(), 'cn')
+    await buildWebUsage(h.deps(), 'cn')
+    await buildWebUsage(h.deps(), 'cn')
+    expect(h.calls.refresh).toBe(3)
+  })
+
+  it('a host without the refreshUsage dep still serves the cached document', async () => {
+    // 可选 dep 不能变成硬依赖：旧宿主（或没接线的注入路径）必须照常出文档。
+    const h = liveCache({ total: 800, atMs: 1 })
+    const withoutRefresh = deps({
+      usage: () => ({ usage: { credits: { total: 800, packages: [], expiringSoon: 0 }, atMs: 1 } }),
+    })
+    const usage = await buildWebUsage(withoutRefresh, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.credits?.total).toBe(800)
+    expect(h.calls.refresh).toBe(0)
+  })
+
+  it('a throwing refresh chain never blanks the document', async () => {
+    const usage = await buildWebUsage(deps({
+      usage: () => ({ usage: { credits: { total: 800, packages: [], expiringSoon: 0 }, atMs: 1 } }),
+      refreshUsage: async () => { throw new Error('refresh exploded') },
+    }), 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.credits?.total).toBe(800)
+    expect(usage.refreshError).toBeUndefined()
+  })
+
+  it('carries the data’s real read time (creditsAtMs), not the response time', async () => {
+    // 页脚此前显示「客户端 fetch 返回的时刻」，于是刷新失败时它照样往前走 ——
+    // 数字是旧的、时间显示刚刚。宿主手里一直有 atMs，只是在路由里被丢掉。
+    const h = liveCache({ total: 800, atMs: 1 })
+    const usage = await buildWebUsage(h.deps(), 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.creditsAtMs).toBe(123)
+    expect(usage.creditsAtMs).not.toBeGreaterThan(Date.now())
+  })
+
+  it('maps the cache’s staleError onto the refreshError overlay the card already reads', async () => {
+    // `refreshError` 与卡片分支在契约里写了几版，宿主此前从没人赋值（死代码）。
+    const usage = await buildWebUsage(deps({
+      usage: () => ({
+        usage: { credits: { total: 800, packages: [], expiringSoon: 0 }, atMs: 1 },
+        staleError: 'credits read returned no data (timeout / transient upstream failure)',
+      }),
+    }), 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    // 关键：旧数字**还在**，只是被标成「这次没刷出来」。
+    expect(usage.credits?.total).toBe(800)
+    expect(usage.refreshError).toContain('transient upstream failure')
+  })
+})

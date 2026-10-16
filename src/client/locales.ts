@@ -330,6 +330,7 @@ export const en = {
   'composer.refreshing': 'Refreshing credits…',
   'composer.refreshFailed': 'Could not refresh credits',
   'composer.lastRefresh': 'Last refreshed',
+  'composer.dataStale': 'not updated',
   'composer.panelTitle': 'Qoder credits',
 } as const
 
@@ -636,6 +637,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.refreshing': '正在刷新积分…',
   'composer.refreshFailed': '积分刷新失败',
   'composer.lastRefresh': '最近刷新',
+  'composer.dataStale': '未更新',
   'composer.panelTitle': 'Qoder 积分',
 }
 

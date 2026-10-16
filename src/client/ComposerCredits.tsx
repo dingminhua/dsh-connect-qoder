@@ -260,6 +260,19 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   })
   const canSwitch = settingsScope !== undefined
 
+  /**
+   * 页脚显示的时刻：优先用**数据的真实读取时刻**（宿主给的 `creditsAtMs`），
+   * 没有才退回本组件 fetch 成功的时刻。
+   *
+   * 此前只有后者，于是刷新失败时页脚时间照样往前走 —— 数字是旧的、时间显示
+   * 刚刚，用户无从判断哪个能信（截图里的 800 正是这样看起来像「刚刷新的」）。
+   */
+  const displayedAt = signedIn?.creditsAtMs ?? lastRefresh
+  /** 显示的数字比最近一次 fetch 更老 = 这次没刷出新数据。 */
+  const staleDisplay = signedIn?.creditsAtMs !== undefined
+    && lastRefresh !== undefined
+    && signedIn.creditsAtMs < lastRefresh - 5_000
+
   return (
     <span ref={rootRef} className="dsm-qoder-composer-credits">
       <button
@@ -341,10 +354,16 @@ export function ComposerCredits(props: ComposerCreditsProps) {
               )}
           <div className="dsm-qoder-composer-panel-foot">
             <span>
-              {t('composer.lastRefresh')} {lastRefresh === undefined ? '—' : formatClock(lastRefresh)}
+              {t('composer.lastRefresh')} {displayedAt === undefined ? '—' : formatClock(displayedAt)}
+              {/* 数据时刻与 fetch 时刻不是一回事：刷新失败时后者照样往前走，
+                  只显示它就会让「旧数字」看起来像新数据。有真实读取时刻时，
+                  两者不一致就把数字标成旧的。 */}
+              {staleDisplay ? ` · ${t('composer.dataStale')}` : ''}
             </span>
           </div>
-          {failed ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p> : null}
+          {failed || signedIn?.refreshError !== undefined
+            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p>
+            : null}
         </div>,
         document.body,
       )}
