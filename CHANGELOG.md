@@ -2,6 +2,19 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 0.5.1 (2026-10-16)
+
+一条 Windows 专属修复：**设备风控组件的候选路径表只写了 macOS，导致 Windows 上国际版永远读不出积分，而国内版一切正常**。修复本身是「候选表漏了一整个平台」，但顺带钉住了同因的第二条家族教训（GUI 宿主 spawn 控制台程序闪黑窗）。纯修复、无新增用户可见设置、schema 未动，按本仓库先例（0.4.1–0.4.3）记 patch。
+
+### Fixed
+
+- **Windows 上取不到设备身份组件，国际版的积分与签到全部落空 —— UMID 候选表只列了 macOS 的安装位置。**（由 `746a715` 修入）
+  - **机制**：国际版的用量与签到请求**必须**携带设备风控三件套（`Cosy-MachineToken/Code/Type`），这三件套由本机 Qoder 客户端随附的 UMID 组件（`runtime-info`）产出。`device-risk.ts` 的候选表此前只有 `/Applications/Qoder[ CN].app/Contents/Resources/umid/…` 这一族 macOS 路径 —— Windows 上不存在 `/Applications`，`findDeviceRiskComponent` 在 Windows **永远落空**，`fetchUsage` 随即降级。不对称正来自这里：**国内版不要求设备风控，所以在 Windows 上照常工作**，掩盖了国际版的失效。
+  - **修法**：新增 `windowsUmidCandidates()`，展开 `%LOCALAPPDATA%\Programs\<App>\resources\umid\runtime-info.exe`，区域 → App 的优先级与 macOS 一致（国际版优先 `Qoder`、国内版优先 `Qoder CN`；设备身份与区域绑定，用错一侧会被风控拒绝），**追加**在 macOS 候选之后。`%LOCALAPPDATA%` 可能未定义（无窗口会话 / CI），此时返回空数组、照常走「macOS 候选 + 环境变量」的既有路径，不报错。
+  - **顺带钉住同因的第二件事**：组件 spawn 的选项提炼为 `RISK_PROCESS_OPTIONS` 并带 `windowsHide: true` —— DSH Desktop 宿主是 Electron GUI 进程（无 console），Windows 会给这种父进程的控制台子程序**每次新建一个可见窗口**，即「每读一次设备身份就闪一个黑框」。这与 `host-heartbeat.ts` 的 `PROCESS_PROBE_OPTIONS` 是同一条家族教训，那边早已钉过；POSIX 上该选项被忽略，但值必须写在选项里。
+  - **测试**：跨平台断言改认「目录名里的 App 名」而不是 `.app` 后缀（原 `toContain('Qoder CN.app')` 在 Windows 路径上必红）；新增一条 `windowsHide` 钉桩（任意平台成立）。用例总数 588 → 589。本机 `pnpm run check` 全绿：582 通过 / 7 跳过。
+  - **如实记录**：本版**没有**在 Windows 实机上跑过 —— 手头这台是 macOS。`%LOCALAPPDATA%` 分支的正确性目前只有单测与代码走查支撑，Windows 上的真实命中（装过 Qoder 国际版客户端）尚未观测。
+
 ## 0.5.0 (2026-10-14)
 
 > 版本号是 **minor** 而不是 patch：这一版新增了一个**用户可见的设置**（`regions.<region>.creditPosition`，积分读数的位置）和一个**新的渲染席位**（`conversation.composer.dock`），配置 schema 也多了一个字段。按语义化版本这是特性，不是修错 —— 与同族 `dsh-connect-workbuddy` 对同一改动走 **4.5.0**（minor）的判断保持一致。
