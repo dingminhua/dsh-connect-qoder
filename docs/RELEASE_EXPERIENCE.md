@@ -132,6 +132,42 @@ npm view @dmh2002/dsh-connect-qoder@X.Y.Z version   # 必须回显 X.Y.Z
 > 本机 npm 是 **11.12.1**，没有 `npm stage` 子命令（报 `Unknown command`）——
 > 那是 CLI 太旧，不是命令不存在。要批准暂存发布得用 ≥ 11.15.0，或去 npm 网站。
 
+### ⚠️ 1.2.1 实测：packument 与 tarball 是**两个**传播时刻（2026-10-18）
+
+1.1.0 那一节把「tarball 直链 404」和「packument 里没有该版本」并列成同一次失败的证据。
+这个并列会让人在**发布成功**时误判成失败 —— 1.2.1 就撞上了：
+
+```
+PUT 202 + 2FA 轮询 GET 200 + `+ @dmh2002/dsh-connect-qoder@1.2.1`   ← 2FA 确实走完了
+直连 packument 轮询：前 3 次 latest=1.2.0 / has 1.2.1=false，第 4 次翻转   ← 约 2 分钟，与 0.4.3 一致
+翻转后立刻试 tarball 直链 → HTTP 404（返回的是 {"error":"Not found"}，21 字节 JSON）
+每 20 秒重试，第 10 次 → HTTP 200，shasum 与 registry 的 dist.shasum 一致      ← 又滞后约 3 分钟
+```
+
+所以这两个 404 含义完全不同，**判据要分层**：
+
+| 观测 | 含义 |
+| --- | --- |
+| packument 无该版本 | 真没发上去（1.1.0 那种）——或还在 2 分钟传播窗口内 |
+| packument **有**该版本、tarball 直链 404 | **已发布**，只是 CDN 资产滞后，等就行 |
+
+**先看 packument，别看 tarball 直链下结论。** registry 的 `time['X.Y.Z']` 一旦出现，
+发布就已成立；`dist.shasum` 与本地 `npm pack --dry-run` 的 shasum 一致，就证明上传的
+正是这份构建 —— 这两条**不需要**下载 tarball 就能核。
+
+真要逐字节比对产物，把下载重试放宽到**几分钟**（本轮 3 分钟）；直接 curl 拿到 404 时
+`file` 会告诉你它是 `JSON data` 而不是 gzip —— 那 21 字节的 `{"error":"Not found"}`
+是 CDN 的回复，不是「包不存在」。
+
+### ⚠️ 1.2.1 实测：`~/.npm/_logs` 会被轮转掉，「读日志」要趁热
+
+上一节要求「判定发布成败，先读日志再查 registry」。1.2.1 发布约 7 分钟后再回去读那次
+publish 的日志，**文件已经不在了**，只剩其间 `npm view` 等命令生成的新日志。
+
+所以：**日志是易失的，registry 是持久的。** 用户跑完 `npm publish` 把输出贴回来时，
+应当**当场**读一次日志抓 `PUT 202`；错过就没机会了。之后一律以 packument 为准，
+并且要认得 registry 的 `dist.shasum` —— 它同样能证明 2FA 走完且包体未变。
+
 ## 3. `npm publish` 会被 `prepack` 重新构建一遍
 
 `package.json` 的 `prepack: npm run build` 意味着 `npm publish` **自己会跑一次 `tsdown`**。
