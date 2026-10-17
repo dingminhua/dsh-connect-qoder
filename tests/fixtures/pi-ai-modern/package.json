@@ -1,0 +1,9 @@
+{
+  "name": "pi-ai-modern-fixture",
+  "private": true,
+  "type": "module",
+  "description": "A SEPARATE install of pi-ai 1.x, used only by the outgoing-body matrix to prove the modern (0.87+/1.x) branch against a real 1.x api. The repo's own tree stays pinned to 0.85.1 as the host 0.1.7 line requires.",
+  "dependencies": {
+    "@earendil-works/pi-ai": "1.1.0"
+  }
+}

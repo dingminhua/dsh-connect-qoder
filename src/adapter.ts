@@ -215,6 +215,18 @@ function toPiModel(
  *
  * Deliberately SHAPE-based within the legacy branch, not version-based, and
  * `withLegacyContext` generation-gates which API object consumes the result.
+ *
+ * LEGACY-ONLY (0.85). This produces the FLAT `{systemPrompt, tools, messages}`
+ * shape that ONLY pi-ai 0.85 reads. Never hand its result to a 1.x api — 1.x
+ * reads the prompt and tools from `messages[].toolsAdded` and would see none.
+ * That is precisely the 0.2.1-rc.1 regression: `generationOf` misclassified
+ * the 1.x major version as `legacy`, so this function was applied to a
+ * transcript that pi-ai's `createModels` had already normalized, and the
+ * request went out with no prompt and no tools. See {@link withLegacyContext}.
+ * Type note: the parameter is the 0.85 `Context`, while pi-ai 1.x types the
+ * api's second parameter as `TranscriptContext`; calling this with 1.x typings
+ * is a TS2353 by design, which is exactly why the modern branch must not touch
+ * it.
  */
 export function adaptLegacyPiAiContext(context: Context): Context {
   if (context === null || typeof context !== 'object') return context
@@ -289,13 +301,42 @@ function systemTextOf(message: Message): string {
 
 /**
  * Wrap one pi-ai API module so both stream entry points receive a context this
- * build can consume — but only when the module RESOLVED for this plugin is the
- * legacy generation.
+ * generation can actually consume.
  *
- * The gate is the plugin's own module, resolved via {@link piAiRuntimeInfo}: a
- * modern (0.87+) api consumes the normalized transcript natively, so folding
- * for it would delete its only carrier of prompt and tools. The unwrapped
- * modern api is passed through as-is.
+ * The gate is the plugin's own module, resolved via {@link piAiRuntimeInfo}
+ * (manifest version of the copy this plugin resolves — no pi-ai import):
+ *
+ * - `legacy` (0.85) wants the flat `{systemPrompt, tools, messages}` shape, so
+ *   a normalized transcript is UN-folded by {@link adaptLegacyPiAiContext}.
+ * - `modern` (0.87+, incl. 1.x) wants the normalized transcript, which is
+ *   already what it receives, so the api is passed through UNWRAPPED.
+ *
+ * WHY `modern` IS A PASS-THROUGH — and the 0.2.1-rc.1 regression this guards.
+ * The normalizer that matters lives in pi-ai's **Models layer**
+ * (`createModels().stream/streamSimple` → `normalizeContext(context)`), which
+ * sits BETWEEN the host and the provider-facing api module. `PiAiAdapter`
+ * registers this plugin's provider into that layer, so the api module is
+ * handed an ALREADY-normalized transcript. Verified on the installed
+ * 0.2.1-rc.1 host (pi-ai 1.x) with a real `createModels` + real
+ * `openaiCompletionsApi()`: the api module receives
+ * `{messages:[{role:'system',…toolsAdded}]}` and never a top-level
+ * `systemPrompt`/`tools`.
+ *
+ * The 0.2.1-rc.1 regression was therefore NOT "the modern branch is empty". It
+ * was {@link generationOf} failing to recognise the 1.x MAJOR version: its
+ * `/^0\.(\d+)\./` pattern only matches a leading `0.`, so `1.1.0` / `1.3.0`
+ * fell through to `legacy`. The plugin then applied
+ * {@link adaptLegacyPiAiContext} — which UN-folds the transcript back into the
+ * flat 0.85 shape — and handed that to a 1.x api that reads only
+ * `context.messages`. Measured wire result on the real stack:
+ *
+ *   legacy branch (bug)  → roles ["user"],  system null,       tools 0
+ *   modern branch (fix)  → roles ["system","user"], prompt intact, tools 1
+ *
+ * i.e. NO prompt and NO tools, silently. The fix is in the detector, not here:
+ * this branch must stay a pass-through, because folding on top of what
+ * `createModels` already normalized would prepend a SECOND (empty) system
+ * message.
  */
 function withLegacyContext(api: ProviderStreams, generation: PiAiGeneration): ProviderStreams {
   if (generation === 'modern') return api
