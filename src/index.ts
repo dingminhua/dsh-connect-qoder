@@ -599,6 +599,36 @@ export function apply(ctx: Context, config: Config): void {
   const checkinSnapshots: Record<QoderRegion, Record<string, { claimed: boolean, refreshAtMs?: number }>> = { cn: {}, global: {} }
 
   /**
+   * 正在飞的批量动作（签到或测试）已处理完的那几行，按区域一个槽位。
+   *
+   * 为什么要它：两种批量都是**串行**的真实请求（一池六个号就是几分钟）。此前
+   * 卡片只能等整个响应回来才一次性写活动日志，于是六行日志盖上**同一个时刻**
+   * 落在一起（用户实拍：全是 05:44:54）——那几分钟里日志是空的，看起来跟卡死
+   * 没有区别。现在每处理完一个账号就往这里追加一行（带完成时刻），卡片用
+   * `action=progress` 每秒读一次，逐条落行、时间也是真的。
+   *
+   * 两个动作共用一把锁，所以不需要区分并发；批次结束即清空——完整结果本来就在
+   * 响应里，这个槽位只服务「在飞期间」。
+   */
+  const poolBatches: Partial<Record<QoderRegion, { action: 'checkin' | 'test', done: Array<{ atMs: number, row: QoderWebPoolTestRow | QoderWebPoolCheckinRow }> }>> = {}
+
+  function beginPoolBatch(region: QoderRegion, action: 'checkin' | 'test'): void {
+    poolBatches[region] = { action, done: [] }
+  }
+
+  function recordPoolBatchRow(region: QoderRegion, row: QoderWebPoolTestRow | QoderWebPoolCheckinRow): void {
+    const batch = poolBatches[region]
+    // 行级测试（只测一个号）不进槽位：它没有「批量在飞」这回事，卡片也只为批量
+    // 动作轮询进度——给它开槽位只会让下一次批量读到上一批的残行。
+    if (batch === undefined) return
+    batch.done.push({ atMs: Date.now(), row })
+  }
+
+  function endPoolBatch(region: QoderRegion): void {
+    delete poolBatches[region]
+  }
+
+  /**
    * 每区域最近一次**实时**拉到的完整目录（含上游声明的思考档位），未过滤。
    *
    * 为什么要单独存：`stacks[region].catalog` 装的是**过滤后**（只含勾选模型）
@@ -778,6 +808,18 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   const poolCreditsSnapshot: Partial<Record<QoderRegion, ReadonlyMap<string, QoderPoolCredits>>> = {}
   const POOL_CREDITS_SNAPSHOT_MS = 10 * 60_000
   const poolCreditsSnapshotAt: Partial<Record<QoderRegion, number>> = {}
+  /** 这份快照是「问哪几个账号」问出来的：请求的成员集合变了就不能复用。 */
+  const poolCreditsRequested: Partial<Record<QoderRegion, string>> = {}
+  /**
+   * 卡片读数的复用窗口。
+   *
+   * 批量在飞时卡片每 2.5 秒重读一次 usage，而每次读取都会**为每个成员各发一次**
+   * usage 请求（`poolMemberCredits`）——六个号就是每分钟 144 次上游调用，纯属
+   * 浪费，还可能撞限流。积分不是秒级变化的东西，15 秒内复用同一份读数，肉眼
+   * 看不出差别，上游负载降一个数量级。（签到领了分是例外：那时会主动作废，
+   * 见 `runCheckinBatch` 末尾。）
+   */
+  const POOL_CREDITS_CARD_TTL_MS = 15_000
 
   /**
    * 池成员的最新积分（每成员一次 usage 读数）。由卡片路由付费——卡片正在看的
@@ -785,6 +827,13 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
    * 只让那一行显示「—」，不拖垮整张表。
    */
   async function poolMemberCredits(region: QoderRegion, accountIds: readonly string[]): Promise<ReadonlyMap<string, QoderPoolCredits>> {
+    const requested = accountIds.join('\u0000')
+    const cached = poolCreditsSnapshot[region]
+    if (cached !== undefined
+      && poolCreditsRequested[region] === requested
+      && Date.now() - (poolCreditsSnapshotAt[region] ?? 0) <= POOL_CREDITS_CARD_TTL_MS) {
+      return cached
+    }
     const store = stacks[region].store
     const SOON_MS = 3 * 24 * 3600 * 1000
     const entries = await Promise.all(accountIds.map(async accountId => {
@@ -806,6 +855,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const map = new Map(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined))
     poolCreditsSnapshot[region] = map
     poolCreditsSnapshotAt[region] = Date.now()
+    poolCreditsRequested[region] = requested
     return map
   }
 
@@ -919,41 +969,49 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const prefs = poolPreferencesOf(config, region)
     const client = stacks[region].upstream
     const rows: QoderWebPoolCheckinRow[] = []
-    let first = true
-    for (const accountId of prefs.memberAccountIds) {
-      const credit = await store.credentialFor(accountId, sourcesOf(region))
-      if (credit === undefined) continue
-      if (!first) await new Promise(resolve => setTimeout(resolve, POOL_BATCH_GAP_MS))
-      first = false
-      const base = { accountId, accountName: credit.accountName }
-      let row: QoderWebPoolCheckinRow
-      try {
-        const outcome = await client.claimDailyCredits(credit.pat)
-        // 「下一窗何时刷新」**两种成功都要带**（claimed 与 already）。上游的
-        // `endAt` 就是这个数，不带它 UI 只能说「已领取」，用户会以为要等到明天
-        // 零点 —— 而官网页面上写着次日 10:00（用户实拍）。
-        const refresh = outcome.status === 'unavailable' ? {} : outcome.nextRefreshAtMs === undefined ? {} : { refreshAtMs: outcome.nextRefreshAtMs }
-        if (outcome.status === 'claimed') {
-          row = {
-            ...base,
-            status: 'claimed',
-            ...(outcome.amount === undefined ? {} : { credit: outcome.amount }),
-            ...(outcome.validityDays === undefined ? {} : { validityDays: outcome.validityDays }),
-            ...refresh,
+    beginPoolBatch(region, 'checkin')
+    try {
+      let first = true
+      for (const accountId of prefs.memberAccountIds) {
+        const credit = await store.credentialFor(accountId, sourcesOf(region))
+        if (credit === undefined) continue
+        if (!first) await new Promise(resolve => setTimeout(resolve, POOL_BATCH_GAP_MS))
+        first = false
+        const base = { accountId, accountName: credit.accountName }
+        let row: QoderWebPoolCheckinRow
+        try {
+          const outcome = await client.claimDailyCredits(credit.pat)
+          // 「下一窗何时刷新」**两种成功都要带**（claimed 与 already）。上游的
+          // `endAt` 就是这个数，不带它 UI 只能说「已领取」，用户会以为要等到明天
+          // 零点 —— 而官网页面上写着次日 10:00（用户实拍）。
+          const refresh = outcome.status === 'unavailable' ? {} : outcome.nextRefreshAtMs === undefined ? {} : { refreshAtMs: outcome.nextRefreshAtMs }
+          if (outcome.status === 'claimed') {
+            row = {
+              ...base,
+              status: 'claimed',
+              ...(outcome.amount === undefined ? {} : { credit: outcome.amount }),
+              ...(outcome.validityDays === undefined ? {} : { validityDays: outcome.validityDays }),
+              ...refresh,
+            }
+          } else if (outcome.status === 'already-claimed') {
+            row = { ...base, status: 'already', ...refresh }
+          } else {
+            row = { ...base, status: 'failed', message: outcome.message }
           }
-        } else if (outcome.status === 'already-claimed') {
-          row = { ...base, status: 'already', ...refresh }
-        } else {
-          row = { ...base, status: 'failed', message: outcome.message }
+        } catch (error: unknown) {
+          row = { ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) }
         }
-      } catch (error: unknown) {
-        row = { ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) }
+        rows.push(row)
+        // 每签完一个就写进快照：成员表的「已签到 / 还有多久刷新」逐个落位。签到
+        // 不再抬遮罩（用户要求），界面靠这次即时写入加卡片在飞期间的轮询看到进度；
+        // 等整批结束才写，那几秒里表是不动的。
+        applyCheckinRow(region, row)
+        // 同时交给进度槽位：卡片的活动日志据此**逐条**落行（用户实拍：六条日志
+        // 全压在同一秒，因为原先等整批响应回来才一次性写）。
+        recordPoolBatchRow(region, row)
       }
-      rows.push(row)
-      // 每签完一个就写进快照：成员表的「已签到 / 还有多久刷新」逐个落位。签到
-      // 不再抬遮罩（用户要求），界面靠这次即时写入加卡片在飞期间的轮询看到进度；
-      // 等整批结束才写，那几秒里表是不动的。
-      applyCheckinRow(region, row)
+    } finally {
+      endPoolBatch(region)
     }
     // 签到会改变积分余额：必须**重新拉一次**，否则这个区域的积分会一直停在签到
     // 前的数字，直到某个**与签到无关**的动作（改配置 / 点「从 Qoder 刷新」）
@@ -970,6 +1028,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     // 失败不影响签到本身：结果已经如实回报给用户了，积分补读失败只是这一格数字
     // 没更新，下一次轮询会再试。
     await refreshUsageCoalesced(region).catch(() => {})
+    // 成员积分读了会走卡片那个 15 秒复用窗口（见 `poolMemberCredits`）：签到
+    // 刚改过余额，这份快照必须作废，否则用户「领了分但积分没动」——正是这条
+    // 刷新逻辑当初要修的那个观感，只是换了个位置复现。
+    poolCreditsSnapshotAt[region] = 0
     return rows
   }
 
@@ -1255,14 +1317,26 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         // 一池六个号就是几分钟，界面据此逐行翻新状态（卡片在飞期间会重读快照）。
         // 等整批结束才一次性写，用户在那几分钟里看到的就是一张不动的表 ——
         // 那种「没有进度」和「卡死」在界面上分不出来，用户把它当成卡住过。
-        const rows = onlyAccountId === undefined
-          ? await testAllAccounts(targets, target.modelId, deps, row => {
-              const probe = poolProbeFromResult(row.result)
-              if (probe === undefined) return
-              stacks[reg].poolRuntime = { ...stacks[reg].poolRuntime, [row.accountId]: probe }
-              void writePoolProbes(reg, { [row.accountId]: probe })
-            })
-          : await Promise.all(targets.map(target => testOne(target, modelIdOfTarget, deps)))
+        const rows = await (async (): Promise<QoderWebPoolTestRow[]> => {
+          const batch = onlyAccountId === undefined
+          if (batch) beginPoolBatch(reg, 'test')
+          try {
+            return batch
+              ? await testAllAccounts(targets, modelIdOfTarget, deps, row => {
+                  // 先记进度，再落探针：进度槽位装的是「这一行的结论已出」，即使
+                  // 这条结果解析不出探针（`poolProbeFromResult` 返回 undefined），
+                  // 活动日志也该照实写一行——否则用户点完什么都没看到。
+                  recordPoolBatchRow(reg, row)
+                  const probe = poolProbeFromResult(row.result)
+                  if (probe === undefined) return
+                  stacks[reg].poolRuntime = { ...stacks[reg].poolRuntime, [row.accountId]: probe }
+                  void writePoolProbes(reg, { [row.accountId]: probe })
+                })
+              : await Promise.all(targets.map(target => testOne(target, modelIdOfTarget, deps)))
+          } finally {
+            endPoolBatch(reg)
+          }
+        })()
         const probes: Record<string, QoderPoolProbe> = {}
         for (const row of rows) {
           const p = poolProbeFromResult(row.result)
@@ -1288,6 +1362,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       preferences: region => poolPreferencesOf(config, region),
       catalog: region => stacks[region].catalog.current(),
       poolProbes: region => stacks[region].poolRuntime,
+      batchProgress: region => poolBatches[region],
       memberCredits: (region, accountIds) => poolMemberCredits(region, accountIds),
       credentialFor: (region, accountId) => stacks[region].store.credentialFor(accountId, sourcesOf(region)),
       probeOne: (region, credit, modelId) => probeThrough(region, credit, modelId),

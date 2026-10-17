@@ -51,6 +51,7 @@ import {
   type QoderWebModel,
   type QoderWebPool,
   type QoderWebPoolAccount,
+  type QoderWebPoolBatch,
   type QoderWebPoolCheckinRow,
   type QoderWebPoolExclusion,
   type QoderWebPoolTestRow,
@@ -159,6 +160,15 @@ export interface QoderPoolDeps {
    * 「已领取」，**绝不**编一个本地猜测的倒计时。
    */
   checkinSnapshot?(region: QoderRegion): Readonly<Record<string, { claimed: boolean, refreshAtMs?: number }>>
+  /**
+   * 正在飞的批量动作（签到或测试）已经处理完的那几行，供卡片的 `action=progress`
+   * 轮询逐条写活动日志。
+   *
+   * 只读宿主内存、不碰上游：每处理完一个账号追加一行（带完成时刻），批次结束
+   * 即清空（响应里本来就有完整结果，这个槽位只服务「在飞期间」）。两个批量动作
+   * 共用一个锁，所以每个区域只需要一个槽位。
+   */
+  batchProgress?(region: QoderRegion): QoderWebPoolBatch | undefined
   /** Persist the batch's measurements back to the runtime store. */
   applyProbes(region: QoderRegion, probes: Record<string, QoderPoolProbe>): Promise<void>
   /** Drop one account's membership from the prefs. */
@@ -513,17 +523,26 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
   })
 
   // -------------------------------------------------------------------------
-  // POST /pool?region=&action=test|remove
+  // /pool?region=&action=checkin|test|remove|progress
+  //
+  // 前三个是 POST 动作；`progress` 是**只读的 GET 轮询**（卡片在批量在飞期间
+  // 每秒问一次「哪几行已经处理完」），所以必须在方法检查之前分岔。
   // -------------------------------------------------------------------------
   mount(QODER_POOL_PATH, async (req, res) => {
     if (!loopbackOrigin(req)) return json(res, 403, { error: 'forbidden' })
-    if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
     const region = regionOf(res, req.url ?? '')
     if (region === undefined) return
     const action = poolActionOf(req.url ?? '')
-    if (action === undefined) return json(res, 400, { error: 'action is required (checkin|test|remove)' })
+    if (action === undefined) return json(res, 400, { error: 'action is required (checkin|test|remove|progress)' })
     if (deps.pool === undefined) return json(res, 503, { reason: 'pool-unavailable', error: 'pool unavailable' })
     const pool = deps.pool
+
+    if (action === 'progress') {
+      if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+      const batch = pool.batchProgress?.(region)
+      return json(res, 200, batch === undefined ? { action: 'progress' } : { action: 'progress', batch })
+    }
+    if (req.method !== 'POST') return json(res, 405, { error: 'method not allowed' })
 
     if (action === 'checkin') {
       // 区域没有每日签到时**在到达上游之前**就拒绝：不值得为一个「这里没有」

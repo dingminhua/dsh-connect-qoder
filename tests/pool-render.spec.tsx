@@ -92,6 +92,23 @@ async function mountPool(overrides: Record<string, unknown> = {}): Promise<{ con
   }
 }
 
+/**
+ * 批量动作的 fetch 替身：POST（真正的动作）挂起，等测试调用 `hold.release`；
+ * GET（进度轮询）立刻回「还没有处理完的行」。
+ *
+ * 两者必须分开。进度轮询是批量在飞期间每秒一次的读，替身若把同一个挂起的
+ * promise 也发给它，`release` 就会指到**轮询**那一次上——POST 永远不返回，
+ * 批量永远「在飞」，测试测到的就不是它以为的东西（首轮三处失败的真正原因）。
+ */
+function batchFetchMock(hold: { release?: (value: Response) => void }): void {
+  vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (init?.method !== 'POST') {
+      return Promise.resolve({ ok: true, status: 200, json: async () => ({ action: 'progress' }) } as Response)
+    }
+    return new Promise<Response>(resolve => { hold.release = resolve })
+  }))
+}
+
 describe('AccountPool render（workbuddy 单表同构）', () => {
   beforeEach(() => {
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }) as Response))
@@ -637,8 +654,8 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
    * 「已选 N / M」用着，按类名断言会把无关的那行算进来。
    */
   it('行内测试在飞时不抬遮罩，只改那一行的按钮', async () => {
-    let release: ((value: Response) => void) | undefined
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
+    const hold: { release?: (value: Response) => void } = {}
+    batchFetchMock(hold)
     const { container, unmount } = await mountPool()
     try {
       const busyHint = (): HTMLSpanElement | undefined =>
@@ -679,7 +696,7 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       expect((rows[0]!.querySelector('.dsm-qoder-pool-delete-btn') as HTMLButtonElement).disabled).toBe(false)
 
       await act(async () => {
-        release?.({
+        hold.release?.({
           ok: true,
           status: 200,
           json: async () => ({
@@ -787,8 +804,8 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
   })
 
   it('批量测试也不抬遮罩：只锁测试按钮并挂一句进度提示', async () => {
-    let release: ((value: Response) => void) | undefined
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
+    const hold: { release?: (value: Response) => void } = {}
+    batchFetchMock(hold)
     const { container, unmount } = await mountPool()
     try {
       const batchTest = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
@@ -810,7 +827,7 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
         .find(node => (node.textContent ?? '') === 'row.poolBusyHint')
       expect(hint).not.toBeUndefined()
       await act(async () => {
-        release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response)
+        hold.release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response)
       })
       expect(container.querySelector('.dsm-qoder-veil')).toBeNull()
       const idle = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
@@ -823,8 +840,8 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
 
   it('批量测试在飞期间周期性重读快照（逐行进度自己会动）', async () => {
     vi.useFakeTimers()
-    let release: ((value: Response) => void) | undefined
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
+    const hold: { release?: (value: Response) => void } = {}
+    batchFetchMock(hold)
     const onChanged = vi.fn()
     const { container, unmount } = await mountPool({ onChanged })
     try {
@@ -839,7 +856,7 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       expect(onChanged).toHaveBeenCalledTimes(2)
       // 批次结束后轮询必须停下，否则会一直白白重读。
       await act(async () => {
-        release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response)
+        hold.release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response)
       })
       const settled = onChanged.mock.calls.length
       await act(async () => { vi.advanceTimersByTime(10_000) })
@@ -851,8 +868,8 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
   })
 
   it('签到也不抬遮罩：按钮自变「签到中…」+ 进度提示', async () => {
-    let release: ((value: Response) => void) | undefined
-    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
+    const hold: { release?: (value: Response) => void } = {}
+    batchFetchMock(hold)
     const { container, unmount } = await mountPool()
     try {
       const batchCheckin = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
@@ -872,13 +889,77 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
         .find(b => b.textContent === 'row.poolTestAll') as HTMLButtonElement
       expect(batchTest.disabled).toBe(true)
       await act(async () => {
-        release?.({ ok: true, status: 200, json: async () => ({ action: 'checkin', rows: [] }) } as Response)
+        hold.release?.({ ok: true, status: 200, json: async () => ({ action: 'checkin', rows: [] }) } as Response)
       })
       expect(container.querySelector('.dsm-qoder-veil')).toBeNull()
       const idle = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
         .find(b => b.textContent === 'row.poolCheckinAll') as HTMLButtonElement
       expect(idle.disabled).toBe(false)
     } finally {
+      await unmount()
+    }
+  })
+
+  it('批量动作逐条落日志：每行带自己的完成时刻，且整批响应不重复落行', async () => {
+    vi.useFakeTimers()
+    const hold: { release?: (value: Response) => void } = {}
+    // 两个账号的完成时刻刻意不同：用户实拍的毛病正是「六条共用同一秒」。
+    const atAlpha = new Date(2026, 0, 2, 10, 0, 5).getTime()
+    const atBeta = new Date(2026, 0, 2, 10, 0, 9).getTime()
+    const alphaRow = { accountId: 'a1', accountName: 'Alpha', result: { outcome: 'ok', atMs: atAlpha } }
+    const betaRow = { accountId: 'a2', accountName: 'Beta', result: { outcome: 'ok', atMs: atBeta } }
+    let done: Array<Record<string, unknown>> = []
+    vi.stubGlobal('fetch', vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+      if (init?.method !== 'POST') {
+        // 进度轮询：只读宿主内存里的「已经处理完哪几行」。
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: async () => ({ action: 'progress', batch: { action: 'test', done } }),
+        } as Response)
+      }
+      return new Promise<Response>(resolve => { hold.release = resolve })
+    }))
+    const { container, unmount } = await mountPool()
+    try {
+      await act(async () => { (container.querySelector('.dsm-qoder-pool-log-clear') as HTMLButtonElement).click() })
+      const textsOf = (): string[] =>
+        Array.from(container.querySelectorAll('.dsm-qoder-pool-log-text')).map(node => node.textContent ?? '')
+      const timesOf = (): string[] =>
+        Array.from(container.querySelectorAll('.dsm-qoder-pool-log-time')).map(node => node.textContent ?? '')
+      const batchTest = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolTestAll') as HTMLButtonElement
+      await act(async () => { batchTest.click() })
+      // 「开始」是按下按钮那一刻写的，不等结果——否则它会排到结果下面（日志新的在上）。
+      expect(textsOf()).toHaveLength(1)
+      expect(textsOf()[0]).toContain('row.poolLogTestStart')
+      expect(textsOf()[0]).toContain('count=2')
+      // 宿主测完第一个账号后，卡片在下一拍轮询里读到它，并**用它自己的完成时刻**落行。
+      done = [{ atMs: atAlpha, row: alphaRow }]
+      await act(async () => { vi.advanceTimersByTime(1_000) })
+      expect(textsOf()).toHaveLength(2)
+      expect(textsOf()[0]).toContain('row.poolLogTestRow')
+      expect(textsOf()[0]).toContain('Alpha')
+      expect(timesOf()[0]).toBe('10:00:05')
+      // 第二个账号：一行一行出现，时间各自不同（这正是本次要修的观感）。
+      done = [{ atMs: atAlpha, row: alphaRow }, { atMs: atBeta, row: betaRow }]
+      await act(async () => { vi.advanceTimersByTime(1_000) })
+      expect(textsOf()).toHaveLength(3)
+      expect(textsOf()[0]).toContain('Beta')
+      expect(timesOf()[0]).toBe('10:00:09')
+      expect(timesOf()[1]).toBe('10:00:05')
+      // 整批响应回来：它是权威答案，但轮询报过的两行**不能再写一遍**（否则看起来
+      // 像跑了两轮），只补「完成」这一行。
+      await act(async () => {
+        hold.release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [alphaRow, betaRow] }) } as Response)
+      })
+      const texts = textsOf()
+      expect(texts).toHaveLength(4)
+      expect(texts[0]).toContain('row.poolLogTestDone')
+      expect(texts.filter(text => text.includes('Alpha'))).toHaveLength(1)
+      expect(texts.filter(text => text.includes('Beta'))).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
       await unmount()
     }
   })

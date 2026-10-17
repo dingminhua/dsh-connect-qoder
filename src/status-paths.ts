@@ -168,13 +168,20 @@ export const QODER_ACTION_PARAM = 'action'
  *
  * `checkin` 只在区域真的提供每日签到时才被路由接受（两个区域都有；国际版的
  * 活动只下发给带 UMID 设备风控头的请求）——见 `QoderWebPoolPreferences.checkinSupported`。
+ *
+ * `progress` 不是动作，而是**只读的 GET 轮询**：回报正在飞的那一批已经处理完
+ * 哪几行，卡片据此逐条写活动日志。批量是串行的真实探针（一池六个号就是几分
+ * 钟），若等整批响应回来才一次性落日志，那几分钟里日志是空的——用户实拍到的
+ * 「六条全在 05:44:54」就是这个形状。它只读宿主内存里的进度、不碰上游，
+ * 所以可以每秒问一次。
  */
-export type QoderPoolAction = 'checkin' | 'test' | 'remove'
+export type QoderPoolAction = 'checkin' | 'test' | 'remove' | 'progress'
 
 /** Read the pool action off a request URL; unknown/absent means undefined. */
 export function poolActionOf(url: string): QoderPoolAction | undefined {
   const value = actionParamOf(url)
-  return value === 'checkin' || value === 'test' || value === 'remove' ? value : undefined
+  if (value === 'checkin' || value === 'test' || value === 'remove' || value === 'progress') return value
+  return undefined
 }
 
 /** The account mutation actions (see {@link QODER_ACCOUNTS_PATH}). */
@@ -885,6 +892,26 @@ export interface QoderWebPoolTestAnswer {
   /** The model actually tested; absent when none could be resolved. */
   modelId?: string
   rows: readonly QoderWebPoolTestRow[]
+}
+
+/**
+ * 正在飞的批量动作的进度（`action=progress` 轮询的答案）。
+ *
+ * 只列出**已经处理完**的行（完成顺序），每行额外带 `atMs`（完成时刻，epoch
+ * 毫秒）——活动日志要按真实完成时刻落行，不能等整批回来才用同一个时刻盖章。
+ * 批次结束时槽位清空，答案里的 `action=progress` 仍照常回，只是不再带 `batch`
+ * 字段（「现在没有批量在跑」是正常状态，不是错误）。
+ */
+export interface QoderWebPoolBatch {
+  action: 'checkin' | 'test'
+  /** 已处理完的行，按完成顺序；每行带完成时刻。 */
+  done: readonly { atMs: number, row: QoderWebPoolTestRow | QoderWebPoolCheckinRow }[]
+}
+
+/** The pool endpoint's answer for `action=progress`. */
+export interface QoderWebPoolProgressAnswer {
+  action: 'progress'
+  batch?: QoderWebPoolBatch
 }
 
 // ---------------------------------------------------------------------------

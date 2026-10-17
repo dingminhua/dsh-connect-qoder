@@ -8,8 +8,9 @@
  *   1. 每日签到走 campaigns 端点，`checkinSupported` 按区域判定（CN 与国际版均已
  *      接通）；为 false 的区域，签到按钮与那一列整体不渲染；
  *   2. 批量测试走 `POST /pool?action=test`，Host 一次性返回 JSON
- *      `{action, modelId, rows}`（Qoder 上游不支持逐 account 流式），不再逐行
- *      流式进度；
+ *      `{action, modelId, rows}`；**在飞期间**另用 `GET /pool?action=progress`
+ *      逐秒读「哪几行已经处理完」（只读宿主内存、不碰上游），活动日志据此
+ *      **逐条**落行——等整批响应才写，六行会共用同一秒的时间戳；
  *   3. 账号来自 PAT（settings / env / vault）。**两件不同的事必须分开**：
  *        - 移出池 = 取消勾选并保存（只改 `memberAccountIds`，凭据留着）；
  *        - 彻底删除 = 行内「删除」按钮 + 二次确认（删 vault 条目，并连带收掉
@@ -381,6 +382,15 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
    */
   const runCheckinBatch = async (): Promise<void> => {
     setActionError(undefined)
+    // 与测试同规：先开账本、当场写「开始」那一行，结果由进度轮询逐条补（签到
+    // 也是串行的，一次一个账号、每两个之间还留了间隔；等整批回来才写，几行
+    // 日志会共用同一秒的时间戳）。
+    loggedBatchIds.current = new Set()
+    appendLog({
+      atMs: Date.now(),
+      text: t('row.poolLogCheckinStart', { count: effective.length }),
+      tone: 'info',
+    })
     setBatchAction('checkin')
     try {
       const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, region, 'checkin'), {
@@ -396,14 +406,8 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       }
       if (raw['action'] === 'checkin' && Array.isArray(raw['rows'])) {
         const rows = (raw['rows'] as unknown[]).map(parseCheckinRow).filter(row => row !== undefined)
-        appendLog({ atMs: Date.now(), text: t('row.poolLogCheckinStart', { count: rows.length }), tone: 'info' })
-        for (const row of rows) {
-          appendLog({
-            atMs: Date.now(),
-            text: checkinLogText(t, row),
-            tone: row.status === 'failed' ? 'warn' : 'ok',
-          })
-        }
+        // 只补轮询还没报过的行（整批响应是权威答案，但不该重复落行）。
+        for (const row of rows) logCheckinRowOnce(row, Date.now())
         if (rows.length > 0) appendLog({ atMs: Date.now(), text: t('row.poolLogCheckinDone'), tone: 'info' })
       }
       try { await onChanged?.() } catch { /* reconciled on the next poll */ }
@@ -421,6 +425,84 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       return next
     })
   }, [region])
+
+  /**
+   * 逐条落日志的账本：哪个账号的这一次结果已经写过了。
+   *
+   * 同一批结果有两条来路——在飞期间的进度轮询、以及最终的整批响应（后者带着
+   * 完整结果，是权威答案）。两边都调 `*RowOnce`，由这里去重；每批开始时清空，
+   * 因为同一个账号的两**批**结果该各留一行。
+   */
+  const loggedBatchIds = useRef<Set<string>>(new Set())
+
+  const logTestRowOnce = useCallback((row: QoderWebPoolTestRow, atMs: number): void => {
+    if (loggedBatchIds.current.has(row.accountId)) return
+    loggedBatchIds.current.add(row.accountId)
+    appendLog({
+      atMs,
+      // `probeLabelOf` 要的是「结论出在什么时刻」：读缓存里的旧测量与刚测出来
+      // 的一次，同一句「可用」意思不同（后者才是这次的结果）。
+      text: t('row.poolLogTestRow', { accountName: row.accountName, outcome: probeLabelOf(t, row.result, atMs) }),
+      tone: row.result.outcome === 'ok' ? 'ok' : 'warn',
+    })
+  }, [appendLog, t])
+
+  const logCheckinRowOnce = useCallback((row: QoderWebPoolCheckinRow, atMs: number): void => {
+    if (loggedBatchIds.current.has(row.accountId)) return
+    loggedBatchIds.current.add(row.accountId)
+    // 「今天已领」是正常结果，不该显示成失败——只有真的失败才用 warn。
+    appendLog({ atMs, text: checkinLogText(t, row), tone: row.status === 'failed' ? 'warn' : 'ok' })
+  }, [appendLog, t])
+
+  /**
+   * 批量在飞期间逐秒读一次「哪几行已经处理完」，并把新行**逐条**写进活动日志。
+   *
+   * 为什么要有这条路：整批日志原是等响应回来一次性写的，六行于是共用落盘那一
+   * 刻的时间戳（用户实拍：六条全是 05:44:54）。批量是分钟级的串行真实探针，
+   * 日志在那几分钟里整段空着——用户分不清「还在跑」和「卡住了」，而这两者在
+   * 界面上确实看不出区别。宿主每处理完一个账号就往进度槽位追加一行（带完成
+   * 时刻），这里读出来照原样落行：时间是真的，行是一行一行出现的。
+   *
+   * 轮询只读宿主内存里的进度、不碰上游，所以每秒一次很便宜。（*重读 usage*
+   * 那条路不一样：它每成员一次上游读数，所以它 2.5 秒一次、宿主侧还有 15 秒
+   * 的复用窗口。）
+   */
+  useEffect(() => {
+    const action = batchAction
+    if (action === undefined) return
+    let stopped = false
+    const pull = async (): Promise<void> => {
+      try {
+        const response = await fetch(withQoderRegionAndAction(QODER_POOL_PATH, region, 'progress'), { credentials: 'same-origin' })
+        if (!response.ok) return
+        const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+        const batch = raw['batch']
+        if (stopped || typeof batch !== 'object' || batch === null) return
+        const entry = batch as Record<string, unknown>
+        // 动作对不上就不认：上一批的残行、或另一个标签页在跑的别的动作，都不该
+        // 混进这一批的日志。
+        if (entry['action'] !== action || !Array.isArray(entry['done'])) return
+        for (const value of entry['done'] as unknown[]) {
+          if (typeof value !== 'object' || value === null) continue
+          const done = value as Record<string, unknown>
+          const atMs = typeof done['atMs'] === 'number' ? done['atMs'] : Date.now()
+          if (action === 'test') {
+            const row = parseTestRow(done['row'])
+            if (row !== undefined) logTestRowOnce(row, atMs)
+          } else {
+            const row = parseCheckinRow(done['row'])
+            if (row !== undefined) logCheckinRowOnce(row, atMs)
+          }
+        }
+      } catch { /* 轮询失败不打扰用户：下一拍再试，整批响应仍是最终答案 */ }
+    }
+    void pull()
+    const timer = window.setInterval(() => { void pull() }, 1_000)
+    return () => {
+      stopped = true
+      window.clearInterval(timer)
+    }
+  }, [batchAction, region, logTestRowOnce, logCheckinRowOnce])
 
   /**
    * 测试一个账号，或整批。
@@ -447,7 +529,23 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     if (batchBusy || rowTestBusy) return
     setActionError(undefined)
     if (inline) setRowTestingId(onlyAccountId)
-    else setBatchAction('test')
+    else {
+      // 整批：先开账本，再**当场**写「开始」这一行。
+      //
+      // 「开始」不能等响应回来才写——那时结果可能已经逐条落过，开始句会排在
+      // 它们下面（日志是新的在上），读起来像「测完了才开始」。当场写，时间也
+      // 是用户按下按钮的时间。
+      loggedBatchIds.current = new Set()
+      appendLog({
+        atMs: Date.now(),
+        // 计数用卡片手里的成员数：宿主会跳过「凭据已不在」的幽灵成员，所以它
+        // 可能比实际被测的少几个——幽灵由上面那条自愈 effect 静默收敛，正常
+        // 情况下两者相等。宁可报一个可能略保守的数，也不能等结果才知道几行。
+        text: t('row.poolLogTestStart', { count: effective.length, model: pool?.targetModelId || t('row.modelUnknown') }),
+        tone: 'info',
+      })
+      setBatchAction('test')
+    }
     try {
       const url = inline
         ? withQoderRouteAccount(QODER_POOL_PATH, region, 'test', onlyAccountId)
@@ -465,7 +563,6 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       }
       if (raw['action'] === 'test' && Array.isArray(raw['rows'])) {
         const rows = (raw['rows'] as unknown[]).map(parseTestRow).filter(row => row !== undefined)
-        const modelId = typeof raw['modelId'] === 'string' && raw['modelId'] !== '' ? raw['modelId'] : t('row.modelUnknown')
         if (inline) {
           // 行内**不打批量话术**：「开始测试 N 个账号 × model」「测试完成，已重新
           // 计算候选账号」在只测一行时是噪声，第二句还在暗示一件没发生的事（整池
@@ -487,17 +584,13 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             }
           }
         } else {
-          appendLog({ atMs: Date.now(), text: t('row.poolLogTestStart', { count: rows.length, model: modelId }), tone: 'info' })
+          // 「开始」那一行已经在按下按钮时写过了（见上面的注释）：这里只补结果，
+          // 而且只补**轮询还没报过**的那些行——整批响应是权威答案，但重复的
+          // 「Alpha ✓ 可用」写两遍会让日志看起来像跑了两轮。
           if (rows.length === 0) {
             appendLog({ atMs: Date.now(), text: t('row.poolLogBatchFailed', { message: t('row.poolTargetNone') }), tone: 'warn' })
           } else {
-            for (const row of rows) {
-              appendLog({
-                atMs: Date.now(),
-                text: t('row.poolLogTestRow', { accountName: row.accountName, outcome: probeLabelOf(t, row.result, Date.now()) }),
-                tone: row.result.outcome === 'ok' ? 'ok' : 'warn',
-              })
-            }
+            for (const row of rows) logTestRowOnce(row, Date.now())
           }
           appendLog({ atMs: Date.now(), text: t('row.poolLogTestDone'), tone: 'info' })
         }

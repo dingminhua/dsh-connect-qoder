@@ -31,7 +31,7 @@ import {
 import type { QoderModelInfo } from '../src/catalog.ts'
 import type { QoderRegion } from '../src/upstream.ts'
 import type { QoderPoolProbe } from '../src/account-pool.ts'
-import type { QoderWebProbeResult, QoderWebPoolTestRow, QoderWebAccountCredit } from '../src/status-paths.ts'
+import type { QoderWebProbeResult, QoderWebPoolTestRow, QoderWebPoolBatch, QoderWebAccountCredit } from '../src/status-paths.ts'
 import { qoderAccountId } from '../src/credentials.ts'
 
 /** One CN model info — free so pool can resolve a target. */
@@ -431,6 +431,41 @@ describe('accounts route (add|remove)', () => {
 })
 
 describe('pool route (test|remove)', () => {
+  it('progress 是只读的一瞥：在飞时给已处理完的行，结束后什么也不给', async () => {
+    // 「逐条完成逐条写入活动记录」：卡片在批量在飞期间每秒读这一眼，把每一行按
+    // 它**自己的**完成时刻写进活动日志。它必须只读——轮询一次就重跑一遍整批是
+    // 不可接受的；批次结束后槽位清空，答案里连 batch 字段都不该有。
+    let batch: QoderWebPoolBatch | undefined = {
+      action: 'checkin',
+      done: [{
+        atMs: 1792272301000,
+        row: { accountId: 'pat-settings', accountName: 'Alpha', status: 'claimed', credit: 120 },
+      }],
+    }
+    const pool = poolDeps({ batchProgress: () => batch })
+    const captured = await mountRoutes(deps({ pool }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+
+    const during = response()
+    await handler(request('GET', undefined, `${QODER_POOL_PATH}?region=cn&action=progress`), during.res)
+    expect(during.status()).toBe(200)
+    const seen = during.body() as { action: string, batch?: QoderWebPoolBatch }
+    expect(seen.action).toBe('progress')
+    expect(seen.batch?.done).toHaveLength(1)
+    expect(seen.batch?.done[0]?.atMs).toBe(1792272301000)
+
+    batch = undefined
+    const after = response()
+    await handler(request('GET', undefined, `${QODER_POOL_PATH}?region=cn&action=progress`), after.res)
+    expect(after.status()).toBe(200)
+    expect((after.body() as { batch?: unknown }).batch).toBeUndefined()
+
+    // 轮询不是写：POST 打这个 action 必须被拒。
+    const wrong = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=progress`), wrong.res)
+    expect(wrong.status()).toBe(405)
+  })
+
   it('pool 目录带上真实倍率与显示名（选项标签要用它们定价）', async () => {
     // 双缺陷回归：路由层曾只对免费模型写 `creditMultiplier: 0`，付费模型一个
     // 数字都没有——下拉选项读起来像免费；而选项文本更早还直接渲染模型 **id**
