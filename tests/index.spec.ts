@@ -985,3 +985,52 @@ describe('withHardTimeout', () => {
     expect(await raced).toBeUndefined()
   })
 })
+
+// ==========================================================================
+// 池开关：换号的唯一授权 / 失败记录的守卫
+// ==========================================================================
+
+/**
+ * 「关掉账号池」此前**对换号完全无效**：`nextFailoverCredential` 只读成员
+ * 名单、从不读 `enabled`。默认 `enabled: false`，于是每一条全新安装都在这条
+ * 路径上：用户以为关掉了自动行为，插件仍会在失败后悄悄换到另一个 PAT 计费。
+ *
+ * 把这两个判据做成导出的纯函数再钉住 —— 与 `liveRequestProbe` 同一个理由
+ * （「判据与动作打包，于是动作有没有真的发生也能被断言」）。
+ */
+describe('poolAllowsFailover —— 池开关是换号的唯一授权', () => {
+  it('关闭时**绝不**换号', () => {
+    expect(Qoder.poolAllowsFailover({ enabled: false, memberAccountIds: ['a', 'b'] })).toBe(false)
+  })
+
+  it('关闭时即使成员名单非空也不换号（这正是旧实现出错的地方）', () => {
+    // 旧实现只看 memberAccountIds，所以这条在旧代码下会是 true。
+    expect(Qoder.poolAllowsFailover({ enabled: false, memberAccountIds: ['a'] })).toBe(false)
+  })
+
+  it('开启时才授权', () => {
+    expect(Qoder.poolAllowsFailover({ enabled: true, memberAccountIds: ['a'] })).toBe(true)
+  })
+
+  it('开启但没有任何成员：授权成立，但排序自然挑不到人（由 rankPool 收口）', () => {
+    expect(Qoder.poolAllowsFailover({ enabled: true, memberAccountIds: [] })).toBe(true)
+  })
+})
+
+describe('shouldRecordPoolFailure —— 不该记的失败一条都不记', () => {
+  it('池关闭时什么都不记', () => {
+    expect(Qoder.shouldRecordPoolFailure({ enabled: false, memberAccountIds: ['a'] }, 'a')).toBe(false)
+  })
+
+  it('账号未勾选为成员时不记（没授权就不改它的状态）', () => {
+    expect(Qoder.shouldRecordPoolFailure({ enabled: true, memberAccountIds: ['a'] }, 'outsider')).toBe(false)
+  })
+
+  it('已勾选成员且池开启时才记', () => {
+    expect(Qoder.shouldRecordPoolFailure({ enabled: true, memberAccountIds: ['a', 'b'] }, 'b')).toBe(true)
+  })
+
+  it('空 accountId 不记（那是「不知道是谁」，不是某个号的事实）', () => {
+    expect(Qoder.shouldRecordPoolFailure({ enabled: true, memberAccountIds: [''] }, '')).toBe(false)
+  })
+})

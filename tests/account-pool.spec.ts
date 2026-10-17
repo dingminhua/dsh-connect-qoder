@@ -38,6 +38,15 @@ function member(
   id: string,
   options: {
     credits?: number
+    /**
+     * HOW MUCH is expiring inside the "soon" window (not when). Real credit
+     * snapshots always carry both, and the ranking reads both: `expiringSoon`
+     * decides "is anything at risk", `nearestExpiryMs` decides "who lapses
+     * first". Set this whenever `nearestExpiryMs` is set, or the account is
+     * ranked as "nothing at risk" — which is what the old single-key code did
+     * by accident (upstream issue #70).
+     */
+    expiringSoon?: number
     nearestExpiryMs?: number
     probe?: QoderPoolMember['probe']
   } = {},
@@ -49,7 +58,7 @@ function member(
       : {
           credits: {
             total: options.credits,
-            expiringSoon: 0,
+            expiringSoon: options.expiringSoon ?? 0,
             ...options.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: options.nearestExpiryMs },
           },
         },
@@ -270,8 +279,8 @@ describe('rankPool', () => {
 
   it('prefers the account whose credits expire soonest when totals tie', () => {
     const ranked = rankPool([
-      member('late', { credits: 100, nearestExpiryMs: NOW + 30 * 86_400_000 }),
-      member('soon', { credits: 100, nearestExpiryMs: NOW + 86_400_000 }),
+      member('late', { credits: 100, expiringSoon: 100, nearestExpiryMs: NOW + 30 * 86_400_000 }),
+      member('soon', { credits: 100, expiringSoon: 100, nearestExpiryMs: NOW + 86_400_000 }),
     ], NOW)
     expect(ranked[0]?.account.id).toBe('soon')
   })
@@ -279,9 +288,81 @@ describe('rankPool', () => {
   it('ranks an account with no expiry after one that expires', () => {
     const ranked = rankPool([
       member('never', { credits: 100 }),
-      member('expires', { credits: 100, nearestExpiryMs: NOW + 86_400_000 }),
+      member('expires', { credits: 100, expiringSoon: 100, nearestExpiryMs: NOW + 86_400_000 }),
     ], NOW)
     expect(ranked[0]?.account.id).toBe('expires')
+  })
+
+  /**
+   * issue #70 —— 上游 4.6.7 的修复，本插件此前**继承了这个缺陷**。
+   *
+   * 旧排序把「积分总量」放在「临期」之前。总量几乎从不完全相等，于是临期规则
+   * 是**数学上不可达**的死代码：一个当天就要作废的账号，只因总量比别的号少
+   * 一点，就永远排在最后。报告者病例：账号 C 有 196.4 分当天 17:21 作废。
+   */
+  it('spends expiring credits FIRST even when another account holds far more (issue #70)', () => {
+    const ranked = rankPool([
+      member('rich', { credits: 1200 }),
+      member('rich2', { credits: 1100 }),
+      // 196.4 分当天就要作废 —— 总量最少的号，旧排序里永远排最后。
+      member('expiring', { credits: 196.4, expiringSoon: 196.4, nearestExpiryMs: NOW + 3_600_000 }),
+    ], NOW)
+    expect(ranked[0]?.account.id).toBe('expiring')
+    // 其余仍按总量：多者优先。
+    expect(ranked.map(row => row.account.id)).toEqual(['expiring', 'rich', 'rich2'])
+  })
+
+  it('prefers a single at-risk credit over a large non-expiring balance', () => {
+    // 最小剂量验证：1 分临期也要压过 5 万分不过期。
+    const ranked = rankPool([
+      member('big', { credits: 50_000 }),
+      member('tiny', { credits: 1, expiringSoon: 1, nearestExpiryMs: NOW + 60_000 }),
+    ], NOW)
+    expect(ranked[0]?.account.id).toBe('tiny')
+  })
+
+  it('among accounts at risk, lapses-soonest wins before amount', () => {
+    // 两者都有临期：先到期的优先，即使临期量更小 —— 它的时间更少。
+    const ranked = rankPool([
+      member('bigLater', { credits: 500, expiringSoon: 500, nearestExpiryMs: NOW + 2 * 86_400_000 }),
+      member('smallSooner', { credits: 50, expiringSoon: 50, nearestExpiryMs: NOW + 3_600_000 }),
+    ], NOW)
+    expect(ranked[0]?.account.id).toBe('smallSooner')
+  })
+
+  it('with the same expiry, the larger amount at risk wins', () => {
+    // 同一到期时刻：临期量大者优先（否则小额的先花掉，大额的仍会烂）。
+    const expiry = NOW + 86_400_000
+    const ranked = rankPool([
+      member('small', { credits: 10, expiringSoon: 10, nearestExpiryMs: expiry }),
+      member('large', { credits: 900, expiringSoon: 900, nearestExpiryMs: expiry }),
+    ], NOW)
+    expect(ranked[0]?.account.id).toBe('large')
+  })
+
+  it('an account whose nearestExpiryMs is set but expiringSoon is 0 is NOT at risk', () => {
+    // 这两个字段是**两件事**：过期时刻存在不等于有临期积分（可能已在上个窗口
+    // 花光）。若把它们混成一个键，"有临期"就永远为真，规则再次失效。
+    const ranked = rankPool([
+      member('nothingAtRisk', { credits: 10, nearestExpiryMs: NOW + 3_600_000 }),
+      member('nothingAtRiskButMore', { credits: 500 }),
+    ], NOW)
+    expect(ranked[0]?.account.id).toBe('nothingAtRiskButMore')
+  })
+
+  it('never lets the expiry keys reorder excluded accounts ahead of usable ones', () => {
+    // 可用性永远第一：再临期也不能把出池的号抬到可用的号前面。
+    const ranked = rankPool([
+      member('excludedExpiring', {
+        credits: 900,
+        expiringSoon: 900,
+        nearestExpiryMs: NOW + 60_000,
+        probe: { outcome: 'credential-rejected', atMs: NOW },
+      }),
+      member('usable', { credits: 1 }),
+    ], NOW)
+    expect(ranked[0]?.account.id).toBe('usable')
+    expect(ranked[1]?.excludedBy).toBeDefined()
   })
 
   it('ranks unreadable credits as zero, never first', () => {

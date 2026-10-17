@@ -693,6 +693,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       },
       failoverAccount: async tried => nextFailoverCredential(region, tried),
       onServingFailure: (accountId, kind, message) => {
+        if (!shouldRecordPoolFailure(poolPreferencesOf(config, region), accountId)) return
         const probe = liveRequestProbe(kind, message)
         if (probe !== undefined && accountId !== '') {
           poolRuntime[accountId] = probe
@@ -735,7 +736,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   /** Next usable PAT for failover: rankPool over members, skip tried. */
   async function nextFailoverCredential(region: QoderRegion, tried: readonly string[]): Promise<QoderServingAccount | undefined> {
     const store = stacks[region].store
-    const memberIds = poolPreferencesOf(config, region).memberAccountIds
+    const prefs = poolPreferencesOf(config, region)
+    if (!poolAllowsFailover(prefs)) return undefined
+    const memberIds = prefs.memberAccountIds
     const probes = stacks[region].poolRuntime
     const now = Date.now()
     // 请求路径不能上网，积分取卡片路由写入的快照（workbuddy 的 creditsSnapshot
@@ -1559,4 +1562,45 @@ export function liveRequestProbe(kind: UpstreamErrorKind, message: string): Qode
     // 「上游未给出」）。非空一律脱敏后带上 —— pt- 形态的凭据绝不能进落盘文件。
     ...(message === '' ? {} : { message: redactUpstreamText(message) }),
   }
+}
+
+/** 「这个区域此刻允不允许替用户换号」所需要的那一个偏好位。 */
+export interface PoolGate {
+  enabled: boolean
+  memberAccountIds: readonly string[]
+}
+
+/**
+ * **池开关是换号的唯一授权。** 关闭时不得改用任何别的账号。
+ *
+ * 这一条此前**缺着**：`nextFailoverCredential` 只读成员名单、从不读
+ * `enabled`，于是「关掉账号池」这个最核心的开关**对换号完全无效** —— 只要
+ * 成员非空，插件就永远在失败后悄悄换到另一个 PAT 计费，而用户以为自己关掉了
+ * 自动行为。默认值是 `enabled: false`，所以这是**每一条全新安装**都在踩的路径。
+ *
+ * 注意作用域：签到/测试这两个**手动**批量动作**不**挂在这个开关上 —— 它们由
+ * 用户亲手点击，不属于「插件替你决定」。只有换号与失败记录设门。
+ */
+export function poolAllowsFailover(prefs: PoolGate): boolean {
+  return prefs.enabled
+}
+
+/**
+ * 该不该把一次「正在服务的请求失败」记成池状态。
+ *
+ * 两条守卫各挡一类误伤：
+ *
+ *  1. **池关不记**：关掉池子意味着插件不再替用户选号、也不再替用户换号。此时
+ *     仍把失败写进池状态，用户下次开池会看到一堆根本没参与过任何决策的「上次
+ *     失败」，也与「关了就完全回到手动选号」这条承诺冲突。
+ *  2. **非成员不记**：勾选成员就是「我同意让这些号参与」。没勾的号不该因为一次
+ *     恰好用了它的请求就被判出池 —— 那等于把用户没授权的开销当成默认值。
+ *
+ * `invalid-request` 一类不必在这里再挡：shim 的 `isFailoverEligible` 已经排除过
+ * 它们（400 换谁都是 400），`liveRequestProbe` 不会为它们产出记录。
+ */
+export function shouldRecordPoolFailure(prefs: PoolGate, accountId: string): boolean {
+  if (!prefs.enabled) return false
+  if (accountId === '') return false
+  return prefs.memberAccountIds.includes(accountId)
 }

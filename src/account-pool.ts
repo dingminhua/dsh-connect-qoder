@@ -179,10 +179,27 @@ function retryDue(probe: QoderPoolProbe, nowMs: number): boolean {
  * The rule, in priority order — this is the whole feature:
  *
  * 1. **Usability.** Only accounts that can be billed right now are candidates.
- * 2. **Credits, highest first.** Spend the account that has the most.
- * 3. **Credits expiring soonest first.** Points about to expire are worth zero
- *    after they do.
- * 4. **Account id.** Final tie-break, making the order TOTAL.
+ * 2. **Has credits about to lapse.** An account with any points expiring inside
+ *    the "soon" window is spent FIRST. Points are worth zero the moment they
+ *    expire, so an account carrying them is strictly worth more than one that
+ *    merely holds a larger pile that does not lapse.
+ * 3. **Lapses soonest first.** Among accounts at risk, the one whose nearest
+ *    expiry comes up first goes first — it has the least time to be spent.
+ * 4. **Largest amount at risk.** Same expiry (or neither at risk): the bigger
+ *    amount wins; with nothing expiring this falls through to total credits.
+ * 5. **Credits, highest first.** Spend the account that has the most.
+ * 6. **Account id.** Final tie-break, making the order TOTAL.
+ *
+ * ⚠️ **Steps 2–4 used to be a dead branch** (upstream issue #70, fixed in the
+ * sibling plugin's 4.6.7 and inherited here). The old order put `score`
+ * (total credits) BEFORE the expiry key. Totals are almost never exactly equal,
+ * so the expiry rule was UNREACHABLE — mathematics, not luck: an account whose
+ * 196 expiring points lapse today would sit last forever behind accounts
+ * holding ~1200 non-expiring ones. Worse, the single `_expiring` key held the
+ * raw `nearestExpiryMs` timestamp and `expiringSoon` (the AMOUNT) was never
+ * consulted at all, so "largest amount at risk" could not even be expressed.
+ * The three keys are separate now precisely so this cannot silently regress:
+ * `_atRisk` (bool), `_expiring` (when), `_expiringAmount` (how much).
  *
  * Excluded accounts are still RETURNED (sorted after the candidates) so the
  * card can explain why each is out.
@@ -201,13 +218,33 @@ export function rankPool(
       score: scoreOf(member),
       ...excludedBy === undefined ? {} : { excludedBy },
       _usable: excludedBy === undefined,
+      // Three SEPARATE keys on purpose: "has something at risk" (bool), "when it
+      // lapses" (timestamp) and "how much is at risk" (amount). The old single
+      // key conflated them, which is how the amount became unconsultable.
+      _atRisk: (member.credits?.expiringSoon ?? 0) > 0,
+      _expiringAmount: member.credits?.expiringSoon ?? 0,
       _expiring: member.credits?.nearestExpiryMs ?? Number.POSITIVE_INFINITY,
     }
   })
   rows.sort((left, right) => {
     if (left._usable !== right._usable) return left._usable ? -1 : 1
+    // Expiring credits before anything else among usable accounts (issue #70).
+    if (left._atRisk !== right._atRisk) return left._atRisk ? -1 : 1
+    // Both at risk: whichever lapses FIRST goes first.
+    if (left._atRisk && right._atRisk && left._expiring !== right._expiring) {
+      return left._expiring - right._expiring
+    }
+    // Same expiry (or neither at risk): the larger amount at stake wins, which
+    // for accounts with nothing expiring falls through to total credits.
+    if (left._expiringAmount !== right._expiringAmount) {
+      return right._expiringAmount - left._expiringAmount
+    }
     if (left.score !== right.score) return right.score - left.score
-    if (left._expiring !== right._expiring) return left._expiring - right._expiring
+    // Final key: the account id. Without it, two accounts identical on every
+    // ranking key would keep whatever order the caller happened to pass, so
+    // the same pool could rotate differently between runs — an instability
+    // that makes the feature hard to reason about and impossible to test.
+    // Ids are unique, so this makes the order TOTAL.
     return left.account.id < right.account.id ? -1 : left.account.id > right.account.id ? 1 : 0
   })
   return rows.map(({ account, score, excludedBy }) => ({
