@@ -326,56 +326,25 @@ describe('QoderCard render', () => {
     }
   })
 
-  it('账号选择器只在多个候选账号时出现', async () => {
-    // One account (the fixture's state): switching is a no-op, so the picker
-    // must not render — an "自动 —— 设置 → 环境变量 → 保险库" dropdown with no
-    // alternative is pure noise (and this was rendered with ZERO accounts).
+  it('卡片头部不再有账号选择器（它搬进了账号池设置区）', async () => {
+    // 回归：这个下拉框原本在账号行区域，任何时候都出现——池开着时它改了不生效
+    // （那时谁服务由排序决定），却长得像一个权威控件，「看着能改、其实改不了」
+    // 比没有控件更糟。用户实拍 workbuddy 后要求照做：搬进账号池区块，变成
+    // 「使用哪个账号」设置行，只在池确实关闭时渲染（见 pool-render.spec.tsx）。
+    // 这里钉的是「头部不再有」，否则搬家会变成两处都有。
     const { container, unmount } = await mountCard()
     try {
       expect(container.querySelectorAll('.dsm-qoder-usage-select-wrap')).toHaveLength(0)
+      expect(container.querySelectorAll('.dsm-qoder-usage-select')).toHaveLength(0)
     } finally {
       await unmount()
     }
   })
 
-  it('两个账号时账号选择器出现，并列出两个候选', async () => {
-    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
-      const url = String(input)
-      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
-        const region = new URL(url, 'http://localhost').searchParams.get('region') ?? 'cn'
-        const doc = usageDoc(region) as Record<string, unknown>
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({
-            ...doc,
-            accounts: [
-              { id: 'a1', accountName: 'A1', source: 'settings', selected: true },
-              { id: 'a2', accountName: 'A2', source: 'vault', selected: false },
-            ],
-          }),
-        } as Response
-      }
-      return { ok: false, status: 404, json: async () => ({}) } as Response
-    }))
-    const { container, unmount } = await mountCard()
-    try {
-      const select = container.querySelector<HTMLSelectElement>('.dsm-qoder-usage-select')
-      expect(select).not.toBeNull()
-      const options = Array.from(select!.querySelectorAll('option')).map(o => o.textContent)
-      expect(options[0]).toBe('row.accountSelectAuto')
-      // 正在计费的那条带「使用中」标记——用户才知道选哪个等于「保持现状」。
-      expect(options).toContain('A1（row.poolCurrentBadge）')
-      expect(options).toContain('A2')
-    } finally {
-      await unmount()
-    }
-  })
-
-  it('同名账号用 id 尾号区分，并标出哪条在使用', async () => {
-    // 回归：同一个邮箱重新签发 PAT 会得到两条记录（id 由 PAT 推导，不同），
-    // 两条都叫同一个名字。只显示名字的话，「移除哪一个」看不出答案——用户
-    // 实拍的就是这种两条同名、一条已过期的情况。
+  it('账号行上的「重新读取账号」「移除」按钮已删除', async () => {
+    // 「同名账号用 id 尾号区分」这条规则**没有消失**，它随下拉框一起搬进了
+    // 账号池（`poolAccountLabel`，覆盖在 pool-render.spec.tsx）；这里只剩
+    // 「账号行上这两个按钮已删除」这一半。
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
       if (url.includes('/plugins/dsh-connect-qoder/usage')) {
@@ -398,14 +367,6 @@ describe('QoderCard render', () => {
     }))
     const { container, unmount } = await mountCard()
     try {
-      const options = Array.from(container.querySelectorAll<HTMLOptionElement>('.dsm-qoder-usage-select option'))
-        .map(o => o.textContent ?? '')
-        .filter(text => text.startsWith('same@msn.com'))
-      expect(options).toHaveLength(2)
-      // 尾号来自 id 末 4 位；在用的那条另带「使用中」。
-      expect(options.some(text => text.includes('2d10'))).toBe(true)
-      expect(options.some(text => text.includes('9f87') && text.includes('row.poolCurrentBadge'))).toBe(true)
-
       // 账号行里那两个按钮（重新读取账号 / 移除）已删除（用户实拍要求）：
       // 前者做的事现在自动发生、且「重新读取授权文件」的语义早已过时；后者
       // 与账号池里的「移除」语义不同（删保险库记录 vs 移出池成员），容易混淆。

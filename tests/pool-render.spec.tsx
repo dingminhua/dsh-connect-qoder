@@ -623,4 +623,175 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       await unmount()
     }
   })
+
+})
+
+/**
+ * 「使用哪个账号」设置行。
+ *
+ * 它从 QoderCard 的账号行区域搬到这里（用户实拍 workbuddy 后要求照做），
+ * 并且**只在池确实关闭时**渲染。判据必须是宿主已知的真实状态 `pool.enabled`，
+ * 不是设置区的草稿——否则用户把开关拨到「开」还没保存时这一行就消失了，
+ * 而他其实还没关闭池。
+ */
+describe('AccountPool「使用哪个账号」设置行', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => ({}) }) as Response))
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    document.body.innerHTML = ''
+  })
+
+  /** 池关闭、两个账号在册：设置行的正常形态。 */
+  function poolOff(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+    const fixture = poolFixture()
+    return {
+      ...fixture,
+      enabled: false,
+      ...overrides,
+    }
+  }
+
+  function manualSelect(container: HTMLElement): HTMLSelectElement | null {
+    const rows = Array.from(container.querySelectorAll('.dsm-qoder-pool-set'))
+    for (const row of rows) {
+      if (row.querySelector('.dsm-qoder-pool-set-copy b')?.textContent === 'row.poolManualAccountLabel') {
+        return row.querySelector<HTMLSelectElement>('.dsm-qoder-pool-select')
+      }
+    }
+    return null
+  }
+
+  it('池开着时不渲染：那时谁服务由排序决定，控件改了也不生效', async () => {
+    const { container, unmount } = await mountPool({ pool: poolFixture(), onSelectAccount: () => {} })
+    try {
+      expect(poolFixture()['enabled']).toBe(true)
+      expect(manualSelect(container)).toBeNull()
+      expect(container.textContent).not.toContain('row.poolManualAccountLabel')
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('池关闭时渲染标题、说明与下拉，选中值就是在服务的账号', async () => {
+    const { container, unmount } = await mountPool({ pool: poolOff(), onSelectAccount: () => {} })
+    try {
+      const row = Array.from(container.querySelectorAll('.dsm-qoder-pool-set'))
+        .find(r => r.querySelector('.dsm-qoder-pool-set-copy b')?.textContent === 'row.poolManualAccountLabel')
+      expect(row).toBeDefined()
+      // 说明文案必须解释「为什么关掉池才由你选」，否则这行看不出和池开关的关系。
+      expect(row!.querySelector('.dsm-qoder-pool-set-copy span')?.textContent).toBe('row.poolManualAccountHint')
+
+      const select = manualSelect(container)!
+      // a1 在 fixture 里 current: true —— 下拉显示的必须正是它，不能是列表第一项。
+      expect(select.value).toBe('a1')
+      const labels = Array.from(select.querySelectorAll('option')).map(o => o.textContent)
+      expect(labels[0]).toBe('row.accountSelectAuto')
+      expect(labels).toContain('Alpha')
+      expect(labels).toContain('Beta')
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('改选账号时把 id 交给宿主（立即生效，不走保存）', async () => {
+    const picked: string[] = []
+    const { container, unmount } = await mountPool({
+      pool: poolOff(),
+      onSelectAccount: (accountId: string) => { picked.push(accountId) },
+    })
+    try {
+      const select = manualSelect(container)!
+      await act(async () => {
+        select.value = 'a2'
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      expect(picked).toEqual(['a2'])
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('「自动」是真实选项：选中它把空串交给宿主', async () => {
+    // qoder 的账号来源是 settings → env → vault 三级回退，`state.accountId`
+    // 为空时正是按这个顺序解析，所以「自动」不是占位符。（workbuddy 没有这条
+    // 回退链，它的下拉里没有自动项，这里不能照抄。）
+    const picked: string[] = []
+    const { container, unmount } = await mountPool({
+      pool: poolOff(),
+      onSelectAccount: (accountId: string) => { picked.push(accountId) },
+    })
+    try {
+      const select = manualSelect(container)!
+      await act(async () => {
+        select.value = ''
+        select.dispatchEvent(new Event('change', { bubbles: true }))
+      })
+      expect(picked).toEqual([''])
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('没有账号在生效时显示「当前没有生效的账号」，且不冒充「自动」', async () => {
+    // 回归：哨兵值曾经和「自动」共用空串，于是没有生效账号时下拉显示成
+    // 「自动 —— 设置 → 环境变量 → 保险库」，等于替用户宣称了一个他没做过的
+    // 选择。哨兵必须是另一个不可选中的值。
+    const fixture = poolOff()
+    const accounts = (fixture['accounts'] as Record<string, unknown>[]).map(account => ({ ...account, current: false }))
+    const { container, unmount } = await mountPool({ pool: { ...fixture, accounts }, onSelectAccount: () => {} })
+    try {
+      const select = manualSelect(container)!
+      expect(select.selectedOptions[0]?.textContent).toBe('row.poolManualAccountNone')
+      expect(select.selectedOptions[0]?.disabled).toBe(true)
+      // 「自动」仍在，且是另一个值：两者共存才说明没有混淆。
+      const auto = Array.from(select.querySelectorAll('option')).find(o => o.textContent === 'row.accountSelectAuto')!
+      expect(auto.value).toBe('')
+      expect(select.value).not.toBe('')
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('同名账号补 id 尾号，才分得清选的是哪一条', async () => {
+    // 同一个邮箱重新签发 PAT 会得到两条记录（id 由 PAT 推导，不同），两条
+    // 显示名一模一样。只显示名字的话「我当前在用哪一条」答案是「看不出」。
+    // （这条规则原先在 QoderCard 的旧下拉里，随控件一起搬过来。）
+    const fixture = poolOff()
+    const accounts = [
+      { ...((fixture['accounts'] as Record<string, unknown>[])[0]!), accountId: 'pat-84ad6cf5b4f62d10', accountName: 'same@msn.com', current: false },
+      { ...((fixture['accounts'] as Record<string, unknown>[])[1]!), accountId: 'pat-5d76517ac7699f87', accountName: 'same@msn.com', current: true },
+    ]
+    const { container, unmount } = await mountPool({ pool: { ...fixture, accounts }, onSelectAccount: () => {} })
+    try {
+      const labels = Array.from(manualSelect(container)!.querySelectorAll('option'))
+        .map(o => o.textContent ?? '')
+        .filter(text => text.startsWith('same@msn.com'))
+      expect(labels).toHaveLength(2)
+      expect(labels.some(text => text.includes('2d10'))).toBe(true)
+      expect(labels.some(text => text.includes('9f87'))).toBe(true)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('调用方不提供 onSelectAccount 时整行不渲染（没有写权限就别摆控件）', async () => {
+    const { container, unmount } = await mountPool({ pool: poolOff() })
+    try {
+      expect(container.textContent).not.toContain('row.poolManualAccountLabel')
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('池里一个账号都没有时不渲染（下拉只剩「自动」，等于噪声）', async () => {
+    const { container, unmount } = await mountPool({ pool: { ...poolOff(), accounts: [] }, onSelectAccount: () => {} })
+    try {
+      expect(container.textContent).not.toContain('row.poolManualAccountLabel')
+    } finally {
+      await unmount()
+    }
+  })
 })

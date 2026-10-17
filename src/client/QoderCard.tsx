@@ -507,7 +507,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                   账号池是「谁在服务、花多少」的决定区，排在模型列表之前；
                   原先排在模型列表之后，用户要先翻过整张模型表才够到它。
                   error 分支不渲染这些空壳——与 workbuddy 同规，只留错误行。 */}
-              {renderAccounts(signIn)}
               {renderPool()}
               {renderModels()}
             </>
@@ -586,67 +585,18 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     )
   }
 
-  function renderAccounts(usage: Extract<QoderWebUsage, { status: 'signed-in' }> | undefined): ReactElement {
-    const accounts = usage?.accounts ?? []
-    // 同名账号必须还能分辨：同一个邮箱重新签发 PAT 会得到**两条**记录（id 由
-    // PAT 推导，是不同的），两条显示名一模一样。只显示名字的话，
-    // 「我当前在用哪一条」这个问题的答案是「看不出」。重名时补 id 尾号，并标出
-    // 正在计费的那条（用户实拍的就是这种两条同名、一条过期的情况）。
-    const nameCounts = new Map<string, number>()
-    for (const account of accounts) {
-      const key = account.accountName === '' ? '' : account.accountName
-      nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1)
-    }
-    const accountLabel = (account: { id: string, accountName: string, selected: boolean }): string => {
-      const base = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
-      const name = (nameCounts.get(account.accountName === '' ? '' : account.accountName) ?? 0) > 1
-        // id 形如 pat-5d76517ac7699f87；取末 4 位足够区分同一次会话里的两条。
-        ? `${base} · ${account.id.slice(-4)}`
-        : base
-      return account.selected ? `${name}（${t('row.poolCurrentBadge')}）` : name
-    }
-    // 账号选择器只在**真有选择余地**时出现：一个账号时「自动」就等于它，
-    // 切不出任何结果；零个账号时整行只剩一句看不懂的来源说明（本轮用户实拍
-    // 的就是这一种）。workbuddy 没有这个控件，它把「当前用哪个」交给账号池
-    // 表格的「当前使用」标记——本插件在账号池不可用时仍需手动指定账号，
-    // 所以保留控件，但只在多个候选时露出来。
-    return (
-      <div className="dsm-qoder-usage">
-        {accounts.length > 1 ? (
-          <div className="dsm-qoder-usage-select-wrap">
-            <select
-              className="dsm-qoder-usage-select"
-              value={usage?.accountId ?? ''}
-              disabled={!canWrite(scope) || siblingBusy}
-              aria-label={t('row.accountSelectAria')}
-              onChange={(event) => {
-                if (scope === undefined) return
-                setSiblingBusy(true)
-                void writeAccountSlot(scope, activeRegion, event.target.value).finally(() => {
-                  if (mounted.current) { setSiblingBusy(false); void refresh(activeRegion, true) }
-                })
-              }}
-            >
-              <option value="">{t('row.accountSelectAuto')}</option>
-              {/* 标签必须能让用户分辨同名账号（重名带 id 尾号、在用带「使用中」）。
-                  账号行此前还有一个共用这套标签的「移除」按钮，已随本轮清理删除。 */}
-              {accounts.map(account => (
-                <option key={account.id} value={account.id}>{accountLabel(account)}</option>
-              ))}
-            </select>
-          </div>
-        ) : null}
-
-        {/* 这一行原本还有两个按钮，都已删除（用户实拍：「我截图的部分不用了」）：
-            - 「重新读取账号」：它做的事（重读快照 + 刷新）现在由账号池的测试/
-              添加等操作自动完成；「重新读取授权文件」这个语义也早已过时——凭据
-              走 PAT，不再依赖授权文件。
-            - 「移除 · <账号>」：删的是保险库里的 PAT 记录，而账号池表格的
-              「移除」是移出池成员——两个不同操作确实让人困惑，用户选择只保留
-              池里的那一个。真正要删凭据时用 `dsh-connect-qoder logout`。 */}
-      </div>
-    )
-  }
+  // 账号选择器与账号行都**已不在这里**：
+  // - 「使用哪个账号」搬进账号池区块（`AccountPool` 的 `onSelectAccount`），
+  //   变成一个设置行，只在池确实关闭时渲染。搬走的原因（与 workbuddy 同一套
+  //   演进）：它原本任何时候都出现，池开着时改了不生效却长得像一个权威控件——
+  //   「看着能改、其实改不了」比没有控件更糟；而且它离账号池那张表很远，
+  //   「现在到底谁在服务」要跨半个卡片才能对上。
+  // - 账号行上的两个按钮（重新读取账号 / 移除）在更早一轮已按用户实拍删除：
+  //   前者的事现在自动发生、且「重新读取授权文件」语义早已过时（凭据走 PAT）；
+  //   后者删的是保险库 PAT 记录，与账号池的「移出池成员」是两个不同操作，
+  //   「真正要删凭据时用 `dsh-connect-qoder logout`」。
+  // 同名账号的 id 尾号区分逻辑随之搬到 `AccountPool` 的下拉里（见
+  // `poolAccountLabel`）——它是那条下拉唯一还需要的显示规则。
 
   function renderModels(): ReactElement {
     const modelList = signIn?.models ?? []
@@ -946,6 +896,20 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         accountTools={accountTools}
         creditsSwitch={creditsSwitch}
         onChanged={() => refresh(activeRegion, true)}
+        onSelectAccount={(accountId) => {
+          // 「使用哪个账号」立即生效、不走保存（与账号池的草稿式保存不同）：
+          // 它回答的是「池关着时谁在服务」这个当下事实，草稿语义会让用户看着
+          // 一个没生效的值。写入期间置 siblingBusy，顺带把同卡片其它控件锁住，
+          // 避免并发写同一个 slot。
+          if (scope === undefined) return
+          setSiblingBusy(true)
+          void writeAccountSlot(scope, activeRegion, accountId).finally(() => {
+            if (mounted.current) {
+              setSiblingBusy(false)
+              void refresh(activeRegion, true)
+            }
+          })
+        }}
       />
     )
   }

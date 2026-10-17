@@ -82,6 +82,16 @@ interface PoolLogEntry {
 const LOG_LIMIT = 50
 
 /**
+ * 「使用哪个账号」下拉里代表「当前没有任何账号在生效」的哨兵值。
+ *
+ * 不能用 `''`：那正是「自动（设置 → 环境变量 → 保险库）」这个**真实选项**的
+ * 值。共用会让下拉在没有生效账号时显示成「自动」，等于替用户宣称了一个他没做
+ * 过的选择——而这正是这个控件存在的意义所在（不显示看起来正常、实际没在跑的
+ * 东西）。哨兵带下划线前缀，不可能与真实账号 id 撞上（id 形如 `pat-<hex>`）。
+ */
+const MANUAL_ACCOUNT_NONE = '__none__'
+
+/**
  * 跨 remount 的活动日志。折叠卡片/切换 tab 会 unmount 本组件，组件 state 会
  * 丢空；日志属于「刚刚发生了什么」的事实记录，丢了会让用户以为操作没发生。
  * （workbuddy 的 logStore 同款方案。）
@@ -134,10 +144,26 @@ export interface AccountPoolProps {
   canWrite: boolean
   /** Force the card to re-read its usage snapshot after a Host-side action. */
   onChanged?: (() => void | Promise<unknown>) | undefined
+  /**
+   * 「使用哪个账号」——**账号池关闭时**由用户手动选定服务账号。
+   *
+   * 这个控件原来在卡片头部（账号行区域），本轮搬到这里，理由有两条：
+   *
+   * 1. **池开着时它改了不生效**。那时谁服务由 `rankPool` 排序决定，而它仍然
+   *    写着 `regions.<region>.accountId`——写了但没人读。控件长得像个权威开关，
+   *    实际是个空操作，「看着能改、其实改不了」比没有控件更糟。
+   * 2. 它离账号池那张表很远，「现在到底谁在服务」要跨半个卡片才能对上。
+   *
+   * 现在它是设置区里的一行，且**只在池关闭时渲染**——池关闭时插件不再自己选号，
+   * 这时候它是唯一的入口。
+   *
+   * 由卡片持有写权限与区域，所以作为回调传进来（与 `accountTools` 同规）。
+   */
+  onSelectAccount?: ((accountId: string) => void) | undefined
 }
 
 export function AccountPool(props: AccountPoolProps): ReactNode {
-  const { t, region, pool, settingsScope, siblingBusy, canWrite, onChanged, onBusyChange, accountTools, creditsSwitch } = props
+  const { t, region, pool, settingsScope, siblingBusy, canWrite, onChanged, onBusyChange, accountTools, creditsSwitch, onSelectAccount } = props
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -206,6 +232,14 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
    * 这个事实由宿主给出（取自该区域解析出的服务凭据），卡片只渲染、不推断。
    */
   const currentAccount = pool?.accounts.find(account => account.current === true)
+  /**
+   * 「使用哪个账号」下拉框的当前值。
+   *
+   * `undefined` = 没有任何账号在生效（保存的 id 已失效、刷新失败）。这时**不能**
+   * 退回空串让 select 显示「自动」——「自动」是一个真实选项，显示它等于宣称
+   * 用户选了自动。所以给一个单独的禁用项，见下面那个 `poolManualAccountNone`。
+   */
+  const currentAccountId = currentAccount?.accountId
   const active: PoolPreferences = draftPool !== null && draftRegion === region
     ? draftPool
     : saved
@@ -768,6 +802,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       <RenderSettings
         t={t}
         active={active}
+        saved={saved}
         dirty={dirty}
         saving={saving}
         canEditPool={canEditPool}
@@ -775,6 +810,9 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         catalog={pool?.catalog}
         targetProvenance={targetProvenance}
         accountTools={accountTools}
+        accounts={pool?.accounts ?? []}
+        currentAccountId={currentAccountId}
+        onSelectAccount={onSelectAccount}
         onEdit={editDraft}
         onSave={() => { void savePool() }}
         onDiscard={() => { setDraftPool(saved); setDraftRegion(region); setDirty(false); setSaveError(undefined) }}
@@ -808,6 +846,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 function RenderSettings(props: {
   t: Translate
   active: PoolPreferences
+  /**
+   * 宿主已知的真实偏好。`active` 是**草稿**（改了要按保存才生效），而
+   * 「使用哪个账号」这一行立即生效、不走保存——它的在场判据必须跟真实状态，
+   * 不能跟草稿。
+   */
+  saved: PoolPreferences
   dirty: boolean
   saving: boolean
   canEditPool: boolean
@@ -822,11 +866,22 @@ function RenderSettings(props: {
   targetProvenance: string | null
   /** 账号工具（添加 PAT / 导出导入），虚线框放在标题之下、说明行之上。 */
   accountTools?: ReactNode | undefined
+  /** 池里的账号，供「使用哪个账号」下拉列出。 */
+  accounts: readonly QoderWebPoolAccount[]
+  /** 当前真正在服务的账号 id；undefined = 没有任何账号在生效。 */
+  currentAccountId?: string | undefined
+  /**
+   * 池关闭时由用户手选服务账号。`undefined` 表示调用方不提供这个控件（此时
+   * 整行不渲染）——这样「能不能改」只有一个真值来源，不必再传一个 flag。
+   */
+  onSelectAccount?: ((accountId: string) => void) | undefined
   onEdit: (update: (prev: PoolPreferences) => PoolPreferences) => void
   onSave: () => void
   onDiscard: () => void
 }): ReactNode {
-  const { t, active, dirty, saving, canEditPool, saveError, catalog, targetProvenance, accountTools, onEdit, onSave, onDiscard } = props
+  const { t, active, saved, dirty, saving, canEditPool, saveError, catalog, targetProvenance, accountTools, accounts, currentAccountId, onSelectAccount, onEdit, onSave, onDiscard } = props
+  // 同名计数只依赖账号列表，整块渲染算一次即可（每次 map 里重算就是 O(n²)）。
+  const counts = nameCountsOf(accounts)
   return (
     <div className="dsm-qoder-pool-settings-wrap">
       {/* 设置区自己的小标题 + 脏标记（workbuddy 同构）：下面几行是草稿，
@@ -840,6 +895,54 @@ function RenderSettings(props: {
       {accountTools === undefined ? null : <div className="dsm-qoder-pool-tools">{accountTools}</div>}
       <p className="dsm-qoder-pool-note">{t('row.poolSettingsHint')}</p>
       <div className="dsm-qoder-pool-settings">
+      {/* 「使用哪个账号」——**只在池确实关闭时**出现。
+          判据用 `saved.enabled`（宿主已知的真实状态），**不是** `active.enabled`
+          （草稿）：这一行立即生效、不走保存，若跟着草稿走，用户把开关拨到「开」
+          但还没保存时，这一行会消失，而他其实还没关闭池；反过来拨到「关」时它
+          又提前出现，仿佛现在就由它决定了。控件在不在，必须和「现在谁真正在
+          选号」一致。
+          位置在池开关之上：先回答「池关着时谁服务」，再回答「要不要让池接管」。 */}
+      {saved.enabled || onSelectAccount === undefined || accounts.length === 0
+        ? null
+        : <div className="dsm-qoder-pool-set">
+            <div className="dsm-qoder-pool-set-copy">
+              <b>{t('row.poolManualAccountLabel')}</b>
+              <span>{t('row.poolManualAccountHint')}</span>
+            </div>
+            <div className="dsm-qoder-pool-set-ctl">
+              <select
+                className="dsm-qoder-pool-select"
+                value={currentAccountId ?? MANUAL_ACCOUNT_NONE}
+                disabled={!canEditPool}
+                aria-label={t('row.accountSelectAria')}
+                onChange={(e) => {
+                  // 哨兵值只用于显示「没有账号在生效」，选中它不是一个动作。
+                  if (e.target.value === MANUAL_ACCOUNT_NONE) return
+                  onSelectAccount(e.target.value)
+                }}
+              >
+                {/* 「没有账号在生效」是真实状态（保存的 id 已失效、刷新失败）。
+                    没有匹配项时受控 select 会静默显示第一项——那就是「看着正常，
+                    但不是真正在跑的」那种混淆，正是这个控件要避免的。
+                    哨兵用非空串而非 `''`：`''` 是「自动」这个**真实选项**的值，
+                    两者共用会让 select 在无生效账号时显示成「自动」，等于宣称
+                    用户选了自动。 */}
+                {currentAccountId === undefined
+                  ? <option value={MANUAL_ACCOUNT_NONE} disabled>{t('row.poolManualAccountNone')}</option>
+                  : null}
+                {/* 「自动」保留：qoder 的账号来源有 settings / env / vault 三级，
+                    `state.accountId` 为空时正是按这个顺序回退，所以它不是一个
+                    占位选项，而是一个真的第三态。workbuddy 没有这条回退链，它
+                    的下拉里没有自动项，这里不能照抄。 */}
+                <option value="">{t('row.accountSelectAuto')}</option>
+                {accounts.map(account => (
+                  <option key={account.accountId} value={account.accountId}>
+                    {poolAccountLabel(t, account, counts)}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>}
       <div className="dsm-qoder-pool-set">
         <div className="dsm-qoder-pool-set-copy">
           <b>{t('row.poolEnabled')}</b>
@@ -1011,4 +1114,35 @@ function stateColor(account: QoderWebPoolAccount): string {
   return account.probe.outcome === 'ok'
     ? 'var(--dsw-alias-state-success-primary, #22a06b)'
     : 'var(--dsw-alias-state-warn-primary, #f59e0b)'
+}
+
+/** 统计同名字号出现次数（`accountName` 为空串也算一组，显示名会是「未命名」）。 */
+function nameCountsOf(accounts: readonly QoderWebPoolAccount[]): Map<string, number> {
+  const counts = new Map<string, number>()
+  for (const account of accounts) {
+    counts.set(account.accountName, (counts.get(account.accountName) ?? 0) + 1)
+  }
+  return counts
+}
+
+/**
+ * 「使用哪个账号」下拉里一个账号显示成什么。
+ *
+ * 同名账号必须还能分辨：同一个邮箱重新签发 PAT 会得到**两条**记录（id 由 PAT
+ * 推导，是不同的），两条显示名一模一样。只显示名字的话，「我当前在用哪一条」
+ * 这个问题的答案是「看不出」——用户实拍的就是这种两条同名、一条已过期的情况。
+ * 重名时补 id 尾号（id 形如 `pat-5d76517ac7699f87`，末 4 位足够区分）。
+ *
+ * 这里**不**再加「使用中」后缀：下拉的选中值本身就是当前在服务的账号，头部还
+ * 有一枚 `row.poolCurrentHeader` 标签，同一个事实说三遍反而是噪音。
+ */
+function poolAccountLabel(
+  t: Translate,
+  account: QoderWebPoolAccount,
+  counts: ReadonlyMap<string, number>,
+): string {
+  const base = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
+  return (counts.get(account.accountName) ?? 0) > 1
+    ? `${base} · ${account.accountId.slice(-4)}`
+    : base
 }
