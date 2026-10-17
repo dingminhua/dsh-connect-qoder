@@ -221,10 +221,35 @@ ubuntu `564 passed | 10 skipped`、windows `563 passed | 11 skipped`，差的那
 `curl` 查 registry 只证明「元数据在」，不证明「装下来能用」。0.4.3 的做法是额外装一次：
 
 ```bash
-cd /tmp && rm -rf verify && mkdir verify && cd verify
-npm install @dmh2002/dsh-connect-qoder@0.4.3 --no-save --registry https://registry.npmjs.org/
-node -e 'import("@dmh2002/dsh-connect-qoder").then(m=>console.log(m.QODER_CONNECT_VERSION))'
+# ⚠️ 必须先 npm init -y 锚定 project root，见下方「1.2.1 实测」
+ISO=$(mktemp -d /tmp/qoder-verify-XXXX) && cd "$ISO" && npm init -y >/dev/null
+npm install @dmh2002/dsh-connect-qoder@X.Y.Z --no-save --registry https://registry.npmjs.org/
+node -e 'import("@dmh2002/dsh-connect-qoder").then(m=>console.log(m.QODER_CONNECT_VERSION))'   # 必须回显 X.Y.Z
 ```
+
+### ⚠️ 1.2.1 实测：这条命令有两个坑（2026-10-18）
+
+**坑一：没有 `package.json` 锚定时，npm 会向上找到别的项目根，把包装到"隔壁"。**
+旧文档写的 `cd /tmp && rm -rf verify && mkdir verify && cd verify && npm install …` 里，
+`verify/` 是空目录、没有 `package.json`。npm 从 cwd 向上找 project root，撞到 `/tmp` 下
+**早已存在的 `/tmp/node_modules`**，于是 161 个包全装进了 `/tmp/node_modules`，而不是
+`verify/`。第一次 `import` 之所以仍然成功，只是 Node 的模块解析**也**向上冒泡到了那里——
+它掩盖了「装错地方」这件事，而不是证明装对了。
+
+判据：装完先看包**落在哪**——
+
+```bash
+ls -d node_modules/@dmh2002/dsh-connect-qoder          # 不存在 = 装到隔壁去了
+```
+
+所以开头那句 `npm init -y` 不是客套，是这条命令**可复现**的前提。
+
+**坑二：核验完别为了「整洁」去 `rm -rf /tmp/node_modules`。**
+那次安装的输出里有 `removed 2 packages` —— 说明这个目录**本来就有别的会话装的包**。
+整个目录 79 个顶层条目、mtime 全被这次安装刷成了同一分钟，**从时间戳已经分不出哪些是我装的**。
+想删之前先逐条目核查归属（`npm ls --depth=0` / 比对 lockfile），核查不清就**只删自己
+新建的目录**（这里是 `$ISO`），把归属存疑的留给系统的 `/tmp` 回收器。
+「差点误删别会话的依赖树」这件事，沙箱拦下来是对的。
 
 **注意 `grep` 产物验证修复是否在包里时的陷阱**：0.4.3 我第一遍 `grep` 一个正则
 `replace(/(?<![\w.])…/gu,"4xx")` 得到 0 命中，差点误判「修复没进包」——**实际进了**，

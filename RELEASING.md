@@ -135,7 +135,7 @@ npm publish
 > 2. `src/client/slot-keys.ts` —— 配置卡片槽位按**包名**建键（`plugins.bundle.config` 用裸包名、`plugins.row.config` 用 `<包名>#<entry id>`），硬编码旧名会让卡片正文**整片空白且不报错**。
 > 3. profile 侧的依赖键与 `dsh.profile.bundles` —— 本地 `link:` 安装的键名也要跟着改成 scoped，否则 patch 里的 `name` 解析不到（`ERR_MODULE_NOT_FOUND`）。
 >
-> 前两处由 `tests/plugin-id.spec.ts` 钉住（含「旧写法必然失败」的回归断言与构建产物断言）；第三处见第 10 步。
+> 前两处由 `tests/plugin-id.spec.ts` 钉住（含「旧写法必然失败」的回归断言与构建产物断言）。第三处是**本地 `link:` 安装**时才走到的路径，静态测试覆盖不到，真出错表现为加载 patch 时 `ERR_MODULE_NOT_FOUND`——改包名后要在本地 link 安装一次确认 profile 侧键名与 `dsh.profile.bundles` 都已跟着改成 scoped。（旧文此处写「见第 10 步」，但本文件从未有过第 10 步，该引用自加入起即悬空，已就地说明。）
 
 **发布前检查**（可选但推荐）：
 
