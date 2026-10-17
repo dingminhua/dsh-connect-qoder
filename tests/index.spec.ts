@@ -874,10 +874,12 @@ describe('/usage 每次请求现场刷积分', () => {
    */
   function stubUpstream(latencyMs = 0): {
     calls: () => number
+    settled: () => number
     failNextRead: () => void
   } {
     const realFetch = globalThis.fetch
     let n = 0
+    let done = 0
     let failOnce = false
     globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
       const url = String(input)
@@ -891,39 +893,57 @@ describe('/usage 每次请求现场刷积分', () => {
         n += 1
         const seq = n
         if (latencyMs > 0) await new Promise(resolve => setTimeout(resolve, latencyMs))
-        if (failOnce) {
-          failOnce = false
-          return new Response('upstream boom', { status: 500 })
+        try {
+          if (failOnce) {
+            failOnce = false
+            return new Response('upstream boom', { status: 500 })
+          }
+          return new Response(usageBody(800 - seq * 10), {
+            status: 200, headers: { 'content-type': 'application/json' },
+          })
+        } finally {
+          // 「这一读已经交回给调用方」——与 `n` 区分开：`n` 在**进入**替身时就加一，
+          // 所以在延迟里挂着的读看起来和「已经读完」一模一样。
+          done += 1
         }
-        return new Response(usageBody(800 - seq * 10), {
-          status: 200, headers: { 'content-type': 'application/json' },
-        })
       }
       return realFetch(input as Parameters<typeof fetch>[0])
     }) as typeof fetch
-    return { calls: () => n, failNextRead: () => { failOnce = true } }
+    return { calls: () => n, settled: () => done, failNextRead: () => { failOnce = true } }
   }
 
-  /** 等上游读计数静置（连续 QUIESCENT_MS 不再变化），替代固定睡眠。 */
-async function waitForQuiescent(
-  upstream: { calls: () => number },
-  quietMs = 250,
-  timeoutMs = 10_000,
-): Promise<void> {
-  const started = Date.now()
-  let last = upstream.calls()
-  let changedAt = Date.now()
-  for (;;) {
-    await new Promise(resolve => setTimeout(resolve, 25))
-    const now = upstream.calls()
-    if (now !== last) {
-      last = now
-      changedAt = Date.now()
+  /**
+   * 等上游读**真的读完**并且计数静置，替代固定睡眠。
+   *
+   * 只看「计数连续 quietMs 不变」是不够的：计数在上游读**进厂**时就加一，替身若是
+   * 还带着延迟，一次「正在进行」的读与一次「已经读完」的读在计数上完全一样。于是
+   * 静置会被误判，挂载期那次读就溜进后面的断言里 —— 并发合流那条会数成 2 次。
+   * 所以这里额外要求 `settled() === calls()`（替身在交出 Response 之后记一次）。
+   *
+   * 返回值不再依赖延迟参数与窗口的大小关系，因此延迟可以按测试需要调宽。
+   */
+  async function waitForQuiescent(
+    upstream: { calls: () => number, settled?: () => number },
+    quietMs = 250,
+    timeoutMs = 10_000,
+  ): Promise<void> {
+    const started = Date.now()
+    let last = upstream.calls()
+    let changedAt = Date.now()
+    for (;;) {
+      await new Promise(resolve => setTimeout(resolve, 25))
+      const now = upstream.calls()
+      const inFlight = upstream.settled === undefined ? 0 : now - upstream.settled()
+      if (now !== last) {
+        last = now
+        changedAt = Date.now()
+      }
+      // 还有读挂在替身里：不算静置，重新开始计时。
+      if (inFlight > 0) changedAt = Date.now()
+      if (Date.now() - changedAt >= quietMs && inFlight <= 0) return
+      if (Date.now() - started > timeoutMs) throw new Error('上游读计数迟迟不静置')
     }
-    if (Date.now() - changedAt >= quietMs) return
-    if (Date.now() - started > timeoutMs) throw new Error('上游读计数迟迟不静置')
   }
-}
 
 /** 真实挂载一次，返回 /usage 路由与读它的助手（等挂载期那几读落定）。 */
   async function mountUsageRoute(upstream: { calls: () => number }): Promise<{
@@ -1015,16 +1035,26 @@ async function waitForQuiescent(
   })
 
   it('并发打同一区域的请求合流成一次上游读', async () => {
-    // 40ms 延迟让四个请求真的重叠（瞬时返回时它们会排队，测不出合流）。
-    const upstream = stubUpstream(40)
+    // 上游故意慢，四个请求才会真的**重叠**（瞬时返回时它们排队，测不出合流）。
+    //
+    // 这个窗口必须**明显宽于**调度抖动：曾经是 40ms，在满速并行的整套测试里
+    // （35 个文件同时跑）偶尔会把四次调用挤到「第一次已返回、其余还没进上游」，
+    // 于是读到 2~4 次而误报。clean HEAD 上 5 次全量能复现 1 次，单跑该文件 6/6
+    // 全绿 —— 是测试窗口太窄，不是合流有 bug（真有 bug 会每次都红）。
+    //
+    // 150ms 相对「四个调用在同一 tick 里发出」已宽松到微任务调度抖动的一个数量级
+    // 以上，单条用例总耗时仍远低于 30s 超时。扩大窗口现在不再依赖 `waitForQuiescent`
+    // 的静置窗口大小（见该函数的注释），所以这个数字可以自由调。
+    const upstream = stubUpstream(150)
     try {
       const { read } = await mountUsageRoute(upstream)
       const before = upstream.calls()
       const docs = await Promise.all([read(), read(), read(), read()])
       const reads = upstream.calls() - before
       // 卡片 60s 轮询 + composer 300s + 面板打开会几乎同时打到同一区域；没有合流
-      // 就是 4 次上游读。
-      expect(reads).toBe(1)
+      // 就是 4 次上游读。把实际次数写进断言消息，真红了能立刻分清是「没合流」还是
+      // 「只合流了一部分」。
+      expect(reads, `四个并发请求打了 ${reads} 次上游（合流失败或没重叠上）`).toBe(1)
       // 合流不能改变结果：四个文档都得是同一份新数据。
       const totals = new Set(docs.map(d => d.credits?.total))
       expect(totals.size).toBe(1)

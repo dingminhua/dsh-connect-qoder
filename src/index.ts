@@ -958,7 +958,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     //
     // 失败不影响签到本身：结果已经如实回报给用户了，积分补读失败只是这一格数字
     // 没更新，下一次轮询会再试。
-    await refreshUsage(region).catch(() => {})
+    await refreshUsageCoalesced(region).catch(() => {})
     return rows
   }
 
@@ -975,6 +975,31 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       ...(entry.error === undefined ? {} : { error: entry.error }),
       ...(entry.staleError === undefined ? {} : { staleError: entry.staleError }),
     }
+  }
+
+  /**
+   * 在飞的积分刷新（区域 → promise）。
+   *
+   * `/usage` 现在每次请求都要现场刷一次积分，而这个路由的调用方不止一个：卡片
+   * 60s 轮询、composer 300s 轮询、面板打开、手动刷新。它们可能几乎同时打到同一
+   * 区域 —— 没有合流的话，一次面板打开会连带触发好几条上游读。
+   *
+   * **所有**积分读都必须经过这里，包括那些 fire-and-forget 的后台补读（签到后
+   * 补读、目录刷新完补读、写配置后全区补读）。此前它们直接调 `refreshUsage`，
+   * 于是同一次操作能打出两次上游读 —— 上游一慢就稳定复现。合流只有在「一个入口」
+   * 的前提下才是真的。
+   */
+  const usageRefreshInFlight: Partial<Record<QoderRegion, Promise<void>>> = {}
+
+  /** One upstream credits read per region at a time; late callers join it. */
+  const refreshUsageCoalesced = (region: QoderRegion): Promise<void> => {
+    const running = usageRefreshInFlight[region]
+    if (running !== undefined) return running
+    const next = refreshUsage(region).finally(() => {
+      if (usageRefreshInFlight[region] === next) delete usageRefreshInFlight[region]
+    })
+    usageRefreshInFlight[region] = next
+    return next
   }
 
   const refreshUsage = async (region: QoderRegion): Promise<void> => {
@@ -1021,26 +1046,6 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         error: kind === 'auth' ? 'credential-rejected' : (kind ?? 'unknown'),
       }
     }
-  }
-
-  /**
-   * 在飞的积分刷新（区域 → promise）。
-   *
-   * `/usage` 现在每次请求都要现场刷一次积分，而这个路由的调用方不止一个：卡片
-   * 60s 轮询、composer 300s 轮询、面板打开、手动刷新。它们可能几乎同时打到同一
-   * 区域 —— 没有合流的话，一次面板打开会连带触发好几条上游读。
-   */
-  const usageRefreshInFlight: Partial<Record<QoderRegion, Promise<void>>> = {}
-
-  /** One upstream credits read per region at a time; late callers join it. */
-  const refreshUsageCoalesced = (region: QoderRegion): Promise<void> => {
-    const running = usageRefreshInFlight[region]
-    if (running !== undefined) return running
-    const next = refreshUsage(region).finally(() => {
-      if (usageRefreshInFlight[region] === next) delete usageRefreshInFlight[region]
-    })
-    usageRefreshInFlight[region] = next
-    return next
   }
 
   /** The region's catalog projected into the pool target picker's shape. */
@@ -1100,7 +1105,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const serving = await resolveServing(region)
     if (!serving) throw new Error(`no PAT configured for ${region}`)
     const models = await refreshRegionCatalog(region, serving.pat)
-    void refreshUsage(region)
+    void refreshUsageCoalesced(region)
     return models
   }
 
@@ -1118,7 +1123,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       }
       // 积分与目录独立成败：目录拉取失败绝不能拖死积分——此前 refreshUsage
       // 链在目录成功的分支里，目录一挂积分永远不来，卡片上「看不到积分」。
-      void refreshUsage(region)
+      void refreshUsageCoalesced(region)
     })()
   }
 
@@ -1164,7 +1169,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     }
     invalidateCatalog()
     syncRegionRegistration(value)
-    for (const region of QODER_REGIONS) void refreshUsage(region)
+    for (const region of QODER_REGIONS) void refreshUsageCoalesced(region)
   }
 
   applySelection(config)
