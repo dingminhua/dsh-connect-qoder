@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { classifyPiAiError, hostRendersOwnCopy, verifyFixtureAgainstInstalledHost } from './host-piai.ts'
 import { createQoderShim, hostFailureMessage, hostMessageText, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
+import { failoverNoticeText } from '../src/failover-notice.ts'
 import { QoderUpstreamError, type QoderUpstreamClient, type UpstreamErrorKind } from '../src/upstream.ts'
 
 const shims: QoderShim[] = []
@@ -307,7 +308,8 @@ describe('Qoder shim pool failover', () => {
       upstream: stubUpstream({ 'pt-a': 'rate-limited' }, calls),
       failoverAccount: async tried => (tried.includes('acc-b') ? undefined : accountB),
       onServingFailure: (id, kind) => { failures.push([id, kind]) },
-      poolServingNotice: id => (id === 'acc-b' ? '本次由账号 B 服务' : undefined),
+      failoverNotice: (from, _to, kind) =>
+        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
     })
     const resp = await chat(shim, {})
     expect(resp.status).toBe(200)
@@ -317,8 +319,81 @@ describe('Qoder shim pool failover', () => {
     // 通知必须是 pi-ai 可见的内容帧（choices[0].delta.content），不是空 choices 帧。
     const first = chunks[0]!
     expect(typeof first.choices?.[0]?.delta?.content).toBe('string')
-    expect(first.choices?.[0]?.delta?.content as string).toContain('[dsh-connect-qoder]')
-    expect(first.choices?.[0]?.delta?.content as string).toContain('本次由账号 B 服务')
+    const text = first.choices?.[0]?.delta?.content as string
+    expect(text).toContain('[dsh-connect-qoder]')
+    // 说的是**失败的那个**账号（用户选中的 A），不是接管者 B。
+    expect(text).toContain('「A」被限流')
+    expect(text).not.toContain('「B」')
+  })
+
+  it('says nothing when the pool takes over without a swap (single account)', async () => {
+    // 没有换号就没有可播报的事：首帧不得出现任何提示。
+    const calls: ChatCall[] = []
+    const shim = await poolShim({
+      upstream: stubUpstream({}, calls),
+      failoverAccount: async () => undefined,
+      failoverNotice: () => '不该出现',
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    const chunks = parseSse(await resp.text()) as Array<{ choices?: Array<{ delta?: Record<string, unknown> }> }>
+    expect(JSON.stringify(chunks)).not.toContain('[dsh-connect-qoder]')
+  })
+
+  it('writes exactly one notice even when several accounts fail in a row', async () => {
+    // 连换两次只写一条提示（首帧只消费一次），说的是**紧邻的那次**失败。
+    const accountC: QoderServingAccount = { accountId: 'acc-c', accountName: 'C', pat: 'pt-c' }
+    const shim = await poolShim({
+      upstream: stubUpstream({ 'pt-a': 'rate-limited', 'pt-b': 'auth' }),
+      failoverAccount: async tried => {
+        if (!tried.includes('acc-b')) return accountB
+        if (!tried.includes('acc-c')) return accountC
+        return undefined
+      },
+      failoverNotice: (from, _to, kind) =>
+        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    const text = await resp.text()
+    const hits = text.split('[dsh-connect-qoder]').length - 1
+    expect(hits).toBe(1)
+    // A 被限流 → B 凭证失效 → C 成功：说的是 B（紧邻换号的那次）。
+    expect(text).toContain('「B」凭证已失效')
+    expect(text).not.toContain('「A」')
+  })
+
+  it('says nothing when no failoverNotice is configured (host opted out)', async () => {
+    const shim = await poolShim({
+      upstream: stubUpstream({ 'pt-a': 'rate-limited' }),
+      failoverAccount: async tried => (tried.includes('acc-b') ? undefined : accountB),
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    const chunks = parseSse(await resp.text()) as Array<{ choices?: Array<{ delta?: Record<string, unknown> }> }>
+    expect(JSON.stringify(chunks)).not.toContain('[dsh-connect-qoder]')
+  })
+
+  it('reports the failure from the LAST attempt before the swap, not a stale first-attempt reason', async () => {
+    // A 网络故障 → B 被限流 → C 成功。提示必须说「B 被限流」（紧邻换号的那次
+    // 失败），而不是首轮的「网络中断」。
+    const accountC: QoderServingAccount = { accountId: 'acc-c', accountName: 'C', pat: 'pt-c' }
+    const shim = await poolShim({
+      upstream: stubUpstream({ 'pt-a': 'network', 'pt-b': 'rate-limited' }, []),
+      failoverAccount: async tried => {
+        if (!tried.includes('acc-b')) return accountB
+        if (!tried.includes('acc-c')) return accountC
+        return undefined
+      },
+      failoverNotice: (from, _to, kind) =>
+        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    const chunks = parseSse(await resp.text()) as Array<{ choices?: Array<{ delta?: Record<string, unknown> }> }>
+    const text = JSON.stringify(chunks)
+    expect(text).toContain('「B」被限流')
+    expect(text).not.toContain('网络中断')
   })
 
   it('records EVERY failed attempt and answers JSON when the pool is exhausted', async () => {

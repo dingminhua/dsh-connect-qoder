@@ -42,6 +42,7 @@ import { randomBytes } from 'node:crypto'
 import type { QoderUpstreamClient, QoderChatDelta, UpstreamErrorKind } from './upstream.ts'
 import { QoderUpstreamError, isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
+import { shouldAnnounceFailover } from './failover-notice.ts'
 
 /** One resolvable serving credential, as the shim sees it. */
 export interface QoderServingAccount {
@@ -72,10 +73,19 @@ export interface QoderShimOptions {
   /** Record one serving account's pre-first-byte failure (pool measurement). */
   onServingFailure?: (accountId: string, kind: UpstreamErrorKind, message: string) => void
   /**
-   * Optional notice text to carry ahead of the first content when the serving
-   * account is not the user's explicit selection (i.e. the pool took over).
+   * 换号成功后，把「哪个账号、因为什么、换成了谁」交给宿主措辞。
+   *
+   * 返回 undefined 表示不提示。**只有真正换了号才会被调用**（由
+   * `shouldAnnounceFailover` 把关），所以这里不必再判断是否发生了换号。
+   *
+   * 措辞归宿主：账号名的展示方式、是否点名接管账号、哪些失败值得播报，都是
+   * 产品决策，不该硬编码在 shim 里。
    */
-  poolServingNotice?: (accountId: string) => string | undefined
+  failoverNotice?: (
+    from: QoderServingAccount,
+    to: QoderServingAccount,
+    kind: UpstreamErrorKind,
+  ) => string | undefined
   /** 模型显示名 → Qoder 内部 key。未知时原样发送。 */
   modelKeyOf?: (displayName: string) => string | undefined
   /** 该模型是否支持图像输入（用于请求校验，可选）。 */
@@ -502,6 +512,11 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     const created = Math.floor(Date.now() / 1000)
     const tried: string[] = []
     const gapMs = options.failoverGapMs ?? FAILOVER_ACCOUNT_GAP_MS
+    // 换号成功后置为提示文案，在写出首帧时一次性消费（置回 undefined）。
+    //
+    // ⚠️ 采集时机在**换号之后**，不是每轮开头：首轮还没失败，开头采集拿不到
+    // 「为什么换」；换号发生在上一个 catch 里，那里的 error.kind 才是原因。
+    let notice: string | undefined
 
     // 本轮尝试：写 SSE 头 + 转发流。返回前若抛错且尚未写出任何字节，则上游
     // `wroteAny` 保持 false，可进入换号重试。
@@ -510,9 +525,6 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
       let hasToolCalls = false
       let inputTokens = 0
       let outputTokens = 0
-      let notice = options.poolServingNotice ? options.poolServingNotice(serving.accountId) : undefined
-      // 已显式选择的账号不因池接管而被错误标注 —— 由 poolServingNotice 自行决定
-      // 何时返回文案（默认返回 undefined → 不标）。
       try {
         await upstream.chatStream(serving.pat, key, messages, {
           ...(tools === undefined ? {} : { tools }),
@@ -580,6 +592,28 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           // 也查一遍。
           if (next !== undefined && !tried.includes(next.accountId)) {
             logger(`shim failover: ${serving.accountId} → ${next.accountId} (${error.kind})`)
+            // 用户选中的账号失败了，这事必须让用户看见——否则他看到一段正常
+            // 回答，既不知道换过号，也不知道自己选的账号已经出问题。
+            // 文案正文由配置项提供（宿主据此决定是否提示、怎么措辞），shim 只
+            // 负责「何时放进去」：首帧之前。
+            const from = serving
+            const to = next
+            // 播报**紧邻这次换号的那次失败**，且后一次覆盖前一次。
+            //
+            // A 网络故障 → B 被限流 → C 成功时，要说的是「B 被限流」：B 才是
+            // 差一点接管这次回答的账号，而「A 网络中断」是不完整且更没用的一半。
+            // 首帧只会写出一条提示，所以多次换号最终只留最后一次——这正好是
+            // 用户最需要知道的那一次：为什么最后不是由你选的账号回答。
+            if (
+              shouldAnnounceFailover({
+                switched: true,
+                fromAccountId: from.accountId,
+                toAccountId: to.accountId,
+                kind: error.kind,
+              })
+            ) {
+              notice = options.failoverNotice?.(from, to, error.kind)
+            }
             serving = next
             // 零间隔连环重试会让每个候选都撞上同一个按体积计费的限流墙；
             // 等待可中断，客户端断开就不再睡。

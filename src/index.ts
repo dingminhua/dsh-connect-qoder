@@ -26,6 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { QoderUpstreamClient } from './upstream.ts'
+import { failoverNoticeText } from './failover-notice.ts'
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
@@ -701,7 +702,14 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           log(`pool ${region}: ${maskPat(accountId)} marked ${probe.outcome} by live request`)
         }
       },
-      // 不提供 poolServingNotice：不在回复流里注入「将由账号 … 回答本次问题」。
+      // 换号后把「哪个账号、因为什么」告诉用户。
+      //
+      // 与「将由账号 … 回答本次问题」不同：那条是关于**将要**发生的事，属于
+      // 宿主的调度决定；这条是插件**已经**自作主张换了号，用户有权知道。不提示
+      // 的话，用户看到一段正常回答，既不知道换过号，也不知道自己选的账号已经
+      // 出问题，下次还会踩进去。
+      failoverNotice: (from, _to, kind) =>
+        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
     })
 
     stacks[region] = { upstream, catalog, shim, store, probeClient: buildProbeClient(region), poolRuntime }
