@@ -5,12 +5,14 @@
 ## 当前状态
 
 - **正式提交**：已发出 → [PR #7229](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/pull/7229) `Add dingminhua/dsh-connect-qoder (model)`，2026-10-12 16:54 UTC 开，改动只有 `data/plugins/dingminhua__dsh-connect-qoder.yml` 一个文件（+6 行）。
-- **等待评审中**（截至 2026-10-15）：CI `check` + `Submission gate` 持续 pass，`mergeable=MERGEABLE` / `mergeable_state=clean`，0 评论、0 review——全绿排队，不是被打回。上游按批合并（近三批在 10-13 05h / 10-13 16h / 10-14 17h 各消化十几到三十几条），队列里仍有 900+ 条开放投稿；近 500 条已合并样本的「创建 → 合并」中位数约 177 小时（7 天半）。**不要重开 PR，也不要留言催评**；若检查失败，在同一分支推修复即可，无需新 PR。
-- **条目 yml 与本地草稿逐字节一致**，无需改动：描述里不含数字，插件继续发版不影响条目准确性。PR body 只是自述，已随版本刷新（npm 0.5.0、33 个 spec 文件 / 588 用例；其中 `live-intl-session.spec.ts` 是需要真实凭据的实机套件，无环境变量时整文件自跳）。
+- **等待评审中**（截至 2026-10-17）：CI `check` + `Submission gate` 持续 pass，`mergeable=MERGEABLE` / `mergeStateStatus=CLEAN`，0 评论、0 review——全绿排队，不是被打回。上游按批合并（近三批在 10-13 05h / 10-13 16h / 10-14 17h 各消化十几到三十几条），队列里仍有 900+ 条开放投稿；近 500 条已合并样本的「创建 → 合并」中位数约 177 小时（7 天半）。**不要重开 PR，也不要留言催评**；若检查失败，在同一分支推修复即可，无需新 PR。
+  - 复核提示：`mergeable` 偶发回报 `UNKNOWN`，那是 GitHub 在后台重算合并性，**不是**状态变坏；等几秒重查即回到 `MERGEABLE`（2026-10-17 实测一次）。
+- **条目 yml 与本地草稿逐字节一致**，无需改动：描述里不含数字，插件继续发版不影响条目准确性。PR body 只是自述，已随版本刷新（npm 1.0.0、33 个 spec 文件 / 606 用例；其中 `live-intl-session.spec.ts` 是需要真实凭据的实机套件，无环境变量时整文件自跳）。
+- **版本沿革**：首发 `0.3.0`（2026-10-12）→ `0.4.x` / `0.5.x`（全部是修错与对齐同族）→ **`1.0.0`**（2026-10-17，标记稳定期）。`0.5.2` 只存在于提交历史里、从未发布，发布前改号为 `1.0.0`（撤回 `v0.5.2` tag、以 `v1.0.0` 重打，历史提交不改写）。
 - **npm 包名**：`@dmh2002/dsh-connect-qoder`。**注意**：无作用域的 `dsh-connect-qoder` 已被他人占用（发布者 `gghskl`，仓库 `hdhgsysh/dsh-connect-qoder`，实为 `eghrhegpe` 那份「读本机登录」的实现，已在注册表内）。本项目是**另一条技术路线**（用户自备 PAT + cosy 网关），因此发布在作用域名下；仓库名与插件在 DSH 内的标识（settings 命名空间、`/plugins/dsh-connect-qoder/…` 路由、CLI 程序名）**不变**。
 - **前置要求**（依据 [contributing.md](https://github.com/awesome-dsh-plugin/awesome-dsh-plugin/blob/main/contributing.md)）：
   - [x] 仓库 `package.json` 声明 `dsh.bundle` manifest（`dsh.bundle.patch: ./cordis.patch.yml`）
-  - [x] 已发布到 npm（首发 `0.3.0`，当前 `0.5.0`；映射由 registry 从包的 `repository` 字段自动采集，**条目里不要手写 `npm:` 键，会被校验拒绝**）
+  - [x] 已发布到 npm（首发 `0.3.0`，当前 `1.0.0`；映射由 registry 从包的 `repository` 字段自动采集，**条目里不要手写 `npm:` 键，会被校验拒绝**）
   - [x] 仓库打了 `dsh-plugin` topic（另按本作者同族仓库约定补了 `dsh-plugin-market` / `dsh-plugins`，以及 `deepseek-harness` / `qoder` / `model`）
   - [x] 仓库创建满 1 天（2026-10-11 创建。现行规则**没有**提交数门槛——历史长短反映开发习惯而非质量，见 contributing 的说明）
 - **截图**：声明在**本项目自己仓库**根目录的 [`screenshots.json`](../screenshots.json)（四张实机图：设置卡片 / 模型管理 / composer 积分 / 模型选择器）
