@@ -256,6 +256,38 @@ legacy 分支（修复前）→ roles ["user"],  system null,  tools 0
 modern 分支（修复后）→ roles ["system","user"], prompt 原样, tools 1
 ```
 
+### 5.1b 两份 pi-ai 副本并存 —— 谁跑哪一代（2026-10-17 补记）
+
+追这一条时发现一个**结构事实**，它决定了这个缺陷到底影响谁：
+
+`src/adapter.ts` 第 15–17 行是 **静态 import**——
+
+```ts
+import { createProvider } from '@earendil-works/pi-ai'
+import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
+```
+
+所以**插件用的永远是「它自己解析到的那份 pi-ai」的 api**，而 `createModels`
+（真正做归一化、也是把 provider 注册进去的那一层）是**宿主那一份**。两份副本
+在宿主里可以不同代。
+
+实测（真实 1.x 的 `createModels` + 真实 0.85.1 的 `createProvider`/api 混装）：
+
+| 场景 | 1.x `createModels` 交给插件 api 的 context | 线上 body（**修复前**） | 线上 body（**修复后**） |
+|---|---|---|---|
+| 插件自带 **0.85.1**（本机现状：软链到本仓库，overrides 钉 0.85.1） | `messages[0].role === 'system'`（已归一化） | ✅ 正常（判 `legacy`，逆折回扁平 —— 0.85 读得懂） | ✅ 正常（同左，未变） |
+| 插件也解析到 **1.x**（市场安装，无本地 0.85） | 同上 | ❌ `roles:["user"]`, `system:null`, `tools:0` | ✅ `roles:["system","user"]`, prompt 原样, `tools:1` |
+
+**结论**：
+- 本机这台（插件自带 0.85.1，`doctor` 报 `legacy (0.85.1)`）**从来没有坏过** ——
+  它判 legacy 恰好是对的，因为它的 api 就是 0.85。
+- 受害的是**市场安装**：插件自己解析到 1.x 时，修复前必然丢 prompt 与工具。
+- 因此**本机无法用「发一条对话」复现这个 bug**，也无法用它证明修复 —— 本机能
+  验证的只是「修复没有破坏它」。可复现的证据在 §5.1b 的表格里（两份真实副本
+  混装实测），以及 `tests/fixtures/pi-ai-modern/` 的 4 条用例。
+- 顺带解释了为什么 `tests/pi-ai-runtime.spec.ts` 那条「宿主注入 → modern」的
+  默认值是安全的：它针对的是 `resolvedLocally: false` 的市场安装路径。
+
 ### 5.2 第一版测试为什么是错的（留档）
 
 我第一版按参考文档写了「2×2 矩阵」（legacy/modern × 原始/已归一化），然后发现两格在 0.85 checkout 上红。第一反应是「测试写错了」，但**红的原因有两种可能**：

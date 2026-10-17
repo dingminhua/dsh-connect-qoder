@@ -10,7 +10,11 @@
 
 ### Fixed
 
-- **升到 0.2.1-rc.1 之后所有模型都调不动工具、且不报错 —— `generationOf()` 认不出 pi-ai 的 1.x 主版本，把 1.x 判成 `legacy`，于是适配器把已归一化的 transcript 逆折回扁平形状交给了只读 `messages` 的 1.x api。**
+- **插件解析到 pi-ai 1.x 时，所有模型都调不动工具、且不报错 —— `generationOf()` 认不出 1.x 主版本，把它判成 `legacy`，于是适配器把已归一化的 transcript 逆折回扁平形状，交给了只读 `messages` 的 1.x api。**
+  - **影响面（必须说清，否则「本机没这问题」会被误读成「没这 bug」）**：`src/adapter.ts` 静态 import 自己的 pi-ai，所以**插件用哪一代 api 取决于它自己解析到哪份副本**，而做归一化的 `createModels` 是宿主那份 —— 两份副本可以不同代。
+    - 本机现状：插件软链到本仓库、`overrides` 钉 0.85.1，`doctor` 报 `legacy (0.85.1)`。这份**从来没有坏过**：判 legacy 恰好对，它的 api 就是 0.85、读得懂逆折后的扁平形状。修复对它无影响。
+    - **受害的是市场安装**：插件自己解析到 1.x 时，修复前必然丢 prompt 与工具（实测 `roles:["user"]`、`system:null`、`tools:0`）。
+    - 因此**本机发一条对话复现不了**，也证明不了修复 —— 本机只能验证「没被改坏」。可复现证据是两份真实副本混装实测（followup §5.1b）与 `tests/fixtures/pi-ai-modern/` 的 4 条用例。
   - **机制（线上实测，三步各自可复现）**：① pi-ai 1.x 的 `createModels().stream*` 第一行就是 `normalizeContext(context)`，它位于宿主 provider 注册处与 api 模块**之间**（`dsh-llm-pi-ai/lib/index.js:1763` 的 `models.setProvider`），所以 api 模块拿到的**永远是** `{messages:[{role:'system',content,toolsAdded}]}`；② 适配器的 `generationOf` 用 `/^0\.(\d+)\./` 判世代，该正则**不匹配 `1.x.y`** → 落 `legacy`；③ `withLegacyContext` 走 legacy 分支 → `adaptLegacyPiAiContext` 把 transcript **逆折叠**回 `{systemPrompt, tools, messages}`，而 1.x 的 api 只读 `context.messages`，顶层字段一字不读。
   - **线上实测的请求体**（真实 `@deepseek-ai/dsh-llm-pi-ai@0.2.1-rc.1` + 真实 pi-ai 1.3.0 + 真实 `openAICompletionsApi`，只切换适配器分支）：
 
