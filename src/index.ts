@@ -853,6 +853,19 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       credential,
       modelKey: modelId,
       nowMs: Date.now(),
+      // 「当日用量用尽」的恢复时刻是**次日窗口开启**，不是 30 分钟。
+      //
+      // `cooldownOf` 本来就支持这条来源（Retry-After > 上游报文里的重置时刻 >
+      // out-of-credit 的额度刷新点），但这一路此前**没有任何调用方传过**
+      // `quotaRefreshAtMs`，于是 out-of-credit 永远走 `atMs + 30min` 兜底：
+      // 一个要等到明天才恢复的号，30 分钟后就被当成可用号重新挑中，请求再
+      // 撞一次 110，如此循环。
+      //
+      // 来源用签到快照里的每日窗口结束时刻（`refreshAtMs`，上游给的
+      // `daily.endAt`）。它缺席时仍然不传 —— 宁可用 30 分钟兜底，也不在本机
+      // 编一个「次日零点」：官方页面上那个数字才是准的，编出来的会让用户
+      // 在错的时候回来。
+      ...quotaRefreshOf(checkinSnapshots[region], credential.pat),
       ...(signal === undefined ? {} : { signal }),
     })
   }
@@ -1622,4 +1635,27 @@ export function shouldRecordPoolFailure(prefs: PoolGate, accountId: string): boo
   if (!prefs.enabled) return false
   if (accountId === '') return false
   return prefs.memberAccountIds.includes(accountId)
+}
+
+/**
+ * The region's daily quota refresh point for one PAT, as `probeModel` wants it.
+ *
+ * 「当日用量用尽」(code 110) 的恢复时刻是**次日窗口开启**，不是 30 分钟。上游
+ * 在签到报文里给了这个时刻（`daily.endAt`），签到批次把它存进快照；这里就
+ * 从快照取。
+ *
+ * 取不到时返回 `{}`（不传）。这是**故意的保守**：宁可用 30 分钟兜底，也不在
+ * 本机编一个「次日零点」。官方页面上那个数字才是准的，编出来的会让用户在错的
+ * 时间回来 —— 与 `cooldownOf` 的既有注释同一条规矩。
+ *
+ * 抽成纯函数是为了能被断言：它是 `probeThrough` 里唯一无法单测的闭包边角，
+ * 而恰恰是这一处此前**从未传过** `quotaRefreshAtMs`，让 out-of-credit 一直
+ * 走兜底。
+ */
+export function quotaRefreshOf(
+  snapshot: Readonly<Record<string, { refreshAtMs?: number }>> | undefined,
+  pat: string,
+): { quotaRefreshAtMs?: number } {
+  const refreshAtMs = snapshot?.[qoderAccountId(pat)]?.refreshAtMs
+  return refreshAtMs === undefined ? {} : { quotaRefreshAtMs: refreshAtMs }
 }

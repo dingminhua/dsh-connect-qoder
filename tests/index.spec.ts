@@ -4,6 +4,8 @@ import LlmRuntime from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import * as Qoder from '../src/index.ts'
 import { qoderAccountId } from '../src/credentials.ts'
+import { cooldownOf } from '../src/probe.ts'
+import { exclusionOf } from '../src/account-pool.ts'
 
 /**
  * The 0.1.7-shaped settings service the suite mounts so the plugin's
@@ -688,6 +690,85 @@ async function readCardModels(
   const doc = JSON.parse(String(res.body())) as { models: Array<{ key: string, thinkingEfforts?: string[] }> }
   return doc.models
 }
+
+// ==========================================================================
+// 「当日用量用尽」的恢复时刻不是 30 分钟
+//
+// `cooldownOf` 早就有「out-of-credit 用额度刷新点」这条来源，但 probeThrough
+// **从来没传过** quotaRefreshAtMs，于是 out-of-credit 永远走 atMs + 30min 兜底：
+// 一个要等到明天窗口开启才恢复的号，30 分钟后被当可用号重新挑中，再撞一次 110。
+//
+// 分两层钉：`quotaRefreshOf` 钉「从快照取对了没」（真正曾经的断点），
+// `cooldownOf` 钉「拿到了就用它、不编」。
+// ==========================================================================
+
+describe('quotaRefreshOf：把签到快照里的开窗时刻交给探针', () => {
+  const PAT = 'pt-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const ID = qoderAccountId(PAT)
+  const AT = 1_800_000_000_000
+
+  it('hands over the region daily refresh point for this PAT', () => {
+    expect(Qoder.quotaRefreshOf({ [ID]: { refreshAtMs: AT } }, PAT)).toEqual({ quotaRefreshAtMs: AT })
+  })
+
+  it('does not invent one when the snapshot has no refresh time', () => {
+    // 取不到就不传 —— 宁可走 30 分钟兜底，也不在本机编一个「次日零点」。
+    expect(Qoder.quotaRefreshOf({ [ID]: {} }, PAT)).toEqual({})
+    expect(Qoder.quotaRefreshOf({}, PAT)).toEqual({})
+    expect(Qoder.quotaRefreshOf(undefined, PAT)).toEqual({})
+  })
+
+  it('keys by the account id derived from the PAT, not the PAT itself', () => {
+    // 用 PAT 当键会永远取不到（快照是按派生 id 存的），于是这条修复静默失效。
+    expect(Qoder.quotaRefreshOf({ [PAT]: { refreshAtMs: AT } }, PAT)).toEqual({})
+    expect(Qoder.quotaRefreshOf({ [ID]: { refreshAtMs: AT } }, PAT)).toEqual({ quotaRefreshAtMs: AT })
+  })
+})
+
+describe('cooldownOf：拿到开窗时刻就用它', () => {
+  const NOW = 1_800_000_000_000
+
+  it('takes the stated quota refresh point instead of the 30-minute fallback', () => {
+    const out = cooldownOf({
+      outcome: 'out-of-credit',
+      retryAfter: null,
+      nowMs: NOW,
+      quotaRefreshAtMs: NOW + 20 * 3_600_000,
+    })
+    expect(out.retryAtMs).toBe(NOW + 20 * 3_600_000)
+    expect(out.retrySource).toBe('quota-refresh')
+  })
+
+  it('nothing stated → nothing claimed (the card says the upstream did not say)', () => {
+    const out = cooldownOf({ outcome: 'out-of-credit', retryAfter: null, nowMs: NOW })
+    expect(out.retryAtMs).toBeUndefined()
+    expect(out.retrySource).toBeUndefined()
+  })
+
+  it('the upstream reset still wins over the region quota point', () => {
+    const stated = cooldownOf({
+      outcome: 'out-of-credit',
+      retryAfter: '120',
+      nowMs: NOW,
+      quotaRefreshAtMs: NOW + 20 * 3_600_000,
+    })
+    expect(stated.retrySource).toBe('retry-after')
+    expect(stated.retryAtMs).toBe(NOW + 120_000)
+  })
+
+  it('reaches the pool: an out-of-credit row stays excluded past 30 minutes', () => {
+    // 端到端证明这条链有意义：拿到次日开窗时刻后，31 分钟的「30 分钟兜底」
+    // 不再把它放回池子。
+    const probe = {
+      outcome: 'out-of-credit' as const,
+      atMs: NOW,
+      source: 'test-batch' as const,
+      retryAtMs: NOW + 20 * 3_600_000,
+    }
+    expect(exclusionOf(probe, NOW + 31 * 60_000)).toBe('out-of-credit')
+    expect(exclusionOf(probe, NOW + 21 * 3_600_000)).toBeUndefined()
+  })
+})
 
 // ==========================================================================
 // 真实请求失败写进账号池的那条测量（liveRequestProbe）
