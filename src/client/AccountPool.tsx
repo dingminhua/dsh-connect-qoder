@@ -173,6 +173,26 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const [batchAction, setBatchAction] = useState<'checkin' | 'test' | undefined>(undefined)
   /** 任一批量动作在跑。两个按钮共用同一把锁，避免签到与测试交错。 */
   const batchBusy = batchAction !== undefined
+  /**
+   * 正在跑「行内测试」的那一行账号 id；undefined = 空闲。
+   *
+   * 与 `batchAction` 分开记，是因为**这两件事对使用者的意义不同**：批量会改动
+   * 整张表的排名，值得全屏挡一道；而行内测试只测一个账号、结果自有一行日志，
+   * 抬遮罩等于让一次轻操作绑架整个界面——用户在其他区域点什么都点不动。
+   *
+   * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
+   *   — 该项目的 `rowBusyAccountId` / `rowBusyAction`：注释原话是测试「keeps no
+   *     veil — it changes no row membership, and its result already has its own
+   *     line in the log」。workbuddy 用一个 id + 一个动作名，因为它行内还有
+   *     remove；这里删除已经由 `removingId` 单独表达，所以只需要一个 id。
+   */
+  const [rowTestingId, setRowTestingId] = useState<string | undefined>(undefined)
+  /**
+   * 行内测试在飞。**它不进遮罩**，但仍然是锁：表里的测试按钮彼此互斥，批量
+   * 按钮也要禁用——批量与单行交错会让两拨探针同时打向宿主，谁的结果是谁就
+   * 说不清了。
+   */
+  const rowTestBusy = rowTestingId !== undefined
   /** 正在删除的账号 id；undefined = 空闲。删除过程中锁住整张表。 */
   const [removingId, setRemovingId] = useState<string | undefined>(undefined)
   /**
@@ -389,14 +409,27 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
    * 行级按钮**必须**传 `accountId`：此前它调的是整批，于是点一行「测试」会把
    * 池里每个成员都真跑一遍（每个都是一次真实探针、约 25k 输入 token），而且
    * 动的不一定是用户点的那一行。整批仍由工具栏按钮与「测试全部」使用。
+   *
+   * 两条路径的「在飞表达」不同（学 workbuddy 的 `runRowTest` 与 `runAction`
+   * 之分）：整批会改动整张表的排名，抬全屏遮罩；行内只测一个账号、结果自有
+   * 一行日志，所以只让那一行的按钮自变「测试中…」，其余界面照常可点——
+   * 一次轻操作不该把使用者锁在整个界面外面。行内仍是锁：测试类按钮互斥，
+   * 批量与单行交错会让两拨探针同时打向宿主，谁的结果是谁就说不清了。
+   * 「正在逐个账号执行…」那句提示**只在批量时挂**（workbuddy 同规：它的 hint
+   * 挂在批量态 `busy` 上）——只测一行时「逐个」是句假话，行内的轻提示就是那
+   * 颗按钮自己的「测试中…」。
    */
   const runTestBatch = async (onlyAccountId?: string): Promise<void> => {
+    const inline = onlyAccountId !== undefined
+    // 连点保护：已有任何测试（行内或批量）在飞就不再叠第二拨探针。
+    if (batchBusy || rowTestBusy) return
     setActionError(undefined)
-    setBatchAction('test')
+    if (inline) setRowTestingId(onlyAccountId)
+    else setBatchAction('test')
     try {
-      const url = onlyAccountId === undefined
-        ? withQoderRouteAction(QODER_POOL_PATH, region, 'test')
-        : withQoderRouteAccount(QODER_POOL_PATH, region, 'test', onlyAccountId)
+      const url = inline
+        ? withQoderRouteAccount(QODER_POOL_PATH, region, 'test', onlyAccountId)
+        : withQoderRouteAction(QODER_POOL_PATH, region, 'test')
       const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -411,25 +444,71 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       if (raw['action'] === 'test' && Array.isArray(raw['rows'])) {
         const rows = (raw['rows'] as unknown[]).map(parseTestRow).filter(row => row !== undefined)
         const modelId = typeof raw['modelId'] === 'string' && raw['modelId'] !== '' ? raw['modelId'] : t('row.modelUnknown')
-        appendLog({ atMs: Date.now(), text: t('row.poolLogTestStart', { count: rows.length, model: modelId }), tone: 'info' })
-        if (rows.length === 0) {
-          appendLog({ atMs: Date.now(), text: t('row.poolLogBatchFailed', { message: t('row.poolTargetNone') }), tone: 'warn' })
-        } else {
-          for (const row of rows) {
+        if (inline) {
+          // 行内**不打批量话术**：「开始测试 N 个账号 × model」「测试完成，已重新
+          // 计算候选账号」在只测一行时是噪声，第二句还在暗示一件没发生的事（整池
+          // 重排）。一行只留一行结果，没返回结果就说没返回（workbuddy 同规）。
+          if (rows.length === 0) {
+            const target = pool?.accounts.find(account => account.accountId === onlyAccountId)
             appendLog({
               atMs: Date.now(),
-              text: t('row.poolLogTestRow', { accountName: row.accountName, outcome: probeLabelOf(t, row.result, Date.now()) }),
-              tone: row.result.outcome === 'ok' ? 'ok' : 'warn',
+              text: t('row.poolLogTestRowMalformed', { accountName: target?.accountName || target?.accountId || onlyAccountId || '' }),
+              tone: 'warn',
             })
+          } else {
+            for (const row of rows) {
+              appendLog({
+                atMs: Date.now(),
+                text: t('row.poolLogTestRow', { accountName: row.accountName, outcome: probeLabelOf(t, row.result, Date.now()) }),
+                tone: row.result.outcome === 'ok' ? 'ok' : 'warn',
+              })
+            }
+          }
+        } else {
+          appendLog({ atMs: Date.now(), text: t('row.poolLogTestStart', { count: rows.length, model: modelId }), tone: 'info' })
+          if (rows.length === 0) {
+            appendLog({ atMs: Date.now(), text: t('row.poolLogBatchFailed', { message: t('row.poolTargetNone') }), tone: 'warn' })
+          } else {
+            for (const row of rows) {
+              appendLog({
+                atMs: Date.now(),
+                text: t('row.poolLogTestRow', { accountName: row.accountName, outcome: probeLabelOf(t, row.result, Date.now()) }),
+                tone: row.result.outcome === 'ok' ? 'ok' : 'warn',
+              })
+            }
           }
           appendLog({ atMs: Date.now(), text: t('row.poolLogTestDone'), tone: 'info' })
         }
       }
       try { await onChanged?.() } catch { /* reconciled on the next poll */ }
     } catch (error) {
-      if (mounted.current) setActionError(String((error as Error)?.message ?? error))
+      if (!mounted.current) return
+      const message = String((error as Error)?.message ?? error)
+      setActionError(message)
+      // 失败也要在日志里留一行。批量时遮罩会消失、横幅会被下一次动作清掉，行内
+      // 时连遮罩都没有，而探针烧掉的额度不会——活动日志是事后唯一能查「那次为
+      // 什么没结果」的地方（workbuddy 同规：它的 runRowTest 在 catch 里既
+      // setActionError 又 appendLog）。行内不套用 'Batch failed — nothing ran'
+      // 那句：请求确实发起了、且只发起一条，说「批量没执行」是假话。
+      if (inline) {
+        const target = pool?.accounts.find(account => account.accountId === onlyAccountId)
+        appendLog({
+          atMs: Date.now(),
+          // 沿用 `{accountName}：{outcome}` 这句式：outcome 这里就是失败原因，
+          // 中英各自的分隔符由 locales 负责，不在代码里手工拼冒号。
+          text: t('row.poolLogTestRow', {
+            accountName: target?.accountName || target?.accountId || onlyAccountId || '',
+            outcome: message,
+          }),
+          tone: 'error',
+        })
+      } else {
+        appendLog({ atMs: Date.now(), text: t('row.poolLogBatchFailed', { message }), tone: 'error' })
+      }
     } finally {
-      if (mounted.current) setBatchAction(undefined)
+      if (!mounted.current) return
+      if (inline) setRowTestingId(undefined)
+      else setBatchAction(undefined)
     }
   }
 
@@ -536,7 +615,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             : <button
                 type="button"
                 className="dsm-btn dsm-btn-primary"
-                disabled={!canEditPool || effective.length === 0 || batchBusy}
+                disabled={!canEditPool || effective.length === 0 || batchBusy || rowTestBusy}
                 onClick={() => { void runCheckinBatch() }}
               >
                 {batchAction === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll')}
@@ -544,7 +623,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
           <button
             type="button"
             className="dsm-btn dsm-btn-outline"
-            disabled={!canEditPool || effective.length === 0 || batchBusy || targetMisses}
+            disabled={!canEditPool || effective.length === 0 || batchBusy || rowTestBusy || targetMisses}
             title={pool?.targetModelSource === 'none'
               ? t('row.poolTargetNone')
               : pool?.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined}
@@ -553,7 +632,10 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             {batchAction === 'test' ? t('row.poolTesting') : t('row.poolTestAll')}
           </button>
           {/* 批量测试期间说明「正在逐个处理」：宿主只在批量结束时一次性返回，
-              没有逐行进度可报（workbuddy 同规）。 */}
+              没有逐行进度可报（workbuddy 同规，`busy === undefined ? null : hint`
+              的 `busy` 就是批量态）。
+              行内测试**不挂这句**：它只测一个账号，「正在逐个账号执行」在只跑
+              一行时是一句假话；行内自己的「测试中…」按钮就是那句轻提示。 */}
           {batchAction === 'test' ? <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span> : null}
         </div>
       </div>
@@ -713,8 +795,21 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                     </span>
                   : null}
                 <span className="dsm-qoder-pool-row-actions">
-                  <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch(account.accountId) }}>
-                    {t('row.poolRowTest')}
+                  {/* 行内测试：在飞时**只**改这一行的按钮文字并锁住同类按钮，
+                      不抬遮罩（workbuddy 同规：测试「keeps no veil」）。按钮自变
+                      「测试中…」+ 禁用，就是这一行的轻提示——与删除按钮在飞的
+                      「正在删除账号…」是同一套语言。测试类按钮全表互斥（任一行
+                      在飞则其他行禁用），其余控件（勾选、下拉、保存、删除入口）
+                      不受影响。 */}
+                  <button
+                    type="button"
+                    className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn"
+                    title={rowTestingId === account.accountId ? t('row.poolTesting') : t('row.poolRowTest')}
+                    aria-label={rowTestingId === account.accountId ? t('row.poolTesting') : t('row.poolRowTest')}
+                    disabled={!canEditPool || batchBusy || rowTestBusy || targetMisses}
+                    onClick={() => { void runTestBatch(account.accountId) }}
+                  >
+                    {rowTestingId === account.accountId ? t('row.poolTesting') : t('row.poolRowTest')}
                   </button>
                   {/* 移出池**不用按钮**：这一行的勾选框已经表达「是不是成员」，再给
                       一个只改同一件事的按钮，两处迟早会不一致（这正是此前「移除了
