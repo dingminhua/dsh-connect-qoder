@@ -2,6 +2,69 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.1.0 (2026-10-17)
+
+宿主升级到 **DSH Desktop 0.2.1-rc.1**，随之把 pi-ai 从 0.85 换到 **1.x**。本次是**行为修复**而不是纯适配：宿主升级后，模型的工具调用会**静默失效** —— 不报错、网关也不拒，只是从此再也调不动任何工具。按语义化版本取 minor（改变了发往上游的请求体形态与「账号池开关」的实际含义）。
+
+调研与全部实测证据见 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)。
+
+### Fixed
+
+- **升到 0.2.1-rc.1 之后所有模型都调不动工具、且不报错 —— `generationOf()` 认不出 pi-ai 的 1.x 主版本，把 1.x 判成 `legacy`，于是适配器把已归一化的 transcript 逆折回扁平形状交给了只读 `messages` 的 1.x api。**
+  - **机制（线上实测，三步各自可复现）**：① pi-ai 1.x 的 `createModels().stream*` 第一行就是 `normalizeContext(context)`，它位于宿主 provider 注册处与 api 模块**之间**（`dsh-llm-pi-ai/lib/index.js:1763` 的 `models.setProvider`），所以 api 模块拿到的**永远是** `{messages:[{role:'system',content,toolsAdded}]}`；② 适配器的 `generationOf` 用 `/^0\.(\d+)\./` 判世代，该正则**不匹配 `1.x.y`** → 落 `legacy`；③ `withLegacyContext` 走 legacy 分支 → `adaptLegacyPiAiContext` 把 transcript **逆折叠**回 `{systemPrompt, tools, messages}`，而 1.x 的 api 只读 `context.messages`，顶层字段一字不读。
+  - **线上实测的请求体**（真实 `@deepseek-ai/dsh-llm-pi-ai@0.2.1-rc.1` + 真实 pi-ai 1.3.0 + 真实 `openAICompletionsApi`，只切换适配器分支）：
+
+    | 分支 | `messages[].role` | system 文本 | `body.tools` |
+    |---|---|---|---|
+    | `legacy`（修复前的实际行为） | `["user"]` | `null` | **0** |
+    | `modern`（现在选的分支） | `["system","user"]` | 原样 | **1** |
+
+  - **修法**：`generationOf` 改为解析 `major.minor` —— `major >= 1` → `modern`，`0.87+` → `modern`，其余保守 `legacy`（不可读版本判 `legacy` 是**安全方向**：legacy 折法对扁平 0.85 上下文是恒等，对没有 system 消息的上下文是 no-op）。
+  - **与参考文档判断相反的一处，单独说明**：同级 `dsh-connect-workbuddy` 的 followup 文档把同一现象的根因写成「`withLegacyContext` 的 modern 分支是空的，所以请求丢失 prompt 与工具」，并建议「modern 分支改为折叠」。**在本仓库实测不成立**：1.x 的 Models 层已经归一化，modern 分支若再折一次会**多出一条空的 system 消息**；而在本仓库 checkout（pi-ai 0.85.1）上，「modern + transcript」会直接崩在 `transformMessages` 的 `Cannot read properties of undefined (reading 'length')`（0.85 的 `Message` 联合里没有 system 变体）。所以 modern 分支**保持 pass-through**，只修检测器。详见 followup 文档 §0 与 §5.2。
+  - **为什么守卫测试此前全绿**：`tests/pi-ai-runtime.spec.ts` 那条用例**把错误公式抄了一遍** —— `const minor = Number(/^0\.(\d+)\./u.exec(version)?.[1])`，对 `1.3.0` 得到 `NaN`，`NaN >= 87 === false`，于是断言 `legacy`。**它认证了这个缺陷。** 现改为对**已知语义的显式版本表**求值，不再从版本号现推公式。
+
+- **「账号池」开关对换号完全无效 —— 关掉它，插件仍会在请求失败后悄悄换到另一个 PAT 计费。**
+  - **机制**：`nextFailoverCredential` 只读成员名单（`poolPreferencesOf(...).memberAccountIds`）、**从不读 `enabled`**。而 `poolConfig` 的默认值就是 `enabled: false`，所以这是**每一条全新安装**都在走的路径：用户以为自己关掉了自动行为，实际没有。
+  - **修法**：抽成导出的纯函数 `poolAllowsFailover()`，在换号入口设门。作用域刻意**不含**签到/测试两个**手动**批量动作 —— 它们由用户亲手点击，不属于「插件替你决定」。
+
+- **一次失败会让一个「没被授权参与」的账号出池 30 分钟 —— 失败回调缺两条守卫。**
+  - **机制**：`onServingFailure` 此前无条件把「正在服务的请求失败」写进池运行时状态。两条误伤：① 池关着也照记，下次开池会看到一堆根本没参与过任何决策的陈旧失败；② 没被勾选为成员的号也照记，等于把用户没授权的开销当成默认值。
+  - **修法**：新增导出的纯函数 `shouldRecordPoolFailure()`（池开 && 是成员 && accountId 非空）。`invalid-request` 一类不必在这里挡：shim 的 `isFailoverEligible` 已排除（400 换谁都是 400）。
+
+- **账号池排序继承了上游 issue #70：「快过期先花」是数学上不可达的死代码。**
+  - **机制**：`rankPool` 把 `score`（积分总量）排在 `_expiring`（过期时刻）**之前**。总量几乎从不完全相等，于是临期规则**永远轮不到** —— 一个当天就要作废的账号，只因总量比别的号少一点，就永远排在最后（上游报告者病例：196.4 分当天 17:21 作废）。更糟的是单个 `_expiring` 键存的是**时间戳**，`expiringSoon`（**金额**）从未被任何排序读取，「临期量大者优先」根本无法表达。
+  - **修法**：照上游 4.6.7（`account-pool.ts:434-457`）拆成三个独立键 —— `_atRisk`（有临期）/ `_expiring`（何时）/ `_expiringAmount`（多少），排序键变为：可用性 → 有临期 → 先到期 → 临期量大 → 积分总量 → 账号 id。
+
+### Changed
+
+- **peer 范围接受宿主 0.2.1-rc.1 与 pi-ai 1.x。**
+  - dsh-*：追加 `|| >=0.2.1-rc.1 <0.3.0-0`。原两支对 `0.2.1-rc.1` 判 false（semver 预发布悬崖），`0.2.1` GA 本来就过。
+  - pi-ai：`>=0.85.0 <0.88.0` → `>=0.85.0 <0.88.0 || >=1.0.0 <2.0.0`。**刻意不用 `>=1.0.0-0`** —— 那个写法会把 `1.0.0-rc.1` 也放进来，而 1.x 的上下文契约只在已发布 GA 上实测过（实测：`-0` 下 `1.0.0-rc.1` ADMIT；`>=1.0.0` 下 reject）。
+  - **已知局限（写进测试成为可见待办）**：**没有任何静态范围能覆盖「任意 0.2.x 预发布」**，新补丁号的 rc 仍需手工追加分支。`tests/dsh-line.spec.ts` 的 `UNGATED_PRERELEASES` 用**反向断言**把 `0.2.2-rc.1` / `0.2.3-rc.1` / `0.2.9-rc.1` 钉成「必须判 false」：谁放宽范围，谁就得来改这张表并说明理由。
+
+### Added
+
+- `tests/fixtures/pi-ai-modern/`：一份**独立的真实 pi-ai 1.1.0** 安装，用**真实 `createModels` + 真实 `openAICompletionsApi`** 截线上 body，覆盖 modern 世代。本仓库的解析树被 `pnpm-workspace.yaml` 钉在 0.85.1（0.1.7 宿主线要求），所以 modern 那一格在 checkout 里跑不了，必须另装一份。安装：`pnpm run fixture:pi-ai-modern`；未安装时这 4 条用例**跳过并打印原因**，不静默通过。
+- `tests/adapter-outgoing-body.spec.ts`：legacy 世代跑真实 api、截真实 body，断言 prompt 与 tools 出门（此前 `adapter.spec.ts` mock 了 api，断言的是 wrapper 收到的 context —— 那个断言恰好会**认证**缺陷）。
+
+### 测试
+
+从 **599 通过 / 7 跳过（606）** 增至 **636 通过 / 7 跳过（643）**，34 个文件（另 1 个 live 套件照旧跳过）。`pnpm run check` 全绿（typecheck 两份 + build）。
+
+**变异验证（都在最终代码上逐条实测）**：
+
+| 变异 | 结果 |
+|---|---|
+| `generationOf` 退回旧正则 `/^0\.(\d+)\./` | **2 红**（「1.x 必须 modern」「预发布 1.x 仍是 1.x」） |
+| `poolAllowsFailover` 恒返回 true（= 修复前行为） | **2 红** |
+| `shouldRecordPoolFailure` 退回「只判非空」（= 修复前行为） | **2 红** |
+| `rankPool` 退回「总量先于临期」（= issue #70 原状） | **3 红** |
+
+### 如实记录
+
+- 本轮**没有**在运行中的宿主里目视确认修复后的界面（需要重装插件 + 刷新页面）。结论全部基于**真实依赖栈上的请求体实测**：真实 `dsh-llm-pi-ai@0.2.1-rc.1`、真实 pi-ai 1.1.0/1.3.0、真实 `openAICompletionsApi`，注入 `fetch` 截住 body。
+- 账号池仍有 6 项已识别但**本轮未做**的差距（每行「测试」按钮跑整批、`probe.modelId` 作用域、`out-of-credit` 真实恢复时刻、`model-busy` 语义、服务端空池守卫、NDJSON 流式进度），以及 5 项**明确决定不跟**的上游做法（首发按排序挑号、凭据新鲜度决胜、换号提示注入回复流、幽灵成员具名提示等）。逐条理由见 followup 文档 §3.4 / §3.5。
+
 ## 1.0.0 (2026-10-17)
 
 > **改号说明**：本节内容在提交历史里曾记作 `0.5.2`（chore 提交 `dc52c86`、tag `v0.5.2`），**该版本从未发布** —— npm 上没有它、也没有 GitHub Release，所以发布前改号是免费的。撤回 `v0.5.2` tag、以 `v1.0.0` 重打；历史提交不改写（追加式更正，与 workbuddy 撤回 4.4.7 tag 的家族先例同规）。

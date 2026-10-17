@@ -207,10 +207,15 @@ pnpm exec dsh-connect-qoder doctor --json        # machine-readable output
 
 | Host | Peer range |
 | --- | --- |
-| DSH (`@deepseek-ai/*`) | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0` |
+| DSH (`@deepseek-ai/*`) | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0 \|\| >=0.2.1-rc.1 <0.3.0-0` |
+| `@earendil-works/pi-ai` | `>=0.85.0 <0.88.0 \|\| >=1.0.0 <2.0.0` |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 
-> Enforced by `tests/dsh-line.spec.ts`: the upper bound must carry `-0` (DSH only ships prereleases; `<0.3.0` would block nothing).
+> Enforced by `tests/dsh-line.spec.ts`. DSH only ships prereleases, and node-semver admits a prerelease **only** when some comparator in the range names that exact `major.minor.patch` tuple *and* carries a prerelease tag — so every new line needs its own branch. Writing `>=0.1.7-rc.1 <0.3.0-0` silently excludes the whole `0.2.0-rc.*` line; likewise `>=0.2.0-rc.1` does **not** cover `0.2.1-rc.1` (which Desktop 0.2.1-rc.1 ships). The upper bound must keep `-0` (`<0.3.0` blocks nothing).
+>
+> **Known limitation:** no static range can cover "any `0.2.x` prerelease" — a new patch line's rc (`0.2.2-rc.1`) still needs a hand-added branch. That is spec behaviour, not a workaround-able bug. This repo makes it a **visible TODO**: `UNGATED_PRERELEASES` in `tests/dsh-line.spec.ts` asserts those versions must be rejected, so widening the range forces an edit to that table and an explanation.
+>
+> **pi-ai gets its own row** because it changed major: Desktop 0.2.1-rc.1 moved pi-ai from 0.85 to 1.x, and the two generations consume different context shapes (1.x normalizes in its Models layer). The declaration and the runtime detection must agree — otherwise you get the silent tool-loss bug fixed in 1.1.0. See [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md).
 
 ## Security notes
 
