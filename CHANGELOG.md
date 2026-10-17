@@ -2,6 +2,68 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.1.2 (2026-10-18)
+
+**只改文档与测试，不改运行时代码。** 宿主从 `0.2.1-rc.1` 升到 `0.2.1-rc.2`，
+1.1.1 的声明范围本来就覆盖它 —— 但复核过程中发现 1.1.0/1.1.1 写进文档、README 和测试的
+一条结论**是错的**，并已更正。
+
+### Fixed
+
+- **「没有任何静态范围能覆盖任意 `0.2.x` 预发布」这条结论只对一半成立。**
+  1.1.0 把它写成 semver 的普遍规律。实测：**两套语义并存**。
+  - **npm / pnpm 安装**走 node-semver **标准**语义 —— 结论成立，新补丁号的 rc
+    （`0.2.2-rc.1`）确实需要手工追加分支。`UNGATED_PRERELEASES` 是这份待办表。
+  - **宿主的插件兼容门禁不是标准语义** —— `dsh-app-boot` 的 `unmetRequirements()`
+    调 `satisfies()`，其实现是 `semver.satisfies(v, range, { includePrerelease: true })`。
+    在这个语义下 `>=0.2.1-rc.1 <0.3.0-0` **一支就覆盖整条 `0.2.x` 线**。
+  - 更正落在 `README.md`、`README.en.md`、`docs/DSH-0.2.1-RC1-FOLLOWUP.md` §2.2 的
+    `tests/dsh-line.spec.ts` 文档块，均改为「两套语义并存」并附实测表。
+
+### Added
+
+- **`tests/dsh-line.spec.ts` 新增 `host gate` 三条用例**，把宿主门禁语义钉住：
+  - `host gate: the package.json range covers every 0.2.x rc (includePrerelease)` ——
+    `0.2.1-rc.1` / `0.2.1-rc.2` / `0.2.1` / `0.2.2-rc.1` / `0.2.9-rc.99` 必须放行；
+  - `host gate: the ceiling still bites on 0.3.x and above` —— `includePrerelease` 放宽
+    的是预发布标签，不是主次版本，`0.3.0-rc.1` / `1.0.0-rc.1` 必须拦住；
+  - `the two semver readings really differ — documented, not assumed` —— 把
+    「npm 拒 / 宿主放行」的差异写成断言，哪天宿主改用标准语义这条会红。
+- **`docs/DSH-0.2.1-RC1-FOLLOWUP.md` 新增 §2.2b「宿主 0.2.1-rc.2 实测」**，含
+  rc.1 → rc.2 的逐项对照表。
+
+### 宿主 0.2.1-rc.2 实测（无需改代码）
+
+| 检查项 | rc.1（1.1.0 时） | rc.2（本次） |
+|---|---|---|
+| 全部 `@deepseek-ai/dsh-*` | `0.2.1-rc.1` | `0.2.1-rc.2` |
+| `dsh-llm-pi-ai` 声明的 pi-ai 依赖 | `^1.1.0` | `^1.1.0`（未变） |
+| **实际解析到的 pi-ai** | **`1.3.0`** | **`1.1.0`**（同一范围，宿主锁文件变了） |
+| `generationOf` 判定 | `modern` ✅ | `modern` ✅ |
+| 请求体实测 | `roles=["system","user"]`、`tools=1` | 同左 ✅ |
+| `evaluatePluginCompatibility(…, '0.2.1-rc.2')` | — | `undefined`（= 兼容）✅ |
+
+pi-ai 从 1.3.0 回落到 1.1.0 是同一 `^1.1.0` 范围重新解析的结果。两端 `generationOf`
+都判 `modern`，且都实测到 `system="SYS"`、`tools=1` —— 归一化仍在 pi-ai 的 Models 层
+（`dist/models.js:444,455` 调 `normalizeContext`），api 模块仍只读 `context.messages`
+（`context.systemPrompt` / `context.tools` 出现 0 次）。**没有改动任何运行时代码。**
+
+### 测试
+
+- `655` → `658` 通过 / `7` 跳过（新增 3 条 host gate 用例；`tests/dsh-line.spec.ts` 17 → 20）。
+
+### 如实记录
+
+- **1.1.1 发布后 3 小时内本仓库 `package.json` 被宿主更新写穿软链覆盖**（变成宿主自己的
+  `@deepseek-ai/dsh-desktop@0.2.1-rc.2` 清单，`peerDependencies` 为空），导致 19 个用例失败。
+  已 `git checkout` 完整恢复，其余文件未受影响。这不是 1.1.2 的代码改动，但记在这里，
+  因为它说明 profile 用软链指向仓库有被宿主写入的风险。
+- **`0.2.1-alpha.*` 在宿主门禁下会被放行而 npm 会拒**（alpha 排序早于 `rc.1`）。判为无害：
+  插件支持 0.2.1 线正是从 `rc.1` 开始，且桌面端从未发布过 `0.2.1-alpha`。已写进
+  `tests/dsh-line.spec.ts` 的文档块。
+- 本次**未**在运行中的宿主 UI 里人工确认界面表现；runtime 由 `check`、单元测试与
+  rc.2 真实栈的请求体回放三方覆盖。
+
 ## 1.1.1 (2026-10-17)
 
 **只改文档，不改代码。** 1.1.0 的 `npm publish` 打印了 `+ @dmh2002/dsh-connect-qoder@1.1.0`

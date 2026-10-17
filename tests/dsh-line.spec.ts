@@ -58,15 +58,25 @@ const DECLARED_RANGE = `${LOWER_BOUND} <0.2.0-0 || ${BRANCH_0_2} ${UPPER_BOUND} 
  *
  * 这些是**已发布**的版本，不是对未来版本号的猜测。
  *
- * ⚠️ **已知局限，写在这里以免后人重走**：semver 只对「比较符里出现过预发布标签的
- * `major.minor.patch` 元组」放行预发布版本。因此**没有任何静态范围能覆盖「任意
- * 0.2.x 预发布」**——`0.2.2-rc.1` 之类新补丁号的 rc 仍需**手工追加**一条
- * `|| >=0.2.N-rc.1 <0.3.0-0`。这是规范行为，不是可绕过的 bug。缓解措施：
- *  1. 宿主只校验 `@deepseek-ai/dsh*` 命名空间，且 profile 走 `link:` +
- *     `autoInstallPeers:false`，所以 rc 阶段本地开发不受影响；
- *  2. GA（如 `0.2.1`）对既有两支**是判 true 的**，不必为 rc 扭曲声明；
- *  3. `keeps the ungated prereleases out` 那条用例把「尚未开闸的 rc」显式钉住，
- *     让每次新 rc 都需要一个**有意识的**决定，而不是悄悄漏过。
+ * ���️ **两套语义并存 —— 这是本文件最重要的背景**（1.1.2 实测更正）：
+ *
+ * 1. **npm / pnpm 安装**走 node-semver **标准**语义：预发布版本只有在其
+ *    `major.minor.patch` 元组上存在「带预发布标签的比较符」时才会放行。
+ *    按这套，`0.2.2-rc.1` 会被拒，**确实需要**为每个新补丁号手工追加分支。
+ *    这就是 `UNGATED_PRERELEASES` 那份待办表的用途。
+ *
+ * 2. **宿主的插件兼容门禁**（`dsh-app-boot` 的 `evaluatePluginCompatibility`
+ *    → `unmetRequirements` → `satisfies`）用的是
+ *    `semver.satisfies(v, range, { includePrerelease: true })`。在这套语义下
+ *    `>=0.2.1-rc.1 <0.3.0-0` **一支就覆盖整条 0.2.x 线**，`0.2.2-rc.1`、
+ *    `0.2.9-rc.99` 全部放行；`0.3.0-rc.1` 仍被 `<0.3.0-0` 拦住。
+ *
+ * 1.1.0/1.1.1 曾以��「没有任何静态范围能覆盖任意 0.2.x 预发布」是错误结论：
+ * 它对 npm 成立，对宿主门禁**不成立**。两套语义都钉在本文件里（见
+ * `host gate` 那组用例），这样任何一边行为变化都会红，而不是靠记忆。
+ *
+ * 副作用（无害但要知道）：宿主门禁放行 `0.2.1-alpha.*`，而 npm 拒。alpha 早于
+ * rc.1，插件支持 0.2.1 线就是从 rc.1 开始的，且桌面端从未发布过 0.2.1-alpha。
  */
 const ADMITTED_PRERELEASES = [
   '0.1.7-rc.1',
@@ -87,10 +97,14 @@ const EXCLUDED_PRERELEASES = [
 ]
 
 /**
- * 已发布、但**尚未开闸**的补丁号 rc。
+ * 已发布、但**npm 标准语义下尚未开闸**的补丁号 rc。
  *
- * 每一条都是「等它真的被用户装上时，再加一条分支」的待办，而不是被遗忘的漏洞。
- * 用**反向**断言（必须判 false）记录，于是哪天有人把范围放宽到能覆盖它们，
+ * ⚠️ 这份表只对 **npm install** 有意义。宿主的兼容门禁带
+ * `{ includePrerelease: true }`，把 `0.2.x` 整条线都放行——所以这些版本**装得上**，
+ * 只是 `pnpm add` / `npm install` 时会被 peer 解析拒绝。
+ *
+ * 每一条都是「等它真的需要被 npm 装上时，再加一条分支」的待办，而不是被遗忘的
+ * 漏洞。用**反向**断言（必须判 false）记录，于是哪天有人把范围放宽到能覆盖它们，
  * 这条会红，逼着更新这张表并说明理由。
  */
 const UNGATED_PRERELEASES = ['0.2.2-rc.1', '0.2.3-rc.1', '0.2.9-rc.1']
@@ -222,6 +236,39 @@ describe('declared DSH host line', () => {
     // rc 阶段不必为 rc 扭曲声明：GA 本来就该过。
     expect(satisfiesRange('0.2.1', declaredRange())).toBe(true)
     expect(satisfiesRange('0.2.9', declaredRange())).toBe(true)
+  })
+
+  it('host gate: the package.json range covers every 0.2.x rc (includePrerelease)', () => {
+    // 1.1.2 更正：宿主门禁不是标准语义。`dsh-app-boot` 的 `unmetRequirements`
+    // 调 `semver.satisfies(v, range, { includePrerelease: true })`，在这个语义下
+    // `>=0.2.1-rc.1 <0.3.0-0` 一支就覆盖整条 0.2.x 线。这正是 0.2.1-rc.2 宿主
+    // 能直接加载 1.1.1 的原因——**不是运气**，是范围本该如此。
+    const hostAdmits = (v: string): boolean =>
+      semver.satisfies(v, declaredRange(), { includePrerelease: true })
+
+    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1', '0.2.2-rc.1', '0.2.9-rc.99']) {
+      expect(hostAdmits(version), `host gate must admit ${version}`).toBe(true)
+    }
+  })
+
+  it('host gate: the ceiling still bites on 0.3.x and above', () => {
+    const hostAdmits = (v: string): boolean =>
+      semver.satisfies(v, declaredRange(), { includePrerelease: true })
+    // includePrerelease 放宽的是「预发布标签」，不是「主次版本」。
+    expect(hostAdmits('0.3.0-rc.1')).toBe(false)
+    expect(hostAdmits('1.0.0-rc.1')).toBe(false)
+  })
+
+  it('the two semver readings really differ — documented, not assumed', () => {
+    // 把「npm 拒 / 宿主放行」这个差异钉成断言。若哪天宿主改用标准语义，
+    // 这条会红，提醒我们重新评估 UNGATED_PRERELEASES 是否该升级成硬要求。
+    const standard = (v: string): boolean => semver.satisfies(v, declaredRange())
+    const host = (v: string): boolean =>
+      semver.satisfies(v, declaredRange(), { includePrerelease: true })
+    for (const version of UNGATED_PRERELEASES) {
+      expect(standard(version), `${version}: npm must reject`).toBe(false)
+      expect(host(version), `${version}: host gate must admit`).toBe(true)
+    }
   })
 
   it('keeps the UNGATED prereleases out — each new rc needs a deliberate branch', () => {

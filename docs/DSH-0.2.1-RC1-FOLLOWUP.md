@@ -2,7 +2,7 @@
 
 > 调研日期：2026-10-17
 > 宿主：DSH Desktop `0.2.1-rc.1`（`runtime/primary-runtime/runtime.json` → `desktopVersion`）
-> 插件：`@dmh2002/dsh-connect-qoder` 1.0.0 → 1.1.1
+> 插件：`@dmh2002/dsh-connect-qoder` 1.0.0 → 1.1.2（1.1.2 补 rc.2 实测与两套 semver 语义的更正，见 §2.2/§2.2b）
 > 参考：同级仓库 `dsh-connect-workbuddy` 的 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](../../dsh-connect-workbuddy/docs/DSH-0.2.1-RC1-FOLLOWUP.md)
 > 基线：本机 0.1.7-rc.1 依赖树上 **599 用例通过 / 7 跳过**（`npx vitest run`，32 文件）。
 
@@ -164,7 +164,33 @@ expect(info.generation).toBe(minor >= 87 ? 'modern' : 'legacy')
 
 实测：`0.2.1-rc.1` ✅ ADMIT，`0.3.0-0` / `0.3.0-rc.1` ❌ 仍被挡。
 
-> ⚠️ **已知局限（与参考文档 §2.2 同一结论）**：**没有任何静态范围能覆盖「任意 0.2.x 预发布」**。`0.2.2-rc.1` 之类新补丁号的 rc 仍需手工追加一条分支。这一点**不是**可以绕过的 semver bug，所以本仓库把它做成了**可见的待办**而不是隐藏的漏洞：`tests/dsh-line.spec.ts` 的 `UNGATED_PRERELEASES` 用**反向断言**（必须判 false）记录 `0.2.2-rc.1` / `0.2.3-rc.1` / `0.2.9-rc.1`，谁放宽范围谁就得来改这张表并说明理由。
+> ⚠️ **两套语义并存**（1.1.2 实测更正，原文「没有任何静态范围能覆盖任意 0.2.x 预发布」**只对一半成立**）：
+>
+> | 读取方 | 实现 | `0.2.2-rc.1` | `0.2.9-rc.99` | `0.3.0-rc.1` |
+> |---|---|---|---|---|
+> | npm / pnpm 安装 | `semver.satisfies(v, range)` 标准语义 | ❌ 拒 | ❌ 拒 | ❌ 拒 |
+> | 宿主插件兼容门禁 | `semver.satisfies(v, range, { includePrerelease: true })` | ✅ 放行 | ✅ 放行 | ❌ 拒 |
+>
+> 宿主那一行的证据：`dsh-app-boot/lib/index.js` 的 `unmetRequirements()` 调 `satisfies()`，而 `satisfies()` 的实现是 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })`。实测 `evaluatePluginCompatibility(manifest, {}, '0.2.2-rc.1')` 返回 `undefined`（= 兼容）。
+>
+> 所以：**新补丁号的 rc 对 npm 安装仍需手工加分支**（`UNGATED_PRERELEASES` 是这份待办），但**宿主门禁不会因为少了那条分支而拦住用户**。两套语义都钉在 `tests/dsh-line.spec.ts` 的 `host gate` 组里，任何一边行为变化都会红。
+
+### 2.2b 宿主 0.2.1-rc.2 实测（1.1.2 补充）
+
+宿主从 `0.2.1-rc.1` 升到 `0.2.1-rc.2` 之后重新核对，结论：**1.1.1 的声明范围无需改动**。
+
+| 检查项 | rc.1（1.1.0 时） | rc.2（1.1.2 时） |
+|---|---|---|
+| 全部 `@deepseek-ai/dsh-*` | `0.2.1-rc.1` | `0.2.1-rc.2` |
+| `dsh-llm-pi-ai` 声明的 pi-ai 依赖 | `^1.1.0` | `^1.1.0`（未变） |
+| **实际解析到的 pi-ai** | **`1.3.0`** | **`1.1.0`**（`^1.1.0` 重新解析的结果回退） |
+| `generationOf` 判定 | `modern` ✅ | `modern` ✅ |
+| 请求体实测 | `roles=["system","user"]`、`tools=1` | 同左 ✅ |
+| `evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.2')` | — | `undefined`（= 兼容）✅ |
+
+**pi-ai 回落到 1.1.0 是刻意要记一笔的**：同一个 `^1.1.0` 范围先解析出 1.3.0、后解析出 1.1.0，说明宿主锁文件变了而不是依赖声明变了。我们的 pi-ai 范围 `>=0.85.0 <0.88.0 || >=1.0.0 <2.0.0` 两端都接得住，`generationOf` 对 1.1.0 与 1.3.0 都判 `modern`——这两个版本在归一化行为上一致（`createModels().stream/streamSimple` 都先调 `normalizeContext`）。实测两端都得到 `roles=["system","user"]`、`system="SYS"`、`tools=1`。
+
+**api 模块结构契约未变**：`pi-ai@1.1.0` 的 `dist/models.js:444,455` 仍在 `stream`/`streamSimple` 里调 `normalizeContext`；`dist/api/openai-completions.js` 里 `context.systemPrompt` / `context.tools` 出现 **0** 次。这正是 `generationOf` 判定 `modern` 的依据，与 1.3.0 相同。
 
 ### 2.3 pi-ai 范围
 
