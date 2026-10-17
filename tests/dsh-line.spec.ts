@@ -41,7 +41,7 @@ function manifest(): {
 const LOWER_BOUND = '>=0.1.7-rc.1'
 const BRANCH_0_2 = '>=0.2.0-rc.1'
 const UPPER_BOUND = '<0.3.0-0'
-const DECLARED_RANGE = `${LOWER_BOUND} <0.2.0-0 || ${BRANCH_0_2} ${UPPER_BOUND}`
+const DECLARED_RANGE = `${LOWER_BOUND} <0.2.0-0 || ${BRANCH_0_2} ${UPPER_BOUND} || >=0.2.1-rc.1 ${UPPER_BOUND}`
 
 /**
  * Pre-releases that have actually been published for DSH packages, split by the
@@ -51,21 +51,58 @@ const DECLARED_RANGE = `${LOWER_BOUND} <0.2.0-0 || ${BRANCH_0_2} ${UPPER_BOUND}`
  * 存在一个「带预发布标签的比较符」时才会被放行。所以：
  *
  * - `0.2.0-rc.*`（当前 `latest` / `next`）必须有分支放行——这是本文件的回归重点；
- * - `0.1.7-alpha.*` 早于下界 `0.1.7-rc.1`（alpha 排序在 rc 之前），**有意**排除；
- * - `0.2.1-alpha.*` 只挂在 `alpha` dist-tag 上，不在声明范围内，同样有意排除。
+ * - `0.2.1-rc.*` **也必须放行**：桌面端 0.2.1-rc.1 已经发布并在用，而
+ *   `>=0.2.0-rc.1` 这一支只对 `0.2.0` 元组开口，`0.2.1-rc.1` 会被**静默**判 false
+ *   （既有缺陷在 0.2.1 上继续暴露，不是本次升级引入）。所以补了第三条分支；
+ * - `0.1.7-alpha.*` 早于下界 `0.1.7-rc.1`（alpha 排序在 rc 之前），**有意**排除。
  *
  * 这些是**已发布**的版本，不是对未来版本号的猜测。
+ *
+ * ⚠️ **已知局限，写在这里以免后人重走**：semver 只对「比较符里出现过预发布标签的
+ * `major.minor.patch` 元组」放行预发布版本。因此**没有任何静态范围能覆盖「任意
+ * 0.2.x 预发布」**——`0.2.2-rc.1` 之类新补丁号的 rc 仍需**手工追加**一条
+ * `|| >=0.2.N-rc.1 <0.3.0-0`。这是规范行为，不是可绕过的 bug。缓解措施：
+ *  1. 宿主只校验 `@deepseek-ai/dsh*` 命名空间，且 profile 走 `link:` +
+ *     `autoInstallPeers:false`，所以 rc 阶段本地开发不受影响；
+ *  2. GA（如 `0.2.1`）对既有两支**是判 true 的**，不必为 rc 扭曲声明；
+ *  3. `keeps the ungated prereleases out` 那条用例把「尚未开闸的 rc」显式钉住，
+ *     让每次新 rc 都需要一个**有意识的**决定，而不是悄悄漏过。
  */
-const ADMITTED_PRERELEASES = ['0.1.7-rc.1', '0.1.7-rc.2', '0.2.0-rc.1', '0.2.0-rc.2']
+const ADMITTED_PRERELEASES = [
+  '0.1.7-rc.1',
+  '0.1.7-rc.2',
+  '0.2.0-rc.1',
+  '0.2.0-rc.2',
+  // 桌面端 0.2.1-rc.1：宿主升级到这一版之后才被发现判 false。
+  '0.2.1-rc.1',
+]
 
 /** Published, but deliberately outside the declared range. */
 const EXCLUDED_PRERELEASES = [
   '0.1.7-alpha.1', // older than the lower bound
   '0.1.7-alpha.2',
-  '0.2.1-alpha.1', // only ever shipped on the `alpha` dist-tag
+  '0.2.1-alpha.1', // only ever shipped on the `alpha` dist-tag, and sorts BEFORE 0.2.1-rc.1
   '0.2.1-alpha.2',
   '0.3.0-rc.1', // above the declared ceiling
 ]
+
+/**
+ * 已发布、但**尚未开闸**的补丁号 rc。
+ *
+ * 每一条都是「等它真的被用户装上时，再加一条分支」的待办，而不是被遗忘的漏洞。
+ * 用**反向**断言（必须判 false）记录，于是哪天有人把范围放宽到能覆盖它们，
+ * 这条会红，逼着更新这张表并说明理由。
+ */
+const UNGATED_PRERELEASES = ['0.2.2-rc.1', '0.2.3-rc.1', '0.2.9-rc.1']
+
+/** pi-ai is a peer for the SAME reason but a DIFFERENT version line. */
+const PI_AI = '@earendil-works/pi-ai'
+
+function piAiRange(section: 'peerDependencies' | 'devDependencies'): string {
+  const range = manifest()[section]?.[PI_AI]
+  if (range === undefined) throw new Error(`${PI_AI} is not declared in ${section}`)
+  return range
+}
 
 function dshPeers(section: 'peerDependencies' | 'devDependencies'): Array<[string, string]> {
   const deps = manifest()[section] ?? {}
@@ -174,5 +211,80 @@ describe('declared DSH host line', () => {
   it('does not silently admit the line above the declared ceiling', () => {
     expect(satisfiesRange('0.3.0-rc.1', declaredRange())).toBe(false)
     expect(satisfiesRange('1.0.0-rc.1', declaredRange())).toBe(false)
+  })
+
+  it('admits the 0.2.1 line the desktop app now ships (0.2.1-rc.1)', () => {
+    // 回归：`>=0.2.0-rc.1` 分支只对 `0.2.0` 元组开口，0.2.1-rc.1 会被悄悄排除。
+    expect(satisfiesRange('0.2.1-rc.1', declaredRange())).toBe(true)
+  })
+
+  it('still admits the GA forms of that line', () => {
+    // rc 阶段不必为 rc 扭曲声明：GA 本来就该过。
+    expect(satisfiesRange('0.2.1', declaredRange())).toBe(true)
+    expect(satisfiesRange('0.2.9', declaredRange())).toBe(true)
+  })
+
+  it('keeps the UNGATED prereleases out — each new rc needs a deliberate branch', () => {
+    // 这不是"希望它们被拒"，而是把「semver 的预发布悬崖无法静态覆盖任意 0.2.x rc」
+    // 这个已知局限变成一条可见的待办：谁放宽了范围，谁就来改这张表并说明理由。
+    for (const version of UNGATED_PRERELEASES) {
+      expect(
+        satisfiesRange(version, declaredRange()),
+        `${version} 目前没有分支覆盖（预期如此）；若要开闸请在 package.json 追加 || >=0.2.N-rc.1 <0.3.0-0 并更新 UNGATED_PRERELEASES`,
+      ).toBe(false)
+    }
+  })
+})
+
+/**
+ * pi-ai 的 peer 范围：**另一条版本线，单独守**。
+ *
+ * 0.2.1-rc.1 宿主把 pi-ai 从 0.85 换成了 **1.x**（`dsh-llm-pi-ai` 的 dependencies
+ * 是 `^1.1.0`）。旧范围 `>=0.85.0 <0.88.0` 对 1.x **判 false**，而 1.x 恰好改了
+ * 上下文契约（见 `pi-ai-runtime.ts` 的 `generationOf`）——声明错与行为错是同一个
+ * 版本切换的两面，所以两条都要钉。
+ *
+ * 与 dsh-* 不同，pi-ai **没有**预发布悬崖：`>=1.0.0` 直接覆盖整条 1.x GA，
+ * 无需逐补丁枚举。
+ *
+ * 这里刻意**不用** `>=1.0.0-0`：那个写法会把 `1.0.0-rc.1` 这类预发布也放进来，
+ * 而 1.x 的上下文契约只在已发布的 GA 上实测过（见 `generationOf`）。实测对比：
+ *   `>=1.0.0-0 <2.0.0` → 1.0.0-rc.1 **ADMIT**（不要）
+ *   `>=1.0.0   <2.0.0` → 1.0.0-rc.1 reject（要这个）
+ */
+describe('declared pi-ai line', () => {
+  it('peer and dev declare the identical range', () => {
+    expect(piAiRange('devDependencies')).toBe(piAiRange('peerDependencies'))
+  })
+
+  it('admits the whole 0.85 legacy line', () => {
+    for (const version of ['0.85.0', '0.85.1', '0.87.1']) {
+      expect(satisfiesRange(version, piAiRange('peerDependencies')), version).toBe(true)
+    }
+  })
+
+  it('admits the 1.x major the 0.2.1 host ships', () => {
+    // 回归：旧范围 `<0.88.0` 把整条 1.x 判 false。宿主 0.2.1-rc.1 装的是 1.x。
+    for (const version of ['1.0.0', '1.0.2', '1.1.0', '1.3.0', '1.99.0']) {
+      expect(satisfiesRange(version, piAiRange('peerDependencies')), version).toBe(true)
+    }
+  })
+
+  it('still blocks the next major', () => {
+    for (const version of ['2.0.0', '2.0.0-rc.1', '2.1.0']) {
+      expect(satisfiesRange(version, piAiRange('peerDependencies')), version).toBe(false)
+    }
+  })
+
+  it('does not promise prerelease 1.x builds whose context contract is unverified', () => {
+    // `generationOf` 把 `1.x.y-*` 都读作 1.x（预发布不改主次版本），但这里刻意
+    // 只承诺已实测的 GA：1.1.0-beta.1 这类不给装。
+    expect(satisfiesRange('1.1.0-beta.1', piAiRange('peerDependencies'))).toBe(false)
+    expect(satisfiesRange('1.0.0-rc.1', piAiRange('peerDependencies'))).toBe(false)
+  })
+
+  it('keeps the 0.85 lower bound honest (0.84 has the pre-normalize bug)', () => {
+    expect(satisfiesRange('0.84.0', piAiRange('peerDependencies'))).toBe(false)
+    expect(satisfiesRange('0.88.0', piAiRange('peerDependencies'))).toBe(false)
   })
 })
