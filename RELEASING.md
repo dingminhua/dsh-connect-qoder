@@ -10,7 +10,7 @@
 
 ## 前置条件
 
-- npm 已登录：`npm whoami` 应显示 `dmh2002`（若报 `need auth`，先 `npm login`）。
+- npm 已登录：`npm whoami` 应显示 `dmh2002`（若报 `need auth`，先 `npm login`）。**发布前务必重新敲一次**：token 会在后台被作废，1.3.0 发布前它就已是 401，而 1.2.1 七小时前还用同一枚发成功（见 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §9.1）。
 - 账号若开启 2FA（两步验证）：`npm publish` 时需**在浏览器确认一步**（见第 7 步）。**这一步请在
   自己的交互式终端里做**，理由见 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §1。
 - GitHub 仓库：`https://github.com/dingminhua/dsh-connect-qoder`（默认分支 `main`）。
