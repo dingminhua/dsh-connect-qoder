@@ -155,7 +155,7 @@ One machine often holds several Qoder accounts (several PATs). The **account poo
 
 | | Pool **on** | Pool **off** |
 | --- | --- | --- |
-| Who serves | chosen **automatically** by ranking (usable → expiring package → soonest expiry → most credits → id) | the account **you** pin in the account rows |
+| Who serves | chosen **automatically** by ranking (usable → expiring package → soonest expiry → most credits → id) | the account **you** pick under "Which account to use" in the settings area |
 | Request fails | retries the next usable account **automatically** | no switch; the error is reported as-is |
 | Check in all / Test all | available | **still available** |
 | Target test model | editable | **still editable** |
