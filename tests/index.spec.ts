@@ -700,6 +700,16 @@ async function readCardModels(
 // 而真相（`code 110` = 当日用量用尽）就在被丢掉的那串字符里。
 // ==========================================================================
 describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => {
+
+  it('带上模型作用域：说得清就写，说不清就不写', () => {
+    // Qoder 按模型限流，所以「在哪个模型上被限」是这条结论的一半。
+    expect(Qoder.liveRequestProbe('rate-limited', '429', 'gpt-b')?.modelId).toBe('gpt-b')
+    // 说不清时不写，而不是写个猜的：缺省 = 适用于任何模型（修复前的粗糙行为，
+    // 不是「所有模型都同意」）。
+    expect(Qoder.liveRequestProbe('rate-limited', '429')?.modelId).toBeUndefined()
+    expect(Qoder.liveRequestProbe('rate-limited', '429', '')?.modelId).toBeUndefined()
+  })
+
   // 现场抓到的原文，逐字照抄（scripts/probe-cosy.mjs global --chat，2026-10-13）。
   const CAPTURED = '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}'
 

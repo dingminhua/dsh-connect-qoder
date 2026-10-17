@@ -73,6 +73,22 @@ export interface QoderPoolProbe {
    * ABSENT for a success.
    */
   message?: string
+  /**
+   * WHICH MODEL this measurement is about.
+   *
+   * Without it a probe is an unscoped verdict: the pool would take "model A
+   * worked, model B was rate-limited" and conclude the ACCOUNT is fine or
+   * broken regardless of what is being asked for. Qoder rate-limits per model,
+   * so the same PAT can be `ok` on one and `rate-limited` on another at the
+   * same instant.
+   *
+   * ABSENT means the writer did not record a model (records written before the
+   * field existed, and the live-request path, which knows the failure kind but
+   * not reliably which model was being asked for). Readers must treat absent
+   * as "applies to anything" — that is the old, coarser behaviour, not a
+   * claim that every model agrees.
+   */
+  modelId?: string
 }
 
 /** One account's live credit situation, as the pool ranks it. */
@@ -138,8 +154,21 @@ export const POOL_UNKNOWN_COOLDOWN_MS = 30 * 60_000
 export function exclusionOf(
   probe: QoderPoolProbe | undefined,
   nowMs: number,
+  /**
+   * The model being asked about, when the caller knows it.
+   *
+   * A probe recorded against a DIFFERENT model does not apply: it is evidence
+   * about that model, not this one. A probe with no recorded model applies to
+   * anything (the pre-`modelId` behaviour). Omit to keep the unscoped reading.
+   */
+  modelId?: string,
 ): QoderPoolExclusion | undefined {
   if (probe === undefined) return undefined
+  if (
+    modelId !== undefined &&
+    probe.modelId !== undefined &&
+    probe.modelId !== modelId
+  ) return undefined
   switch (probe.outcome) {
     case 'ok':
       return undefined
@@ -210,9 +239,19 @@ function retryDue(probe: QoderPoolProbe, nowMs: number): boolean {
 export function rankPool(
   members: readonly QoderPoolMember[],
   nowMs: number,
+  /**
+   * The model being chosen FOR, when the caller knows it.
+   *
+   * A probe recorded against a different model is not evidence about this one
+   * (Qoder rate-limits per model, so one PAT can be `ok` on A and
+   * `rate-limited` on B simultaneously). Omit it to keep the pre-`modelId`
+   * unscoped behaviour, which the failover path does when the request's model
+   * is not reliably known.
+   */
+  modelId?: string,
 ): QoderPoolRanked[] {
   const rows = members.map(member => {
-    const excludedBy = exclusionOf(member.probe, nowMs)
+    const excludedBy = exclusionOf(member.probe, nowMs, modelId)
     return {
       account: member.account,
       score: scoreOf(member),
@@ -271,8 +310,9 @@ export function effectiveMembersOf(
 export function pickAccount(
   members: readonly QoderPoolMember[],
   nowMs: number,
+  modelId?: string,
 ): QoderPoolAccount | undefined {
-  return rankPool(members, nowMs).find(row => row.excludedBy === undefined)?.account
+  return rankPool(members, nowMs, modelId).find(row => row.excludedBy === undefined)?.account
 }
 
 /** The credit figure used for ordering. Absent credits rank as zero. */

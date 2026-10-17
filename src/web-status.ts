@@ -914,7 +914,10 @@ async function buildPoolView(
   for (const account of accounts) {
     const member = memberSet.has(account.id)
     const probe = probes[account.id]
-    const excludedBy = exclusionOf(probe, now)
+    // 按**目标模型**作用域判：卡片测的就是 `targetModelId`，所以拿它对。
+    // 一条关于别的模型的结论不适用——A 可用、B 429 时，两个模型下都写
+    // 「可用」就是错的（此前正是如此，因为 probe 不带模型）。
+    const excludedBy = exclusionOf(probe, now, target.modelId)
     const isCurrent = servingAccountId !== undefined && account.id === servingAccountId
     if (member) {
       const cred = await pool.credentialFor(region, account.id)
@@ -939,6 +942,9 @@ async function buildPoolView(
           ...(probe.source === undefined ? {} : { source: probe.source }),
           ...(probe.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs }),
           ...(probe.message === undefined ? {} : { message: probe.message }),
+          // 透传作用域，卡片才能在「这条结论不是当前模型」时说出来。
+          // 写侧加字段而读侧不透传，卡片就永远看不到它——那就是没改。
+          ...(probe.modelId === undefined ? {} : { modelId: probe.modelId }),
         },
       }),
       ...(excludedBy === undefined ? {} : { excludedBy }),

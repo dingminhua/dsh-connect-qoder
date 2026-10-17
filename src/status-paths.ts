@@ -722,6 +722,15 @@ export interface QoderWebPoolAccount {
     retryAtMs?: number
     /** Why it failed, in the upstream's own redacted words. */
     message?: string
+    /**
+     * WHICH MODEL this measurement is about.
+     *
+     * The card must show it when it is not the currently-selected target
+     * model: a verdict about model A says nothing about model B (Qoder
+     * rate-limits per model). ABSENT means the writer recorded no model —
+     * treat as applying to anything, which is the coarse pre-field behaviour.
+     */
+    modelId?: string
   }
   /**
    * 今天是否已签到。`undefined` = 还没读过（UI 说「未知」，而不是断言「未签到」

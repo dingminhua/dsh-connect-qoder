@@ -632,6 +632,22 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                       </span>
                       <span className="dsm-qoder-pool-prov-sep">·</span>
                       <span className="dsm-qoder-pool-prov-age">{probeAgeText(t, account.probe.atMs, nowMs)}</span>
+                      {/* 作用域：这条结论测的是**别的**模型时，必须说出来。
+                          否则「可用」会被读成「对现在这个模型可用」——而 Qoder
+                          按模型限流，同一个号完全可能 A 可用、B 被限。只说这一
+                          点，不重复主行已经给出的结果。 */}
+                      {account.probe.modelId === undefined || account.probe.modelId === ''
+                        || account.probe.modelId === saved.targetModelId
+                        ? null
+                        : <>
+                            <span className="dsm-qoder-pool-prov-sep">·</span>
+                            <span
+                              className="dsm-qoder-pool-probe-scope"
+                              title={t('row.poolProbeOtherModelHint')}
+                            >
+                              {t('row.poolProbeOtherModel', { model: account.probe.modelId })}
+                            </span>
+                          </>}
                     </span>
                   )}
                 </span>

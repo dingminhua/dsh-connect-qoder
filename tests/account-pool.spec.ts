@@ -29,6 +29,7 @@ import {
 import type {
   QoderPoolMember,
   QoderPoolModel,
+  QoderPoolProbe,
 } from '../src/account-pool.ts'
 
 const NOW = 1_800_000_000_000
@@ -506,5 +507,67 @@ describe('effectiveMembersOf', () => {
     effectiveMembersOf(saved, listed)
     expect(saved).toEqual(['a', 'x'])
     expect([...listed]).toEqual(['a'])
+  })
+})
+
+// ==========================================================================
+// probe 的作用域：一条结论只对一个模型作数
+//
+// Qoder 按模型限流，所以同一个 PAT 完全可能 A 可用、B 被限。此前 probe 不带
+// 模型，落盘成一句无作用域的「可用/被限」，表格在两个模型下都照说，于是
+// 「表格说的可不可信」无从回答。
+// ==========================================================================
+
+describe('probe modelId scope', () => {
+  const AT = 1_000_000
+  const okOn = (modelId?: string): QoderPoolProbe => ({
+    outcome: 'ok', atMs: AT, source: 'test-batch',
+    ...(modelId === undefined ? {} : { modelId }),
+  })
+  const limitedOn = (modelId?: string): QoderPoolProbe => ({
+    outcome: 'rate-limited', atMs: AT, source: 'test-batch',
+    ...(modelId === undefined ? {} : { modelId }),
+  })
+
+  it('a probe about another model does not exclude the account for this one', () => {
+    // 在 A 上被限，现在问 B —— 对 B 没有证据，不能因此出池。
+    expect(exclusionOf(limitedOn('gpt-a'), AT + 1000, 'gpt-b')).toBeUndefined()
+  })
+
+  it('a probe about this model DOES exclude it', () => {
+    expect(exclusionOf(limitedOn('gpt-b'), AT + 1000, 'gpt-b')).toBe('rate-limited')
+  })
+
+  it('an unscoped probe still applies to anything (old behaviour)', () => {
+    // 字段出现之前写的记录不能因此变成「对谁都不算」——那是把旧数据读坏。
+    expect(exclusionOf(limitedOn(undefined), AT + 1000, 'gpt-b')).toBe('rate-limited')
+  })
+
+  it('omitting the model keeps the old unscoped reading', () => {
+    expect(exclusionOf(limitedOn('gpt-a'), AT + 1000)).toBe('rate-limited')
+  })
+
+  it('rankPool honours the scope: an account limited on A still serves B', () => {
+    const onlyA = member('limitedOnA', { probe: limitedOn('gpt-a') })
+    // 问 B：它是可用的（那条结论不属于 B）。
+    expect(rankPool([onlyA], AT + 1000, 'gpt-b')[0]?.excludedBy).toBeUndefined()
+    // 问 A：它确实出池。
+    expect(rankPool([onlyA], AT + 1000, 'gpt-a')[0]?.excludedBy).toBe('rate-limited')
+  })
+
+  it('rankPool prefers an account verified for THIS model over one verified elsewhere', () => {
+    const ranked = rankPool([
+      member('okOnA', { credits: 100, probe: okOn('gpt-a') }),
+      member('limOnB_okElsewhere', { credits: 100, probe: limitedOn('gpt-b') }),
+    ], AT + 1000, 'gpt-b')
+    // 对 B 而言，第二个号是「有证据地被限」，第一个号没有 B 的证据（可用）。
+    expect(ranked[0]?.account.id).toBe('okOnA')
+    expect(ranked[1]?.excludedBy).toBe('rate-limited')
+  })
+
+  it('pickAccount forwards the scope', () => {
+    const onlyA = member('limitedOnA', { probe: limitedOn('gpt-a') })
+    expect(pickAccount([onlyA], AT + 1000, 'gpt-b')?.id).toBe('limitedOnA')
+    expect(pickAccount([onlyA], AT + 1000, 'gpt-a')).toBeUndefined()
   })
 })

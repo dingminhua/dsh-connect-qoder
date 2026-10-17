@@ -758,7 +758,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         ...probe === undefined ? {} : { probe },
       })
     }
-    const chosen = rankPool(candidates, now)[0]
+    // 换号按同一个目标模型判：一条「模型 A 能用」的探针，不能替模型 B
+    // 担保。目标模型解析不出来时传 undefined，退回修复前的无作用域行为。
+    const chosen = rankPool(candidates, now, resolveTargetModel(poolModelsOf(region), prefs.targetModelId).modelId)[0]
     if (chosen === undefined || chosen.excludedBy !== undefined) return undefined
     const credit = await store.credentialFor(chosen.account.id, sourcesOf(region))
     return credit === undefined ? undefined : { accountId: credit.id, accountName: credit.accountName, pat: credit.pat }
@@ -1531,6 +1533,11 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       outcome: result.outcome,
       atMs: Date.now(),
       source: 'test-batch',
+      // 探针结果本来就带 modelId（测的就是某个模型），此前在这里被丢掉，
+      // 于是落盘成一条**无作用域**的结论：模型 A 可用、模型 B 429，表格
+      // 在两行都写「可用」。写进来是作用域的一半，另一半在读侧
+      // （exclusionOf 的 modelId 参数）—— 只改一侧等于没改。
+      ...(result.modelId === '' ? {} : { modelId: result.modelId }),
       ...(result.retryAtMs === undefined ? {} : { retryAtMs: result.retryAtMs }),
       ...(result.message === undefined ? {} : { message: result.message }),
     }
@@ -1560,13 +1567,16 @@ const FAIL_OVER_OUTCOME: Record<string, QoderWebProbeOutcome> = {
  * 按本项目的既有教训（「判据与动作打包，于是动作有没有真的发生也能被断言」），
  * 把它做成可测函数而不是留在接线里：接线变异掉，测试照样全绿过一次了。
  */
-export function liveRequestProbe(kind: UpstreamErrorKind, message: string): QoderPoolProbe | undefined {
+export function liveRequestProbe(kind: UpstreamErrorKind, message: string, modelId?: string): QoderPoolProbe | undefined {
   const outcome = FAIL_OVER_OUTCOME[kind]
   if (outcome === undefined) return undefined
   return {
     outcome,
     atMs: Date.now(),
     source: 'live-request',
+    // 真实请求能说出「哪个模型」时就带上；说不准就不写（而不是写个猜的）。
+    // 缺省时这条结论适用于任何模型，是修复前的粗糙行为，不是「所有模型都同意」。
+    ...(modelId === undefined || modelId === '' ? {} : { modelId }),
     // 空串不写：那是「没有原因」，与「原因是空」是两件事（卡片按 undefined 说
     // 「上游未给出」）。非空一律脱敏后带上 —— pt- 形态的凭据绝不能进落盘文件。
     ...(message === '' ? {} : { message: redactUpstreamText(message) }),
