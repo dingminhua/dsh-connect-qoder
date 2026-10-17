@@ -44,6 +44,10 @@ function runner(
       return { modelId, outcome: 'ok', status: 200 } as QoderWebProbeResult
     }),
     wait: overrides.wait ?? (async () => {}),
+    // 其余可注入项（如 `probeTimeoutMs`）原样透传：测试要把探针上限压到毫秒级，
+    // 不能因为这里只抄了三个字段就静默退回 90 秒的默认值。
+    ...Object.fromEntries(Object.entries(overrides).filter(([key]) =>
+      key !== 'credentialFor' && key !== 'probe' && key !== 'wait')),
   }
 }
 
@@ -110,6 +114,28 @@ describe('testAllAccounts', () => {
       row => { seen.push(row.accountId) },
     )
     expect(seen).toEqual(['a', 'b', 'c'])
+  })
+
+  it('hands an endless probe a row instead of stalling the batch', async () => {
+    // 探针挂住时整批就是「一键测试卡住」（用户实拍）：串行 runner 会一直等第一
+    // 个账号，后面每个都轮不到，界面永远出不来结果。每个探针必须有自己的上限，
+    // 到点落成一行，批次继续往下走。
+    const deps = runner({ probe: () => new Promise<QoderWebProbeResult>(() => {}), probeTimeoutMs: 20 })
+    const rows = await testAllAccounts(TARGETS, 'm', deps)
+    expect(rows).toHaveLength(3)
+    expect(rows.every(row => row.result.outcome === 'unavailable')).toBe(true)
+    expect(rows[0]?.result.message).toBe('probe timed out after 1s')
+  })
+
+  it('turns a throwing probe into a row too', async () => {
+    // 契约是「一个账号失败不中断整批」；探针自己 throw 也得落成一行，否则串行
+    // 批次的第一个异常就会把后面所有账号一起带走。
+    const deps = runner({
+      probe: async () => { throw new Error('socket hang up') },
+    })
+    const rows = await testAllAccounts(TARGETS, 'm', deps)
+    expect(rows.map(row => row.result.outcome)).toEqual(['unavailable', 'unavailable', 'unavailable'])
+    expect(rows[0]?.result.message).toBe('socket hang up')
   })
 
   it('pauses between accounts but not before the first', async () => {

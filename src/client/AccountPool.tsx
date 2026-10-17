@@ -229,6 +229,25 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     return () => window.clearInterval(timer)
   }, [])
 
+  // 签到 / 测试在飞期间每 2.5 秒重读一次快照。
+  //
+  // 两种整批动作都是串行的（测试是真实探针，一池六个号就是几分钟），宿主每处理
+  // 完一个账号就把那一条写进快照（测试见 src/index.ts 的 `onRow`，签到见
+  // `applyCheckinRow`），所以重读到的是**逐行翻新的进度**：一行接一行变成这次的
+  // 结果。两种动作都不再抬遮罩，界面必须自己动起来，否则「不锁」只是把「转圈的
+  // 等待」换成「不动的等待」——用户照样会说卡住。
+  //
+  // `onChanged` 走 ref：父组件每次重渲染都会换一个内联箭头（`() => refresh(...)`），
+  // 放进依赖里会让 effect 每次渲染都拆了重建，轮询被一次次重置——重读的节奏跟着
+  // 渲染节奏走，而不是跟着「每 2.5 秒」走。
+  const onChangedRef = useRef(onChanged)
+  useEffect(() => { onChangedRef.current = onChanged }, [onChanged])
+  useEffect(() => {
+    if (batchAction === undefined) return
+    const timer = window.setInterval(() => { void onChangedRef.current?.() }, 2_500)
+    return () => window.clearInterval(timer)
+  }, [batchAction])
+
   // 上报本池保存的 in-flight 窗口（卸载时务必归零）。workbuddy 同款的
   // useEffect 上报模式。
   useEffect(() => {
@@ -410,11 +429,14 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
    * 池里每个成员都真跑一遍（每个都是一次真实探针、约 25k 输入 token），而且
    * 动的不一定是用户点的那一行。整批仍由工具栏按钮与「测试全部」使用。
    *
-   * 两条路径的「在飞表达」不同（学 workbuddy 的 `runRowTest` 与 `runAction`
-   * 之分）：整批会改动整张表的排名，抬全屏遮罩；行内只测一个账号、结果自有
-   * 一行日志，所以只让那一行的按钮自变「测试中…」，其余界面照常可点——
-   * 一次轻操作不该把使用者锁在整个界面外面。行内仍是锁：测试类按钮互斥，
-   * 批量与单行交错会让两拨探针同时打向宿主，谁的结果是谁就说不清了。
+   * 两条路径的「在飞表达」相同（学 workbuddy 的 `runRowTest` 与 `runAction`
+   * 之分）：**都不抬全屏遮罩**，只锁测试类按钮，在飞期间界面照常可用。
+   * 行内只让那一行的按钮自变「测试中…」；整批在顶部挂一句「正在逐个账号执行…」，
+   * 并且每 2.5 秒重读一次快照，让每一行的结果逐个落位——批量是几分钟级的串行
+   * 真实探针，一次轻操作（乃至一次长操作）都不该把使用者锁在整个界面外面；
+   * 用户把它当成「卡住」过，而那时遮罩挡着、表也不动，确实与卡死无异。
+   * 两条路径仍是同一把锁：测试类按钮互斥，批量与单行交错会让两拨探针同时
+   * 打向宿主，谁的结果是谁就说不清了。
    * 「正在逐个账号执行…」那句提示**只在批量时挂**（workbuddy 同规：它的 hint
    * 挂在批量态 `busy` 上）——只测一行时「逐个」是句假话，行内的轻提示就是那
    * 颗按钮自己的「测试中…」。
@@ -580,10 +602,13 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
   return (
     <section className="dsm-qoder-pool">
+      {/* 遮罩只剩两件事：保存与删除。
+          签到与测试（整批、单行）都已改成轻提示——它们都不改动行的归属，又都
+          可能跑上几秒到几分钟，抬遮罩只是在拿界面当抵押。删除不同：它不可逆，
+          且用户此刻只有一屏可看，值得挡住；保存是配置写入的收尾，同样留遮罩。 */}
       <BusyOverlay
-        visible={batchBusy || saving || removingId !== undefined}
-        message={batchAction === 'checkin' ? t('row.poolCheckingIn') : batchBusy ? t('row.poolTesting') : t('row.poolSaving')}
-        hint={t('row.poolBusyHint')}
+        visible={saving || removingId !== undefined}
+        message={t('row.poolSaving')}
       />
 
       <div className="dsm-qoder-pool-head">
@@ -631,12 +656,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
           >
             {batchAction === 'test' ? t('row.poolTesting') : t('row.poolTestAll')}
           </button>
-          {/* 批量测试期间说明「正在逐个处理」：宿主只在批量结束时一次性返回，
-              没有逐行进度可报（workbuddy 同规，`busy === undefined ? null : hint`
-              的 `busy` 就是批量态）。
+          {/* 批量测试期间说明「正在逐个处理」并逐行落位进度：宿主每测完一个
+              账号就把那条测量写进快照，卡片在飞期间每 2.5 秒重读一次（见上方
+              那个 effect），所以这句话是真的——并不是「一次性等到最后」。
               行内测试**不挂这句**：它只测一个账号，「正在逐个账号执行」在只跑
               一行时是一句假话；行内自己的「测试中…」按钮就是那句轻提示。 */}
-          {batchAction === 'test' ? <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span> : null}
+          {batchAction === undefined ? null : <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span>}
         </div>
       </div>
 

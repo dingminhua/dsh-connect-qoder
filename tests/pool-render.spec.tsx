@@ -786,7 +786,7 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
-  it('批量测试仍然抬遮罩（只有行内改成轻提示）', async () => {
+  it('批量测试也不抬遮罩：只锁测试按钮并挂一句进度提示', async () => {
     let release: ((value: Response) => void) | undefined
     vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
     const { container, unmount } = await mountPool()
@@ -794,14 +794,18 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       const batchTest = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
         .find(b => b.textContent === 'row.poolTestAll') as HTMLButtonElement
       await act(async () => { batchTest.click() })
-      // 整批会改动整张表的排名，值得挡一道 —— 这条断言锁住「不要顺手把遮罩
-      // 也去掉」，也锁住「不要把手柄写成常驻」。
-      const veil = container.querySelector('.dsm-qoder-veil')
-      expect(veil).not.toBeNull()
-      expect(veil?.getAttribute('aria-busy')).toBe('true')
-      expect(veil?.textContent).toContain('row.poolTesting')
-      // 批量的「正在逐个账号执行…」仍在（行内不挂它是这次的取舍，不是把它删了）：
-      // 宿主只在批量结束时一次性返回，这句说明是真话。
+      // 批量是几分钟级的串行真实探针（每个账号一次真实模型调用）。遮罩挡住一切
+      // 又不给进度，用户把它当成「卡住」——现在整批也只锁测试按钮，界面照常可用。
+      expect(container.querySelector('.dsm-qoder-veil')).toBeNull()
+      // 轻量在飞表达：那颗按钮自己变「测试中…」且禁用。
+      const after = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolTesting') as HTMLButtonElement
+      expect(after).not.toBeUndefined()
+      expect(after.disabled).toBe(true)
+      // 行内测试按钮同样互斥（两拨探针不能同时打向宿主）。
+      const rowTest = container.querySelector('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head) .dsm-qoder-pool-row-actions button') as HTMLButtonElement
+      expect(rowTest.disabled).toBe(true)
+      // 「正在逐个账号执行…」只在批量时挂，且此时它是真话（逐行进度会落位）。
       const hint = Array.from(container.querySelectorAll('.dsm-qoder-pool-hint'))
         .find(node => (node.textContent ?? '') === 'row.poolBusyHint')
       expect(hint).not.toBeUndefined()
@@ -809,6 +813,71 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
         release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response)
       })
       expect(container.querySelector('.dsm-qoder-veil')).toBeNull()
+      const idle = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolTestAll') as HTMLButtonElement
+      expect(idle.disabled).toBe(false)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('批量测试在飞期间周期性重读快照（逐行进度自己会动）', async () => {
+    vi.useFakeTimers()
+    let release: ((value: Response) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
+    const onChanged = vi.fn()
+    const { container, unmount } = await mountPool({ onChanged })
+    try {
+      const batchTest = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolTestAll') as HTMLButtonElement
+      await act(async () => { batchTest.click() })
+      expect(onChanged).not.toHaveBeenCalled()
+      // 宿主每测完一个账号就把那条测量写进快照；卡片靠这次重读把那一行翻新。
+      await act(async () => { vi.advanceTimersByTime(2_600) })
+      expect(onChanged).toHaveBeenCalledTimes(1)
+      await act(async () => { vi.advanceTimersByTime(2_500) })
+      expect(onChanged).toHaveBeenCalledTimes(2)
+      // 批次结束后轮询必须停下，否则会一直白白重读。
+      await act(async () => {
+        release?.({ ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response)
+      })
+      const settled = onChanged.mock.calls.length
+      await act(async () => { vi.advanceTimersByTime(10_000) })
+      expect(onChanged).toHaveBeenCalledTimes(settled)
+    } finally {
+      vi.useRealTimers()
+      await unmount()
+    }
+  })
+
+  it('签到也不抬遮罩：按钮自变「签到中…」+ 进度提示', async () => {
+    let release: ((value: Response) => void) | undefined
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>(resolve => { release = resolve })))
+    const { container, unmount } = await mountPool()
+    try {
+      const batchCheckin = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolCheckinAll') as HTMLButtonElement
+      await act(async () => { batchCheckin.click() })
+      // 签到同样是串行批量动作（每个账号两次往返），用户要求它一起离开遮罩。
+      expect(container.querySelector('.dsm-qoder-veil')).toBeNull()
+      const running = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolCheckingIn') as HTMLButtonElement
+      expect(running).not.toBeUndefined()
+      expect(running.disabled).toBe(true)
+      const hint = Array.from(container.querySelectorAll('.dsm-qoder-pool-hint'))
+        .find(node => (node.textContent ?? '') === 'row.poolBusyHint')
+      expect(hint).not.toBeUndefined()
+      // 签到在飞时测试类按钮同样互斥（两拨动作都要打宿主）。
+      const batchTest = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolTestAll') as HTMLButtonElement
+      expect(batchTest.disabled).toBe(true)
+      await act(async () => {
+        release?.({ ok: true, status: 200, json: async () => ({ action: 'checkin', rows: [] }) } as Response)
+      })
+      expect(container.querySelector('.dsm-qoder-veil')).toBeNull()
+      const idle = Array.from(container.querySelectorAll('.dsm-qoder-pool-actions-group button'))
+        .find(b => b.textContent === 'row.poolCheckinAll') as HTMLButtonElement
+      expect(idle.disabled).toBe(false)
     } finally {
       await unmount()
     }

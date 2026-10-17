@@ -49,10 +49,25 @@ export interface QoderPoolRunnerDeps {
   ): Promise<QoderWebProbeResult>
   /** Pause between accounts; injected so tests run without real delays. */
   wait?: (ms: number) => Promise<void>
+  /** Per-probe hard limit; defaults to `POOL_PROBE_TIMEOUT_MS`. */
+  probeTimeoutMs?: number
 }
 
 /** Pause between accounts inside one batch. */
 export const POOL_BATCH_GAP_MS = 400
+
+/**
+ * 单个探针的硬上限。
+ *
+ * 探针是一次**真实**模型调用（约 25k 输入 token），慢是常态；但「慢」与
+ * 「永不返回」在界面上长得一模一样，而整批是串行的 —— 只要有一个账号的请求
+ * 挂住，整批就永远出不来，用户看到的是「一键测试卡住」。用户实拍过这一幕。
+ *
+ * 所以每个探针套一层硬超时：到点按「这次没测出来」落成一行（`unavailable` +
+ * 原因），而不是拖住整批。90 秒是一个正常探针的数倍：正常探针几十秒就回来了，
+ * 回不来的基本是死链，继续等只是在浪费用户的时间。
+ */
+export const POOL_PROBE_TIMEOUT_MS = 90_000
 
 /**
  * Test every account against one model, one at a time.
@@ -118,7 +133,56 @@ export async function testOne(
       },
     }
   }
-  return { ...base, result: await deps.probe(credential, modelId) }
+  return {
+    ...base,
+    result: await withProbeTimeout(
+      deps.probe(credential, modelId),
+      modelId,
+      deps.probeTimeoutMs ?? POOL_PROBE_TIMEOUT_MS,
+    ),
+  }
+}
+
+/**
+ * Race one probe against a hard limit.
+ *
+ * A timeout is a **row** too — `unavailable` with its own words — never a throw
+ * and never an endless wait: the batch is serial, so one request that never
+ * comes back would otherwise hold every account behind it, forever.
+ *
+ * A late rejection after the timeout lands on an already-settled promise and is
+ * swallowed here: `then` keeps a handler attached, so it cannot surface as an
+ * unhandled rejection.
+ */
+export function withProbeTimeout(
+  probe: Promise<QoderWebProbeResult>,
+  modelId: string,
+  timeoutMs: number,
+): Promise<QoderWebProbeResult> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<QoderWebProbeResult>(resolve => {
+    timer = setTimeout(() => {
+      resolve({
+        modelId,
+        outcome: 'unavailable',
+        // 至少说「1s」：测试里把上限压到毫秒级时，也不该出现「超时 0 秒」这种
+        // 自己都读不通的句子。
+        message: `probe timed out after ${Math.max(1, Math.round(timeoutMs / 1000))}s`,
+      })
+    }, timeoutMs)
+  })
+  return Promise.race([
+    // 探针自己抛错也落成一行：`testOne` 的契约是「一个账号失败不中断整批」，
+    // 整批又是串行的，一条 throw 出去就会把后面所有账号一起带走。
+    probe.catch((error: unknown): QoderWebProbeResult => ({
+      modelId,
+      outcome: 'unavailable',
+      message: messageOf(error),
+    })),
+    timeout,
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer)
+  })
 }
 
 /**

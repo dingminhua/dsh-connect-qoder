@@ -888,6 +888,32 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
    * 三种状态分得很清：`claimed`（这次领到）/ `already`（今天已领，幂等，
    * **不是**失败）/ `failed`（真的失败：凭据被拒、上游报错）。
    */
+  /**
+   * 把一行的签到结果并进快照：成员表据此显示「已签到 / 未签到」以及「还有多久刷新」。
+   *
+   * `claimed` 与 `already` 都算「今天已领」——两者的区别只对**本次操作**有意义
+   * （领到了 vs 早就领过），对「今天是否已签到」这个事实没有区别。
+   *
+   * 失败**不**写 `refreshAtMs`：这一次没拿到上游的开窗时间，宁可不说，也不把
+   * 上一次成功留下的时间当成这次的答案。
+   */
+  function applyCheckinRow(region: QoderRegion, row: QoderWebPoolCheckinRow): void {
+    const next = { ...(checkinState[region] ?? {}) }
+    const nextSnapshot = { ...(checkinSnapshots[region] ?? {}) }
+    if (row.status === 'claimed' || row.status === 'already') {
+      next[row.accountId] = true
+      nextSnapshot[row.accountId] = {
+        claimed: true,
+        ...(row.refreshAtMs === undefined ? {} : { refreshAtMs: row.refreshAtMs }),
+      }
+    } else if (row.status === 'failed') {
+      next[row.accountId] = false
+      nextSnapshot[row.accountId] = { claimed: false }
+    }
+    checkinState[region] = next
+    checkinSnapshots[region] = nextSnapshot
+  }
+
   async function runCheckinBatch(region: QoderRegion): Promise<QoderWebPoolCheckinRow[]> {
     const store = stacks[region].store
     const prefs = poolPreferencesOf(config, region)
@@ -900,6 +926,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       if (!first) await new Promise(resolve => setTimeout(resolve, POOL_BATCH_GAP_MS))
       first = false
       const base = { accountId, accountName: credit.accountName }
+      let row: QoderWebPoolCheckinRow
       try {
         const outcome = await client.claimDailyCredits(credit.pat)
         // 「下一窗何时刷新」**两种成功都要带**（claimed 与 already）。上游的
@@ -907,43 +934,27 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         // 零点 —— 而官网页面上写着次日 10:00（用户实拍）。
         const refresh = outcome.status === 'unavailable' ? {} : outcome.nextRefreshAtMs === undefined ? {} : { refreshAtMs: outcome.nextRefreshAtMs }
         if (outcome.status === 'claimed') {
-          rows.push({
+          row = {
             ...base,
             status: 'claimed',
             ...(outcome.amount === undefined ? {} : { credit: outcome.amount }),
             ...(outcome.validityDays === undefined ? {} : { validityDays: outcome.validityDays }),
             ...refresh,
-          })
+          }
         } else if (outcome.status === 'already-claimed') {
-          rows.push({ ...base, status: 'already', ...refresh })
+          row = { ...base, status: 'already', ...refresh }
         } else {
-          rows.push({ ...base, status: 'failed', message: outcome.message })
+          row = { ...base, status: 'failed', message: outcome.message }
         }
       } catch (error: unknown) {
-        rows.push({ ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) })
+        row = { ...base, status: 'failed', message: error instanceof Error ? error.message : String(error) }
       }
+      rows.push(row)
+      // 每签完一个就写进快照：成员表的「已签到 / 还有多久刷新」逐个落位。签到
+      // 不再抬遮罩（用户要求），界面靠这次即时写入加卡片在飞期间的轮询看到进度；
+      // 等整批结束才写，那几秒里表是不动的。
+      applyCheckinRow(region, row)
     }
-    // 把结果写进快照：成员表据此显示「已签到 / 未签到」以及「还有多久刷新」。
-    // `claimed` 与 `already` 都算「今天已领」——两者的区别只对**本次操作**有意义
-    // （领到了 vs 早就领过），对「今天是否已签到」这个事实没有区别。
-    const next = { ...(checkinState[region] ?? {}) }
-    const nextSnapshot = { ...(checkinSnapshots[region] ?? {}) }
-    for (const row of rows) {
-      if (row.status === 'claimed' || row.status === 'already') {
-        next[row.accountId] = true
-        nextSnapshot[row.accountId] = {
-          claimed: true,
-          ...(row.refreshAtMs === undefined ? {} : { refreshAtMs: row.refreshAtMs }),
-        }
-      } else if (row.status === 'failed') {
-        next[row.accountId] = false
-        // 失败**不**写 refreshAtMs：这一次没拿到上游的开窗时间，宁可不说，
-        // 也不把上一次成功留下的时间当成这次的答案。
-        nextSnapshot[row.accountId] = { claimed: false }
-      }
-    }
-    checkinState[region] = next
-    checkinSnapshots[region] = nextSnapshot
     // 签到会改变积分余额：必须**重新拉一次**，否则这个区域的积分会一直停在签到
     // 前的数字，直到某个**与签到无关**的动作（改配置 / 点「从 Qoder 刷新」）
     // 顺带触发 `refreshUsage` —— 用户看到的就是「我领了积分，但积分没刷新」
@@ -1239,8 +1250,18 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         }
         const modelIdOfTarget = target.modelId
         // 单账号走 `testOne`（不 sleep：没有「下一行」要等），整批走批量 runner。
+        //
+        // 整批把每一行的测量在**它测完的那一刻**写进快照：批量是串行的真实探针，
+        // 一池六个号就是几分钟，界面据此逐行翻新状态（卡片在飞期间会重读快照）。
+        // 等整批结束才一次性写，用户在那几分钟里看到的就是一张不动的表 ——
+        // 那种「没有进度」和「卡死」在界面上分不出来，用户把它当成卡住过。
         const rows = onlyAccountId === undefined
-          ? await testAllAccounts(targets, target.modelId, deps)
+          ? await testAllAccounts(targets, target.modelId, deps, row => {
+              const probe = poolProbeFromResult(row.result)
+              if (probe === undefined) return
+              stacks[reg].poolRuntime = { ...stacks[reg].poolRuntime, [row.accountId]: probe }
+              void writePoolProbes(reg, { [row.accountId]: probe })
+            })
           : await Promise.all(targets.map(target => testOne(target, modelIdOfTarget, deps)))
         const probes: Record<string, QoderPoolProbe> = {}
         for (const row of rows) {
