@@ -127,8 +127,15 @@ export interface QoderPoolDeps {
   credentialFor(region: QoderRegion, accountId: string): Promise<{ pat: string, accountName: string } | undefined>
   /** Probe one model through one specific PAT. */
   probeOne(region: QoderRegion, credit: { pat: string, accountName: string }, modelId: string): Promise<QoderWebProbeResult>
-  /** Issue a `test` batch for the region's members. OnRow for progress. */
-  test(region: QoderRegion, modelId: string): Promise<QoderWebPoolTestRow[]>
+  /**
+   * Issue a `test` batch for the region's members, or for ONE account when
+   * `onlyAccountId` is given.
+   *
+   * The card's row-level "测试" button must touch only its own row: a batch
+   * there would re-probe every member (a real request and ~25k input tokens
+   * each) for a control that appears to act on one line.
+   */
+  test(region: QoderRegion, onlyAccountId?: string): Promise<QoderWebPoolTestRow[]>
   /**
    * 该区域是否提供每日签到。两个区域都为 true（国际版需要本机 UMID 组件产出的
    * 设备风控头，取不到时签到如实报错）。路由据此在**到达上游之前**拒绝 checkin 动作。
@@ -538,8 +545,22 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
       if (target.modelId === undefined) {
         return json(res, 200, { action: 'test', rows: [], modelId: undefined })
       }
-      const rows = await pool.test(region, target.modelId)
-      return json(res, 200, { action: 'test', modelId: target.modelId, rows })
+      // `accountId` 存在时只测那一个（行级按钮）。畸形值按形状拒掉，别让它
+      // 走到宿主内部才炸：与下方 delete 分支同一条规矩。
+      const only = poolAccountIdOf(req.url ?? '')
+      if (only !== undefined && !isQoderAccountId(only)) {
+        return json(res, 400, { error: 'accountId is not a well-formed account id' })
+      }
+      // 查一下这个号还在不在：不在就明确回报，而不是回一个空数组让人以为
+      // 「测过了、没问题」。
+      if (only !== undefined) {
+        const stored = (await deps.store(region).vaultAccounts()).find(entry => entry.id === only)
+        if (stored === undefined) {
+          return json(res, 409, { reason: 'account-not-found', error: 'no stored account with that id' })
+        }
+      }
+      const rows = await pool.test(region, only)
+      return json(res, 200, { action: 'test', modelId: target.modelId, ...only === undefined ? {} : { accountId: only }, rows })
     }
 
     // ---- 彻底删除一个账号（凭据 + 池成员 + 区域选择，一次做完）----

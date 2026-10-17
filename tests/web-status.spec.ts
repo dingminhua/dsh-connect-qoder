@@ -482,6 +482,73 @@ describe('pool route (test|remove)', () => {
     expect(tested).toBe(false)
   })
 
+  // ==========================================================================
+  // 行级「测试」只测那一行。
+  //
+  // 卡片每一行都有「测试」按钮，而它此前调的是**整批**：点一行会把池里每个
+  // 成员都真跑一遍（每人数一次真实探针、约 25k 输入 token），而且动的不一定
+  // 是用户点的那一行。行级控件必须只碰那一行。
+  // ==========================================================================
+
+  it('tests ONLY the addressed account when accountId is given', async () => {
+    const asked: Array<string | undefined> = []
+    const pool = poolDeps({
+      test: async (_region, onlyAccountId) => {
+        asked.push(onlyAccountId)
+        return [{ accountId: onlyAccountId ?? 'x', accountName: '', result: { modelId: 'dfmodel', outcome: 'ok', status: 200 } }]
+      },
+    })
+    const captured = await mountRoutes(deps({
+      pool,
+      // 行级路径会先确认这个号还在 vault 里（不在就回 409 而不是空数组）。
+      store: () => ({ ...baseStore(), vaultAccounts: async () => [{ id: 'pat-0123456789abcdef', pat: 'pt-x', accountName: '' }] }) as never,
+    }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test&accountId=pat-0123456789abcdef`), res)
+    expect(status()).toBe(200)
+    // 关键断言：池拿到的 scope 是**那一个**，不是整批。
+    expect(asked).toEqual(['pat-0123456789abcdef'])
+    const answer = body() as { action: string, accountId?: string, rows: readonly QoderWebPoolTestRow[] }
+    expect(answer.accountId).toBe('pat-0123456789abcdef')
+    expect(answer.rows).toHaveLength(1)
+  })
+
+  it('still tests the whole pool when accountId is absent (toolbar button)', async () => {
+    const asked: Array<string | undefined> = []
+    const pool = poolDeps({
+      test: async (_region, onlyAccountId) => { asked.push(onlyAccountId); return [] },
+    })
+    const captured = await mountRoutes(deps({ pool }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test`), res)
+    expect(asked).toEqual([undefined])
+  })
+
+  it('rejects a malformed accountId before reaching the host internals', async () => {
+    let tested = false
+    const pool = poolDeps({ test: async () => { tested = true; return [] } })
+    const captured = await mountRoutes(deps({ pool }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test&accountId=%20not%20an%20id`), res)
+    expect(status()).toBe(400)
+    expect(tested).toBe(false)
+  })
+
+  it('answers 409 (not an empty batch) when the addressed account is gone', async () => {
+    // 回空数组会让卡片显示「测过了、没问题」，而真相是这个号已经不在 vault 里。
+    let tested = false
+    const pool = poolDeps({ test: async () => { tested = true; return [] } })
+    const captured = await mountRoutes(deps({ pool, store: () => ({ vaultAccounts: async () => [] }) as never }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test&accountId=pat-0123456789abcdef`), res)
+    expect(status()).toBe(409)
+    expect(tested).toBe(false)
+  })
+
   it('answers 503 when no pool deps are provided', async () => {
     const captured = await mountRoutes(deps())
     const handler = findHandler(captured, QODER_POOL_PATH)

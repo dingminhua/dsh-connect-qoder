@@ -214,6 +214,24 @@ export function withQoderRouteAction(
   return `${withQoderRegion(path, region)}&${QODER_ACTION_PARAM}=${action}`
 }
 
+/**
+ * `withQoderRouteAction` plus the id of the ONE account a per-row request
+ * addresses.
+ *
+ * Kept separate from the plain action builder so that "this request acts on a
+ * single row" is a property of the call site, not a value a caller can forget
+ * to append — the row-level test button silently degrading into a whole-pool
+ * batch is exactly the bug this exists to prevent.
+ */
+export function withQoderRouteAccount(
+  path: string,
+  region: QoderWebRegion,
+  action: QoderRouteAction,
+  accountId: string,
+): string {
+  return `${withQoderRouteAction(path, region, action)}&${QODER_POOL_ACCOUNT_PARAM}=${encodeURIComponent(accountId)}`
+}
+
 /** Read the shared action parameter; unknown/absent means undefined. */
 function actionParamOf(url: string): string | undefined {
   const at = url.indexOf('?')

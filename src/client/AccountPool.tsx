@@ -35,6 +35,7 @@ import {
   QODER_GITHUB_URL,
   withQoderRegionAndAction,
   withQoderRouteAction,
+  withQoderRouteAccount,
 } from '../status-paths.ts'
 import type {
   QoderWebPool,
@@ -348,11 +349,21 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     })
   }, [region])
 
-  const runTestBatch = async (): Promise<void> => {
+  /**
+   * 测试一个账号，或整批。
+   *
+   * 行级按钮**必须**传 `accountId`：此前它调的是整批，于是点一行「测试」会把
+   * 池里每个成员都真跑一遍（每个都是一次真实探针、约 25k 输入 token），而且
+   * 动的不一定是用户点的那一行。整批仍由工具栏按钮与「测试全部」使用。
+   */
+  const runTestBatch = async (onlyAccountId?: string): Promise<void> => {
     setActionError(undefined)
     setBatchAction('test')
     try {
-      const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, region, 'test'), {
+      const url = onlyAccountId === undefined
+        ? withQoderRouteAction(QODER_POOL_PATH, region, 'test')
+        : withQoderRouteAccount(QODER_POOL_PATH, region, 'test', onlyAccountId)
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
@@ -652,7 +663,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                     </span>
                   : null}
                 <span className="dsm-qoder-pool-row-actions">
-                  <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch() }}>
+                  <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" title={t('row.poolRowTest')} aria-label={t('row.poolRowTest')} disabled={!canEditPool || batchBusy || targetMisses} onClick={() => { void runTestBatch(account.accountId) }}>
                     {t('row.poolRowTest')}
                   </button>
                   {/* 移出池**不用按钮**：这一行的勾选框已经表达「是不是成员」，再给

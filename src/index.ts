@@ -71,7 +71,7 @@ import {
   type QoderPoolMember,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
-import { testAllAccounts, POOL_BATCH_GAP_MS, type QoderPoolRunnerDeps } from './account-pool-run.ts'
+import { testAllAccounts, testOne, POOL_BATCH_GAP_MS, type QoderPoolRunnerDeps } from './account-pool-run.ts'
 import { resolveCredentialRecovery, createAccountUsabilityProbe, type QoderProbeStore } from './credential-recovery.ts'
 import { writeHostHeartbeat, clearHostHeartbeat } from './host-heartbeat.ts'
 
@@ -1186,7 +1186,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 而不是把「取不到设备身份」伪装成「今天没有活动」。
       checkinSupported: () => true,
       checkin: async reg => runCheckinBatch(reg),
-      test: async reg => {
+      // `onlyAccountId` 是卡片**行级**「测试」按钮的路径：那一行只碰那一行。
+      // 不给就还是整批（工具栏「测试全部」按钮、以及旧客户端的调用）。
+      test: async (reg, onlyAccountId) => {
         const prefs = poolPreferencesOf(config, reg)
         const target = resolveTargetModel(poolModelsOf(reg), prefs.targetModelId)
         if (target.modelId === undefined) return []
@@ -1195,7 +1197,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           probe: (credit, modelId) => probeThrough(reg, credit, modelId),
         }
         const targets: Array<{ accountId: string, accountName: string }> = []
-        for (const accountId of prefs.memberAccountIds) {
+        // 行级：只处理点名的那一个。**刻意不要求它是成员**——用户可能正在
+        // 犹豫要不要把一个号加进池，先测一下才决定。整批路径才按成员遍历。
+        const scope = onlyAccountId === undefined ? prefs.memberAccountIds : [onlyAccountId]
+        for (const accountId of scope) {
           // 只测**真的还有凭据**的成员。用户的 PAT 被删除后 memberAccountIds
           // 里会留下幽灵 id（配置里的名单不会随 vault 自动收缩），它们既测不出
           // 结果、又会往池里写一条假的「凭据被拒」——用户看到的就是「有 2 个
@@ -1204,7 +1209,11 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           if (credit === undefined) continue
           targets.push({ accountId, accountName: credit.accountName })
         }
-        const rows = await testAllAccounts(targets, target.modelId, deps)
+        const modelIdOfTarget = target.modelId
+        // 单账号走 `testOne`（不 sleep：没有「下一行」要等），整批走批量 runner。
+        const rows = onlyAccountId === undefined
+          ? await testAllAccounts(targets, target.modelId, deps)
+          : await Promise.all(targets.map(target => testOne(target, modelIdOfTarget, deps)))
         const probes: Record<string, QoderPoolProbe> = {}
         for (const row of rows) {
           const p = poolProbeFromResult(row.result)

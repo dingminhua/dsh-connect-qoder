@@ -80,8 +80,20 @@ export async function testAllAccounts(
   return rows
 }
 
-/** One account's probe, reduced to its row. */
-async function testOne(
+/**
+ * Test ONE account, returning its row.
+ *
+ * Exported because the card's per-row "测试" button used to call the BATCH
+ * runner, so clicking one account's test re-probed the whole pool — a real
+ * cost, not just a UI oddity: every member spends a real probe request
+ * (~25k input tokens on Qoder's side), and the row you clicked was not
+ * necessarily the one that changed anything. A row-level control must touch
+ * that row only.
+ *
+ * Same row contract as the batch (`QoderPoolTestRow`): a failed probe is a
+ * ROW, never a throw.
+ */
+export async function testOne(
   target: QoderPoolTarget,
   modelId: string,
   deps: QoderPoolRunnerDeps,
