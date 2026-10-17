@@ -100,11 +100,34 @@ grep -oE "GET (200|404) https://registry.npmjs.org/-/v1/done" ~/.npm/_logs/<那�
 | **没有 `PUT` 行** | 请求未到达（2FA 挑战在 PUT **之前**） | 真失败，交回用户交互终端 |
 | `PUT 401` + 轮询 92 次 + `GET 404` | **2FA 会话过期**（本文档 §1） | 真失败，重跑即可，**别改版本号** |
 | `PUT 202` + "being processed" | registry 已受理 | **等待**：0.4.3 实测 **约 2 分钟**后 `latest` 翻转 |
-| 轮询 `GET 200` + `PUT 202` + `exit 0` | 成功 | `+ 包名@X.Y.Z` 那一行出现即铁证 |
+| 轮询 `GET 200` + `PUT 202` + `exit 0` | 通常成功 | ⚠️ **不能只看这一行，见下方 1.1.0 实测** |
 
-**`+ @dmh2002/dsh-connect-qoder@X.Y.Z` 这一行是「真发布」与「暂存待批准」的分水岭**
-（`RELEASING.md` 第 6 步）。暂存时只有 `PUT 202` + `info ok`，**没有**这一行。
-0.4.3 是**真发布**（有 `+` 行），所以不需要去 npm 网站点 Approve。
+### ⚠️ 1.1.0 实测：`+ 包名@X.Y.Z` **不是**铁证（2026-10-17）
+
+此前本文档把 `+ @dmh2002/dsh-connect-qoder@X.Y.Z` 这一行当作「真发布」与「暂存待批准」
+的分水岭。**1.1.0 证伪了它**：那次 `npm publish` 打印了完整的 `+ @dmh2002/dsh-connect-qoder@1.1.0`
+并以 exit 0 结束，但**注册表里根本没有 1.1.0**：
+
+```
+versions: 0.0.0-stage, 0.3.0, 0.4.0, 0.4.2, 0.4.3, 0.5.0, 0.5.1, 1.0.0
+latest: 1.0.0
+tarball 直链        → HTTP 404
+带 authToken 查询   → HTTP 404（排除「非公开可见」）
+加 cache-buster 再查 → 仍 404（排除 CDN 缓存）
+npmmirror 镜像      → HTTP 404
+```
+
+当时日志里出现过 `Authenticate your account at: https://www.npmjs.com/auth/cli/…`
+——账号是 `auth-and-writes`，2FA 那一步没在窗口内完成，**包一个字节都没上传**。
+
+**唯一可靠的判据是回查注册表本身**：
+
+```bash
+npm view @dmh2002/dsh-connect-qoder@X.Y.Z version   # 必须回显 X.Y.Z
+```
+
+回 `E404` 就是没发上去——不管 CLI 打印了什么。`+` 行只能读作「CLI 以为成功了」。
+
 
 > 本机 npm 是 **11.12.1**，没有 `npm stage` 子命令（报 `Unknown command`）——
 > 那是 CLI 太旧，不是命令不存在。要批准暂存发布得用 ≥ 11.15.0，或去 npm 网站。

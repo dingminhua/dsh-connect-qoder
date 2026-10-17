@@ -2,7 +2,7 @@
 
 > 调研日期：2026-10-17
 > 宿主：DSH Desktop `0.2.1-rc.1`（`runtime/primary-runtime/runtime.json` → `desktopVersion`）
-> 插件：`@dmh2002/dsh-connect-qoder` 1.0.0 → 1.1.0
+> 插件：`@dmh2002/dsh-connect-qoder` 1.0.0 → 1.1.1
 > 参考：同级仓库 `dsh-connect-workbuddy` 的 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](../../dsh-connect-workbuddy/docs/DSH-0.2.1-RC1-FOLLOWUP.md)
 > 基线：本机 0.1.7-rc.1 依赖树上 **599 用例通过 / 7 跳过**（`npx vitest run`，32 文件）。
 
