@@ -424,6 +424,102 @@ describe('Qoder shim pool failover', () => {
     expect(calls.length).toBe(1)
   })
 
+  it('says the same thing only once across an agent round (hasAnnouncedFailover)', async () => {
+    const seen = new Map<string, number>()
+    const shim = await poolShim({
+      upstream: stubUpstream({ 'pt-a': 'quota-exhausted' }),
+      failoverAccount: async tried => (tried.includes('acc-b') ? undefined : accountB),
+      failoverNotice: (from, _to, kind) =>
+        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+      // 与 src/index.ts 的 shouldAnnounceFailoverOnce 同一语义：第一次允许，之后同键拒绝。
+      hasAnnouncedFailover: (from, to, kind) => {
+        const key = `${from.accountId}|${to.accountId}|${kind}`
+        if (seen.has(key)) return true
+        seen.set(key, 0)
+        return false
+      },
+    })
+    const countNotices = async (): Promise<number> => {
+      const resp = await chat(shim, {})
+      const text = await resp.text()
+      return text.split('[dsh-connect-qoder]').length - 1
+    }
+    // 一次 Agent 回合 = 十几轮调用，每轮都以同样方式换号。
+    expect(await countNotices()).toBe(1)
+    expect(await countNotices()).toBe(0)
+    expect(await countNotices()).toBe(0)
+  })
+
+  it('announces a later failover with a different cause, on a later request', async () => {
+    const accountC: QoderServingAccount = { accountId: 'acc-c', accountName: 'C', pat: 'pt-c' }
+    // 第一轮：A 被限流 → B 接管（提示）。
+    // 第二轮：B 用尽 → C 接管，**换了原因也换了接管账号**。
+    //
+    // 两轮必须是两条独立的 HTTP 请求。换号提示是「首个内容帧」——同一条响应里
+    // 第二次换号没有可以写的位置（那一段已经排在成功尝试的正文之后，见
+    // `firstAttemptOfRound`），而且 A→B 那条提示已经交给了客户端，不能想撤回。
+    let serving: QoderServingAccount = accountA
+    const shim = await poolShim({
+      resolveServing: async () => serving,
+      upstream: {
+        chatStream: async (credential: string, _modelKey: string, _messages: Array<Record<string, unknown>>, options: {
+          onDelta: (d: Delta) => void
+        }) => {
+          // ⚠️ 必须抛真正的 `QoderUpstreamError`：shim 用 `instanceof` 判定
+          // 「上游错误」，同形状的普通 Error 会被当成组装问题、直接 500，换号
+          // 根本不会发生（本用例第一版就踩了这个坑）。
+          // 第一个请求只会试 A；重试用的这一次必须是**成功**的那一次，提示才有
+          // 落点（第二个号在「另一轮」才用尽——那样两轮是两条独立请求，见注释）。
+          if (credential === 'pt-a' && serving === accountA) {
+            throw new QoderUpstreamError('rate-limited', 'code 429', 429)
+          }
+          if (credential === 'pt-b' && serving === accountB) {
+            throw new QoderUpstreamError('quota-exhausted', 'code 110', 429)
+          }
+          options.onDelta(delta('Hello'))
+        },
+      } as unknown as QoderUpstreamClient,
+      // 候选按「本轮已经试过谁」给：A 失败交 B，B 失败交 C。
+      //
+      // ⚠️ 不要按测试外层的 `serving` 分支：那个变量在**同一请求内不会**随 shim
+      // 换号而变（shim 各自保存自己的 serving），第二轮会把 B 再交一次，被
+      // shim 的 `tried` 刹车拦下（同一请求体对同一账号重发 = 空烧额度）→ 429。
+      failoverAccount: async tried => {
+        // 第一轮：只试过 A → 交 B。第二轮：只试过 B → 交 C。
+        if (tried.length === 1) return tried[0] === 'acc-a' ? accountB : accountC
+        return undefined
+      },
+      failoverNotice: (from, _to, kind) =>
+        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+      // 刻意**不提供** hasAnnouncedFailover：本用例只钉「不同的换号事实仍会播报」，
+      // 去重逻辑本身由 src/index.ts 的 shouldAnnounceFailoverOnce 单测覆盖。
+    })
+    const first = await (await chat(shim, {})).text()
+    expect(first).toContain('「A」')
+    expect(first.split('[dsh-connect-qoder]').length - 1).toBe(1)
+
+    serving = accountB
+    const second = await (await chat(shim, {})).text()
+    expect(second).toContain('当日用量已达上限')
+    expect(second.split('[dsh-connect-qoder]').length - 1).toBe(1)
+  })
+
+  it('skips a failover candidate the host already knows is excluded', async () => {
+    const calls: ChatCall[] = []
+    const shim = await poolShim({
+      upstream: stubUpstream({ 'pt-a': 'quota-exhausted' }, calls),
+      failoverAccount: async tried => (tried.includes('acc-b') ? undefined : accountB),
+      // 宿主：B 今天也用尽了（探针还在排除冷却里）。
+      isAccountExcluded: accountId => accountId === 'acc-b',
+    })
+    const started = Date.now()
+    const resp = await chat(shim, {})
+    // 不再空跑一次必然失败的上游，也不先睡 2 秒。
+    expect(calls.map(c => c.credential)).toEqual(['pt-a'])
+    expect(resp.status).toBe(429)
+    expect(Date.now() - started).toBeLessThan(100)
+  })
+
   it('waits the failover gap between attempts', async () => {
     const shim = await poolShim({
       upstream: stubUpstream({ 'pt-a': 'rate-limited' }),

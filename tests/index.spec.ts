@@ -1138,6 +1138,53 @@ describe('poolAllowsFailover —— 池开关是换号的唯一授权', () => {
   })
 })
 
+describe('shouldAnnounceFailoverOnce —— 同一个事实只说一次', () => {
+  it('同一个「谁失败 → 谁接管 → 什么原因」第二次起不再播报', () => {
+    const seen = new Map<string, number>()
+    const fact = { fromAccountId: 'acc-a', toAccountId: 'acc-b', kind: 'quota-exhausted' }
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, fact)).toBe(true)
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, fact)).toBe(false)
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, fact)).toBe(false)
+    expect(seen.size).toBe(1)
+  })
+
+  it('换成另一个账号回答是新事实，仍要播报', () => {
+    const seen = new Map<string, number>()
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-a', toAccountId: 'acc-b', kind: 'quota-exhausted' })).toBe(true)
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-a', toAccountId: 'acc-c', kind: 'quota-exhausted' })).toBe(true)
+  })
+
+  it('失败原因变了也是新事实（限流 → 用尽）', () => {
+    const seen = new Map<string, number>()
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-a', toAccountId: 'acc-b', kind: 'rate-limited' })).toBe(true)
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-a', toAccountId: 'acc-b', kind: 'quota-exhausted' })).toBe(true)
+  })
+
+  it('键里用空字符分隔，账号名拼起来不会撞成同一个键', () => {
+    // 'ab'+'c' 与 'a'+'bc' 必须区别开，否则两个不同的换号会被压成一条。
+    expect(Qoder.failoverAnnounceKey({ fromAccountId: 'ab', toAccountId: 'c', kind: 'k' }))
+      .not.toBe(Qoder.failoverAnnounceKey({ fromAccountId: 'a', toAccountId: 'bc', kind: 'k' }))
+  })
+
+  it('记录有上限：病态场景下不会无限增长', () => {
+    const seen = new Map<string, number>()
+    for (let i = 0; i < 200; i += 1) {
+      Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: `f${i}`, toAccountId: `t${i}`, kind: 'quota-exhausted' })
+    }
+    expect(seen.size).toBeLessThanOrEqual(32)
+  })
+
+  it('账号不再被排除时清掉它参与过的记录，上游恢复后能重新播报', () => {
+    const seen = new Map<string, number>()
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-a', toAccountId: 'acc-b', kind: 'quota-exhausted' })).toBe(true)
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-c', toAccountId: 'acc-b', kind: 'quota-exhausted' })).toBe(true)
+    Qoder.clearAnnouncedFailoversFrom(seen, 'acc-a')
+    // 只清掉 A 参与的；C→B 那条还在（它与 A 无关）。
+    expect(seen.size).toBe(1)
+    expect(Qoder.shouldAnnounceFailoverOnce(seen, { fromAccountId: 'acc-a', toAccountId: 'acc-b', kind: 'quota-exhausted' })).toBe(true)
+  })
+})
+
 describe('shouldRecordPoolFailure —— 不该记的失败一条都不记', () => {
   it('池关闭时什么都不记', () => {
     expect(Qoder.shouldRecordPoolFailure({ enabled: false, memberAccountIds: ['a'] }, 'a')).toBe(false)

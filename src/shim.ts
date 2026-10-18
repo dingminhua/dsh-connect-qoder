@@ -73,6 +73,30 @@ export interface QoderShimOptions {
   /** Record one serving account's pre-first-byte failure (pool measurement). */
   onServingFailure?: (accountId: string, kind: UpstreamErrorKind, message: string) => void
   /**
+   * 判定「这条换号通知是否已经对用户说过」，说过就把这条并入上一次、不再重复写。
+   *
+   * 为什么需要它：一次 Agent 回合里有十几轮模型调用（思考 / 运行命令 / 读取 /
+   * 编辑…）。用户的账号当日用尽后，**每一轮**都会先撞 110、再换到同一个备用号
+   * 回答——`notice` 是每轮请求的局部变量，于是十几条一模一样的引用条被逐条写进
+   * 回答正文。用户看到的是复读，而不是信息。
+   *
+   * 判据（账号、失败种类、接管账号）全是稳定事实，重复即同一个事实；只要它们
+   * 不变就不再播报，**换成了另一个账号回答时仍会播报**。
+   *
+   * 实现方应当有界且能自愈：上游恢复后清掉记录，否则「今天说过」会变成「永远
+   * 不再说」。
+   */
+  hasAnnouncedFailover?: (from: QoderServingAccount, to: QoderServingAccount, kind: UpstreamErrorKind) => boolean
+  /**
+   * 这个（接管）账号目前是否还处于「当日用量用尽」的排除状态。
+   *
+   * 池关着（默认）时 `onServingFailure` 不写记录，`failoverAccount` 也不存在，
+   * 于是没有账号池的单账号用户每轮都要付一次「换号失败 + 2 秒等待」：shim 无从
+   * 知道这件事。由宿主用池状态回答，已知被排除时直接回错（或直接放行，取决于
+   * `failoverAccount` 返回什么），不再空跑一次上游。
+   */
+  isAccountExcluded?: (accountId: string) => boolean
+  /**
    * 换号成功后，把「哪个账号、因为什么、换成了谁」交给宿主措辞。
    *
    * 返回 undefined 表示不提示。**只有真正换了号才会被调用**（由
@@ -517,6 +541,9 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     // ⚠️ 采集时机在**换号之后**，不是每轮开头：首轮还没失败，开头采集拿不到
     // 「为什么换」；换号发生在上一个 catch 里，那里的 error.kind 才是原因。
     let notice: string | undefined
+    // 整条响应是否已经吐过字节（含提示帧）。提示只允许写在这里出现的第一次——
+    // 之后写的任何内容都排在上一段已提交正文后面，会变成夹在回答中间的复读。
+    let wroteBytes = false
 
     // 本轮尝试：写 SSE 头 + 转发流。返回前若抛错且尚未写出任何字节，则上游
     // `wroteAny` 保持 false，可进入换号重试。
@@ -545,11 +572,17 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
               // （choices[0].delta.content）。空 choices 的自定义帧会被 pi-ai
               // 的 chunk 循环直接跳过（`if (!choice) continue`），用户将完全
               // 不知道换号发生过。
-              if (notice !== undefined) {
+              //
+              // 闸门是「**整条响应**的第一个字节」：一次换号就是「第一次尝试
+              // 失败 → 第二次尝试成功」，提示恰恰要在第二个尝试的首个 delta 上
+              // 才有位置可写。而 `wroteAny` 每轮尝试都复位，用它当闸门会让
+              // 「本轮先失败、换号后成功」把提示写在前一段已提交正文的后面。
+              if (notice !== undefined && !wroteBytes) {
                 writeNoticeChunk(res, requestId, created, model, notice)
-                notice = undefined
               }
+              notice = undefined
               wroteAny = true
+              wroteBytes = true
             }
             if (delta.inputTokens > 0) inputTokens = delta.inputTokens
             if (delta.outputTokens > 0) outputTokens = delta.outputTokens
@@ -587,6 +620,16 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           } catch {
             next = undefined
           }
+          // 宿主已知「这个号今天已经用尽」时，别再拿同一个请求去撞一次墙。
+          //
+          // 这条守卫只在**有过候选**（`next !== undefined`）时才有意义：那说明
+          // 宿主愿意换号，只是候选恰好又被池标记为排除。没有候选时什么都不改变，
+          // 失败照常按原路径回给宿主。等待放在守卫**之后**——过去这里先睡 2 秒
+          // 再重试，一个用尽的日子 = 每轮白等 2 秒 + 一次必然失败的上游调用。
+          if (next !== undefined && options.isAccountExcluded?.(next.accountId) === true) {
+            logger(`shim: failover candidate ${next.accountId} is already excluded; not retrying it`)
+            next = undefined
+          }
           // 策略层被要求跳过已试账号，但 shim 不依赖这一点：候选若重复，同一
           // 请求体会对同一账号无限重发、空烧额度。`tried` 是唯一刹车，shim 侧
           // 也查一遍。
@@ -611,6 +654,10 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
                 toAccountId: to.accountId,
                 kind: error.kind,
               })
+              // 同一个事实只说一次：一轮回合里每轮调用的失败原因与接管账号
+              // 都一样时，用户不需要读十几遍。（换成了另一个账号回答，仍然会
+              // 说——判据包含接管账号。）
+              && options.hasAnnouncedFailover?.(from, to, error.kind) !== true
             ) {
               notice = options.failoverNotice?.(from, to, error.kind)
             }

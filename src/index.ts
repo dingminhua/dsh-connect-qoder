@@ -65,6 +65,7 @@ import { qoderAccountId, maskPat, patFromEnv } from './credentials.ts'
 import { QoderAccountStore, type QoderStoredAccount } from './accounts.ts'
 import { QODER_CONNECT_VERSION } from './version.ts'
 import {
+  exclusionOf,
   rankPool,
   resolveTargetModel,
   type QoderPoolCredits,
@@ -556,7 +557,24 @@ interface QoderRegionStack {
   adapter?: QoderAdapter
   /** Runtime probe store (batch tests + live failures), mirrors the disk store. */
   poolRuntime: Record<string, QoderPoolProbe>
+  /**
+   * 已经对用户播报过的换号事实（见 `shouldAnnounceFailoverOnce`）。
+   *
+   * 有界：只在「同一件事重复发生」时增长，条目上限见
+   * `FAILOVER_ANNOUNCE_MAX_ENTRIES`，且账号一旦不再被排除就被清掉——上游恢复
+   * 后必须能重新说一次，否则「今天说过」会变成「永远不再说」。
+   */
+  announcedFailovers: Map<string, number>
 }
+
+/**
+ * 换号播报去重的条目上限。
+ *
+ * 真实的键只有「失败账号 × 失败种类 × 接管账号」的组合，数量个位数；上限只是
+ * 防止某个病态上游把两种 kind 交替着发、把 Map 撑大。超出时淘汰最久没用的
+ * 那条 —— 淘汰只可能让用户**多看**一条，不会让一条该看的提示消失。
+ */
+const FAILOVER_ANNOUNCE_MAX_ENTRIES = 32
 
 // ---------------------------------------------------------------------------
 // apply
@@ -701,7 +719,16 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const catalog = new QoderCatalog(QODER_FALLBACK_MODELS.map(fallbackModelInfo))
     const store = new QoderAccountStore(region)
     let poolRuntime: Record<string, QoderPoolProbe> = {}
-    void readPoolProbes(region).then(probes => { poolRuntime = probes })
+    // 开屏的磁盘读数**合并**进已有的运行期记录，而不是整个替换：`probeThrough`
+    // 等在 `apply` 期间就已经在跑，它们写的探针若被这次替换覆盖，等于上线后
+    // 一分钟内的失败判定被悄悄忘掉（磁盘那次读可能更旧）。
+    void readPoolProbes(region).then((probes) => {
+      poolRuntime = { ...probes, ...poolRuntime }
+      const stack = stacks[region]
+      if (stack !== undefined) stack.poolRuntime = poolRuntime
+    })
+    // 换号播报去重：与 `poolRuntime` 同生命周期、每区域一份。
+    const announcedFailovers = new Map<string, number>()
 
     const shim = createQoderShim({
       upstream,
@@ -724,13 +751,30 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       },
       failoverAccount: async tried => nextFailoverCredential(region, tried),
       onServingFailure: (accountId, kind, message) => {
-        if (!shouldRecordPoolFailure(poolPreferencesOf(config, region), accountId)) return
+        // 池关着也要记账（只进内存）：否则「这个号今天已用尽」永远不知道，
+        // 每个回合都要先撞一次 110、再白等 2 秒换号。
         const probe = liveRequestProbe(kind, message)
-        if (probe !== undefined && accountId !== '') {
-          poolRuntime[accountId] = probe
+        if (probe === undefined || accountId === '') return
+        poolRuntime[accountId] = probe
+        // 持久化仍只写「池开着 + 是成员」的账号：见 `shouldRecordPoolFailure`
+        // 的两条守卫，那是写盘承诺，不该被内存记账顺手扩大。
+        if (shouldRecordPoolFailure(poolPreferencesOf(config, region), accountId)) {
           void writePoolProbes(region, { [accountId]: probe })
           log(`pool ${region}: ${maskPat(accountId)} marked ${probe.outcome} by live request`)
         }
+      },
+      // 已知被排除（例如当日用尽、次日才恢复）的换号候选不再重试：过去这里会
+      // 先睡 2 秒、再拿同一个请求撞一次必然失败的上游。
+      isAccountExcluded: (accountId) => {
+        const probe = poolRuntime[accountId]
+        if (probe === undefined) return false
+        const targetModelId = resolveTargetModel(poolModelsOf(region), poolPreferencesOf(config, region).targetModelId).modelId
+        // 上游恢复后必须能重新播报：记录只在仍然被排除时才有意义。
+        if (exclusionOf(probe, Date.now(), targetModelId) === undefined) {
+          clearAnnouncedFailoversFrom(announcedFailovers, accountId)
+          return false
+        }
+        return true
       },
       // 换号后把「哪个账号、因为什么」告诉用户。
       //
@@ -740,9 +784,20 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 出问题，下次还会踩进去。
       failoverNotice: (from, _to, kind) =>
         failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+      // 同一个事实只说一次：一次 Agent 回合有十几轮调用，每轮都以同样的方式
+      // 换号时，用户不该读到十几条一模一样的引用条。
+      hasAnnouncedFailover: (from, to, kind) =>
+        shouldAnnounceFailoverOnce(announcedFailovers, {
+          fromAccountId: from.accountId,
+          toAccountId: to.accountId,
+          kind,
+        }),
     })
 
-    stacks[region] = { upstream, catalog, shim, store, probeClient: buildProbeClient(region), poolRuntime }
+    stacks[region] = {
+      upstream, catalog, shim, store, probeClient: buildProbeClient(region), poolRuntime,
+      announcedFailovers,
+    }
   }
 
   /** The region's source PATs (settings + env). */
@@ -1744,6 +1799,54 @@ export function shouldRecordPoolFailure(prefs: PoolGate, accountId: string): boo
   if (!prefs.enabled) return false
   if (accountId === '') return false
   return prefs.memberAccountIds.includes(accountId)
+}
+
+/**
+ * 一条换号播报的去重键：**同一个事实**才合并。
+ *
+ * 键里刻意含接管账号与失败种类：换成另一个账号回答、或失败原因变了
+ * （限流 → 用尽），都是新事实，应当再说一次。反之，一次 Agent 回合里十几轮
+ * 调用都以「A 用尽 → B 回答」进行时，它们只是同一件事重复了十几遍。
+ */
+export function failoverAnnounceKey(input: {
+  fromAccountId: string
+  toAccountId: string
+  kind: string
+}): string {
+  return `${input.fromAccountId}\u0000${input.toAccountId}\u0000${input.kind}`
+}
+
+/**
+ * 记录并回答「这条播报是否应当发出」：第一次 true，之后同一个键 false。
+ *
+ * `seen` 是调用方的有界 Map（值只当作插入顺序序号用，不参与判断）。重复的键会
+ * 被重新插入，从而在超限淘汰时保住仍然活跃的那一条。
+ */
+export function shouldAnnounceFailoverOnce(
+  seen: Map<string, number>,
+  input: { fromAccountId: string, toAccountId: string, kind: string },
+): boolean {
+  const key = failoverAnnounceKey(input)
+  if (seen.has(key)) {
+    seen.delete(key)
+    seen.set(key, 0)
+    return false
+  }
+  seen.set(key, 0)
+  while (seen.size > FAILOVER_ANNOUNCE_MAX_ENTRIES) {
+    const oldest = seen.keys().next()
+    if (oldest.done === true) break
+    seen.delete(oldest.value)
+  }
+  return true
+}
+
+/** 某个账号不再被排除时，把它参与过的播报记录一并清掉（下一次重新播报）。 */
+export function clearAnnouncedFailoversFrom(seen: Map<string, number>, accountId: string): void {
+  const prefix = `${accountId}\u0000`
+  for (const key of [...seen.keys()]) {
+    if (key.startsWith(prefix) || key.includes(`\u0000${accountId}\u0000`)) seen.delete(key)
+  }
 }
 
 /**
