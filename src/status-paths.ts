@@ -632,6 +632,34 @@ export interface QoderWebAccountCredit {
    * rate-limited.
    */
   excludedBy?: QoderWebPoolExclusion
+  /**
+   * 这个账号**此刻是否真的在发号**（与 `QoderWebPoolAccount.current` 同义）。
+   *
+   * 判据与 `src/shim.ts` 的请求路径逐字对齐：每个请求第一发都打给区域选中的
+   * 号，所以「在用」通常就是它；只有池开启且选中号此刻被排除时，第一发被硬拒
+   * 后由排序第一的可用成员接管计费，`current` 才落在那个接管者身上。
+   * 面板不能拿 `selected` 顶替：用户实拍（2026-10-18）——额度用尽的选中号
+   * 顶着绿点、真正接管的号是灰的，正是因为面板读的是 `selected`。
+   * 缺席（未登录、宿主未解析）时面板退回 `selected`，与旧宿主保持兼容。
+   */
+  current?: boolean
+  /**
+   * 这个账号最近一次探针的**原始结论**（与池行 `probe.outcome` 同一次测量，
+   * 不做目标模型过滤——两张表同色才是目标）。
+   *
+   * 面板的行标记需要它来区分「能用」与「不能用」之外的第三件事：能不能自己
+   * 好起来。缺席 = 从没测过。
+   */
+  probeOutcome?: QoderWebProbeOutcome
+  /**
+   * 上游给出的**解禁时刻**（毫秒时间戳），只有 `rate-limited` / `out-of-credit`
+   * 这类会自己恢复的排除才有；凭据被拒、账号不存在这类不会自己好，永远缺席。
+   *
+   * 面板把它写成相对时长（「约 12 分钟后解禁」）而不是绝对时刻：用户要求
+   * （2026-10-18）原因是给人判断「还要等多久」的，不是给人做减法的。值仍来自
+   * 上游的 `retryAtMs`，没给就只显示原因、不编倒计时。
+   */
+  retryAtMs?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -757,7 +785,17 @@ export interface QoderWebPoolAccount {
   checkinRefreshAtMs?: number
   /** Set when this account cannot serve right now. */
   excludedBy?: QoderWebPoolExclusion
-  /** Whether this is the account currently billing traffic for the region. */
+  /**
+   * Whether this is the account currently billing traffic for the region.
+   *
+   * 与 `src/shim.ts` 的请求路径逐字对齐：第一发永远打给选中号，所以
+   * `current` 通常就是选中号——**即使它正被排除**（池关着时没有换号机制，
+   * 下一个请求确实还会打给它），此时一行可以同时是 `current: true` 与
+   * `excludedBy: 'out-of-credit'`，「谁在计费」与「它坏了」是两个问题的
+   * 答案，不是矛盾；红点由状态色表达，不由 current 表达。
+   * 只有池开着且选中号被排除时，`current` 才移到接管者身上
+   * （见 `QoderWebPool.servingSource`）。
+   */
   current: boolean
   /**
    * Whether the user checked this account into the pool.
@@ -840,6 +878,48 @@ export interface QoderWebPool {
    * re-derives it.
    */
   effectiveMemberAccountIds?: readonly string[]
+  /**
+   * 这一行的 `current` 是从哪来的 —— 决定「当前使用」到底意味着什么。
+   *
+   * - `selected`：第一发就在这一行身上——池关着，或池开着但选中号此刻还能用
+   *   （每个请求都先打给选中号，池的排序只是候补名单）；
+   * - `failover`：池开着且选中号此刻被排除，这一行是**接管者**：请求仍先打给
+   *   选中号，它在首字节前被硬拒后由这一行接管并计费（用户实拍：标着
+   *   「当前使用」的行写着「用量已达上限」——那是旧模型把两个角色叠在一行，
+   *   新模型下「当前使用」与「用量已达上限」分属两行，两句话都对）。
+   *
+   * 缺席（旧宿主 / 已登出）时卡片只说「当前使用」，不猜它属于哪一种。
+   */
+  servingSource?: 'selected' | 'failover'
+  /**
+   * 池开启时的**接管候选人**（`rankPool` 第一个可用的，与
+   * `nextFailoverCredential` 的同一条判据）。
+   *
+   * ⚠️ 它**不是**第一发——第一发永远是选中号；只有选中号被排除时接管才发生。
+   * 面板/卡片的绿点必须读每行的 `current`（宿主已按请求路径算好），不要拿
+   * 这个字段当绿点，也不要拿 `selected` 当绿点（用户实拍：额度用尽的选中号
+   * 顶着绿点、真正接管的号是灰的）。池关闭时此字段缺席——没有接管一说。
+   */
+  priorityAccountId?: string
+  /**
+   * 池里当前**没有任何账号能服务**：serving 号自己被排除，且所有成员都被排除。
+   *
+   * 这时 `accounts[].current` 全是 false —— 因为「谁在计费」这个问题的诚实答案
+   * 是「没有人」。卡片据此把标题读作「无可用账号」并收起「当前使用」，而不是
+   * 硬指一个已被限流的号（workbuddy 的 `currentAccountId` 返回 `undefined`
+   * 的同一条理由：把它报成在用，会和正下方写着「已排除」的那一行打架）。
+   *
+   * 缺席表示「有账号在服务」，或「还判断不了」（旧宿主）。
+   */
+  servingUnavailable?: boolean
+  /**
+   * 用户手动排定的账号优先级（靠前的先用）。
+   *
+   * 卡片据此在成员表里显示「第 1 位」「第 2 位」，并提供上移/下移。
+   * 空 = 没排过，此时顺序完全由积分策略决定（`rankPool`）——
+   * 卡片必须显示「自动排序」而不是伪造一个名次。
+   */
+  orderAccountIds?: readonly string[]
   accounts: readonly QoderWebPoolAccount[]
   /**
    * The models a manual target can be chosen from, TRIMMED to what the picker

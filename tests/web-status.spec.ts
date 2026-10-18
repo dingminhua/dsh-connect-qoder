@@ -880,6 +880,125 @@ describe('buildWebUsage', () => {
     ])
   })
 
+  it('reports servingSource: the selected account is serving directly when it is usable', async () => {
+    // 修正方向（此前这里把 failover 模型写反了，与 src/shim.ts 的真实请求路径
+    // 矛盾）：每次请求第一发都打给 `resolve()` 选中的号，池的作用只是在它
+    // 首字节前被拒时换一个接管者。所以：
+    //   · 池开着、选中号没被排除 → servingSource = 'selected'，current=选中号；
+    //   · 池开着、选中号被排除且有可用成员 → 'failover'，current=接管者；
+    //   · 池关着 → 'selected'（选择即服务，没有第二个人）。
+    const store: QoderAccountDeps = {
+      ...baseStore(),
+      accounts: async () => [
+        { id: 'pat-settings', accountName: 'Cheap', source: 'settings' },
+        { id: 'pat-env', accountName: 'Env', source: 'env' },
+      ],
+      resolve: async () => ({ id: 'pat-env', pat: 'pt-env', accountName: 'Env', source: 'env' }),
+    }
+    const build = async (enabled: boolean) => {
+      const d = deps({
+        store: () => store,
+        credentialSources: () => ({ settingsPat: 'pt-settings', envPat: 'pt-env' }),
+        pool: poolDeps({ preferences: () => ({ enabled, targetModelId: '', memberAccountIds: ['pat-env'] }) }),
+      })
+      const usage = await buildWebUsage(d, 'cn')
+      if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+      return usage.pool
+    }
+    const on = await build(true)
+    // 选中号健康时，第一发就是它——rankPool 名次只是候补，不是服务者。
+    expect(on?.servingSource).toBe('selected')
+    // `current` 仍然指真实在计费的那一行：servingSource 只是补充它是怎么来的。
+    expect(on?.accounts.filter(r => r.current).map(r => r.accountId)).toEqual(['pat-env'])
+
+    const off = await build(false)
+    expect(off?.servingSource).toBe('selected')
+  })
+
+  it('omits servingSource when no credential resolves (signed-out has no "in use")', async () => {
+    // 没有正在计费的账号时不能凭空给出一个来源：那会让 UI 说出一句没有主语的话。
+    const d = deps({ store: () => ({ ...baseStore(), resolve: async () => undefined }) })
+    const usage = await buildWebUsage(d, 'cn')
+    expect(usage.status).toBe('signed-out')
+    // signed-out 的文档里压根没有 pool 段，所以「缺席」是结构性的。
+    expect('pool' in usage ? usage.pool?.servingSource : undefined).toBeUndefined()
+  })
+
+  it('answers "nobody is in use" when the serving account is benched and no member can take over', async () => {
+    // workbuddy 的同款判断（`currentAccountId` 里 `return undefined`）：
+    // 池里一个能用的都没有时，指着那个已被排除的号说「当前使用」，
+    // 会和正下方写着「✗ 用量已达上限」的行自相矛盾。
+    const bench = { outcome: 'out-of-credit' as const, atMs: Date.now() - 1000 }
+    const d = deps({
+      store: () => ({
+        ...baseStore(),
+        accounts: async () => [{ id: 'pat-env', accountName: 'Env', source: 'env' }],
+        resolve: async () => ({ id: 'pat-env', pat: 'pt-env', accountName: 'Env', source: 'env' }),
+      }),
+      credentialSources: () => ({ envPat: 'pt-env' }),
+      pool: poolDeps({
+        preferences: () => ({ enabled: true, targetModelId: '', memberAccountIds: ['pat-env'] }),
+        poolProbes: () => ({ 'pat-env': bench }),
+      }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.pool?.servingUnavailable).toBe(true)
+    expect(usage.pool?.accounts.some(r => r.current)).toBe(false)
+    expect(usage.pool?.servingSource).toBeUndefined()
+  })
+
+  it('keeps saying "in use" when the serving account is benched but another member can serve', async () => {
+    // 只要还有别的号能干活，说「当前使用（为被排除的选中号接管）」就是诚实的 ——
+    // 降级只在真的全军覆没时发生，否则会把一个正常工作的池说成挂了。
+    // 方向（src/shim.ts）：每个请求仍先打给选中号（pat-env，被排除），首字节前
+    // 被拒才由 rankPool 第一个可用成员（pat-other）接管并计费——所以 current
+    // 落在接管者身上，servingSource 是 'failover'。
+    const d = deps({
+      store: () => ({
+        ...baseStore(),
+        accounts: async () => [
+          { id: 'pat-env', accountName: 'Env', source: 'env' },
+          { id: 'pat-other', accountName: 'Other', source: 'vault' },
+        ],
+        resolve: async () => ({ id: 'pat-env', pat: 'pt-env', accountName: 'Env', source: 'env' }),
+      }),
+      credentialSources: () => ({ envPat: 'pt-env' }),
+      pool: poolDeps({
+        preferences: () => ({ enabled: true, targetModelId: '', memberAccountIds: ['pat-env', 'pat-other'] }),
+        poolProbes: () => ({ 'pat-env': { outcome: 'out-of-credit' as const, atMs: Date.now() - 1000 } }),
+      }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.pool?.servingUnavailable).toBeUndefined()
+    expect(usage.pool?.accounts.filter(r => r.current).map(r => r.accountId)).toEqual(['pat-other'])
+    expect(usage.pool?.servingSource).toBe('failover')
+  })
+
+  it('does not downgrade when the pool is off (no second account to blame)', async () => {
+    // 池关着时不存在「换到别的号」这回事：报「没人在用」只会让标题凭空变空，
+    // 而下一个请求确实还会打给它。保持「当前使用」是更准确的说法。
+    const d = deps({
+      store: () => ({
+        ...baseStore(),
+        accounts: async () => [{ id: 'pat-env', accountName: 'Env', source: 'env' }],
+        resolve: async () => ({ id: 'pat-env', pat: 'pt-env', accountName: 'Env', source: 'env' }),
+      }),
+      credentialSources: () => ({ envPat: 'pt-env' }),
+      pool: poolDeps({
+        preferences: () => ({ enabled: false, targetModelId: '', memberAccountIds: ['pat-env'] }),
+        poolProbes: () => ({ 'pat-env': { outcome: 'out-of-credit' as const, atMs: Date.now() - 1000 } }),
+      }),
+    })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    expect(usage.pool?.servingUnavailable).toBeUndefined()
+    expect(usage.pool?.accounts.filter(r => r.current).map(r => r.accountId)).toEqual(['pat-env'])
+    expect(usage.pool?.servingSource).toBe('selected')
+  })
+
+
   it('pool rows carry member credits (total/expiringSoon/nearestExpiry), non-members stay unknown', async () => {
     // 成员表积分列的数据通路：memberCredits 按成员 id 读，读到的成员行得到
     // total/expiringSoon/nearestExpiryMs 三件套；没读到（凭据失效/上游拒绝）

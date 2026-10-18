@@ -49,6 +49,7 @@ import type {
   QoderWebRegion,
 } from '../status-paths.ts'
 import { exclusionText } from './exclusion-text.ts'
+import { accountDotTone, accountStateColor } from './account-state.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
 import { inlineProbeReason } from './probe-reason.ts'
@@ -107,6 +108,12 @@ export interface PoolPreferences {
   probeInputTokens: number
   /** The account ids checked into this pool. */
   memberAccountIds: readonly string[]
+  /**
+   * 用户手动排定的优先级（靠前的先用）。空 = 完全由积分策略决定。
+   *
+   * 与 `memberAccountIds` 分开：那个是「谁在池里」，这个是「先用谁」。
+   */
+  orderAccountIds: readonly string[]
 }
 
 export interface AccountPoolProps {
@@ -254,6 +261,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     targetModelId: pool?.targetModelId || pool?.staleTargetModelId || '',
     probeInputTokens: pool?.probeInputTokens ?? 0,
     memberAccountIds: pool?.memberAccountIds ?? [],
+    orderAccountIds: pool?.orderAccountIds ?? [],
   }
 
   /**
@@ -262,19 +270,38 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
    * 这个事实由宿主给出（取自该区域解析出的服务凭据），卡片只渲染、不推断。
    */
   const currentAccount = pool?.accounts.find(account => account.current === true)
-  /**
-   * 「使用哪个账号」下拉框的当前值。
-   *
-   * `undefined` = 没有任何账号在生效（保存的 id 已失效、刷新失败）。这时**不能**
-   * 退回空串让 select 显示「自动」——「自动」是一个真实选项，显示它等于宣称
-   * 用户选了自动。所以给一个单独的禁用项，见下面那个 `poolManualAccountNone`。
-   */
-  const currentAccountId = currentAccount?.accountId
   const active: PoolPreferences = draftPool !== null && draftRegion === region
     ? draftPool
     : saved
+  /**
+   * 「使用哪个账号」下拉框的当前值。
+   *
+   * 这个控件**只在池关闭时**渲染（见下面 `saved.enabled` 的判据），而那时
+   * 选择即服务 —— `current` 就是用户保存的那个 id，没有第二个候选答案。
+   * 所以这里照旧读 `current`：引入一个「保存的选择」字段只会多一份可能与
+   * `current` 分叉的真值，而它可渲染的场景为零。池里无人可用时 `current`
+   * 虽为空，但那时控件本来就不在（池开着）。
+   */
+  const currentAccountId = currentAccount?.accountId
 
   const listed = new Set(pool?.accounts.map(a => a.accountId) ?? [])
+  /**
+   * 当前**生效**的优先级序列（成员 id，靠前的先用）。
+   *
+   * 保存的顺序可能不全：新勾进来的账号、或宿主刚清理过的池，都不在里面。
+   * 那些未排过序的成员按池表原顺序接在尾部 —— 与宿主 `rankPool` 的
+   * 「没排过 = 排到最后」是同一条约定，卡片上的名次才不会和实际选中顺序打架。
+   *
+   * 只含成员：非成员不参与排名。
+   */
+  const orderIds: string[] = (() => {
+    const members = active.memberAccountIds.filter(id => listed.has(id))
+    const explicit = active.orderAccountIds.filter(id => members.includes(id))
+    const rest = members.filter(id => !explicit.includes(id))
+    return [...explicit, ...rest]
+  })()
+  /** 用户排过序吗？没排过时名次不算数，界面必须这么说。 */
+  const orderIsManual = active.orderAccountIds.some(id => active.memberAccountIds.includes(id))
   const effective = pool?.effectiveMemberAccountIds?.slice() ??
     effectiveMemberIds({
       savedEffective: pool?.effectiveMemberAccountIds ?? [],
@@ -340,6 +367,26 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         ? [...prev.memberAccountIds, accountId]
         : prev.memberAccountIds.filter(id => id !== accountId),
     }))
+  }
+  /**
+   * 把某个成员在用户排序里上移/下移一位。
+   *
+   * 基准是**当前显示的顺序**（`orderIds`），不是配置里那个可能不全的数组：
+   * 用户看到的是哪一行在谁上面，拖动的结果就该跟着眼睛走。因此第一次拖动时
+   * 会把当前可见顺序整个落下来——这也是「用户开始手动排序」的那个点，
+   * 从此不再由积分策略自动决定。
+   *
+   * 只动池成员：非成员不参与排名，混进来只会让名次出现空位。
+   */
+  const moveMember = (accountId: string, delta: -1 | 1) => {
+    const members = orderIds.filter(id => active.memberAccountIds.includes(id))
+    const from = members.indexOf(accountId)
+    const to = from + delta
+    if (from < 0 || to < 0 || to >= members.length) return
+    const next = members.slice()
+    const [moved] = next.splice(from, 1)
+    next.splice(to, 0, moved!)
+    editDraft(prev => ({ ...prev, orderAccountIds: next }))
   }
   const selectAll = (on: boolean) => {
     editDraft(prev => ({ ...prev, memberAccountIds: on ? pool?.accounts.map(a => a.accountId) ?? [] : [] }))
@@ -702,12 +749,31 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         {/* 「当前使用」芯片：由宿主给出的 `current` 事实驱动（正在计费的那个
             账号），不是从排序或列表位置猜出来的——否则卡片会宣称一次并未发生
             的切换。靠 `margin-left:auto` 推到右端（workbuddy 同规）：这样开关
-            的文案长度随区域变化时，芯片的位置不会跟着左右晃。 */}
-        {currentAccount === undefined ? null : (
-          <span className="dsm-qoder-pool-current-badge" title={t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}>
-            {t('row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
-          </span>
-        )}
+            的文案长度随区域变化时，芯片的位置不会跟着左右晃。
+            池里一个能用的都没有时，宿主把 `current` 全部置为 false 并给
+            `servingUnavailable`——这时芯片改说「没有账号在服务」，而不是让
+            它凭空消失：位置空了会让人以为卡片坏了。 */}
+        {currentAccount === undefined
+          ? pool?.servingUnavailable === true
+            ? (
+              <span
+                className="dsm-qoder-pool-current-badge dsm-qoder-pool-current-badge-off"
+                title={t('row.poolCurrentHintUnavailable')}
+              >
+                {t('row.poolCurrentHeaderUnavailable')}
+              </span>
+            )
+            : null
+          : (
+            <span
+              className="dsm-qoder-pool-current-badge"
+              title={pool?.servingSource === 'failover'
+                ? t('row.poolCurrentHintFailover')
+                : t('row.poolCurrentHintSelected')}
+            >
+              {t(pool?.servingSource === 'failover' ? 'row.poolCurrentHeaderFailover' : 'row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
+            </span>
+          )}
       </div>
 
       <div className="dsm-qoder-pool-actions">
@@ -789,9 +855,13 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             {checkinOn ? <span>{t('row.poolColumnCheckin')}</span> : null}
             <span />
           </div>
-          {(pool?.accounts ?? []).map(account => {
+          {/* 行序 = 当前生效的优先级（`orderIds`），不是宿主下发的原顺序。
+              这是排序能「即时」的前提：点 ↑/↓ 之后必须**当场**换行，而不是
+              等保存、等宿主重算快照。未排过序时 `orderIds` 由成员勾选顺序
+              推出，行序与宿主给的顺序一致。 */}
+          {sortAccountsByOrder(pool?.accounts ?? [], orderIds).map(account => {
             const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
-            const excluded = exclusionText(t, account.excludedBy)
+            const excluded = exclusionText(t, account.excludedBy, account.probe?.retryAtMs, nowMs)
             const inPool = active.memberAccountIds.includes(account.accountId)
             return (
               <div
@@ -812,9 +882,68 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                   <span className="dsm-qoder-usage-dot" style={{ background: stateColor(account) }} />
                   <span className="dsm-qoder-pool-account-name">
                     <b>{name}</b>
+                    {/* 优先级名次。用户拖过就以「第 N 位」呈现真实生效顺序；
+                        没拖过则明说「自动排序」，绝不伪造一个名次——否则用户
+                        会以为顺序已由自己掌控，而其实每次选中都在变。
+                        名次只对成员有意义（非成员不参与排名）。 */}
+                    {!inPool ? null : (
+                      <span
+                        className={orderIsManual ? 'dsm-qoder-pool-rank' : 'dsm-qoder-pool-rank-auto'}
+                        title={t(
+                          !orderIsManual ? 'row.poolRankAutoHint'
+                            // 被排除的号仍有编好的名次，但这一轮轮不到它 —— 说出来，
+                            // 否则「第 1 位」配着「✗ 用量已达上限」又是一处自相矛盾。
+                            : account.excludedBy === undefined ? 'row.poolRankHint' : 'row.poolRankExcludedHint',
+                        )}
+                      >
+                        {!orderIsManual
+                          ? t('row.poolRankAuto')
+                          // 出池的号显示「第 N 位 · 暂不参与」，而不是把一个用不了的
+                          // 号报成当前优先。
+                          : account.excludedBy === undefined
+                            ? t('row.poolRank', { rank: String(orderIds.indexOf(account.accountId) + 1) })
+                            : t('row.poolRankExcluded', { rank: String(orderIds.indexOf(account.accountId) + 1) })}
+                      </span>
+                    )}
+                    {/* 上移/下移。只对成员、只在池开着时出现：池关着就没有
+                        「先发谁」这回事，给按钮等于给一个不起作用的控件。
+                        首尾各自**禁用**而不是隐藏 —— 隐藏会让按钮在行与行之间
+                        跳位，点起来要看两次。放在名次旁边而不是行尾操作区：
+                        它改的是「名次」这一列说的事，和测试/删除不是一类动作。 */}
+                    {pool?.enabled === true && inPool && canEditPool ? (
+                      <span className="dsm-qoder-pool-move" role="group" aria-label={t('row.poolMoveAria', { accountName: name })}>
+                        <button
+                          type="button"
+                          className="dsm-qoder-pool-move-btn"
+                          title={t('row.poolMoveUp')}
+                          aria-label={t('row.poolMoveUp')}
+                          disabled={orderIds.indexOf(account.accountId) <= 0}
+                          onClick={() => { moveMember(account.accountId, -1) }}
+                        >↑</button>
+                        <button
+                          type="button"
+                          className="dsm-qoder-pool-move-btn"
+                          title={t('row.poolMoveDown')}
+                          aria-label={t('row.poolMoveDown')}
+                          disabled={orderIds.indexOf(account.accountId) >= orderIds.length - 1}
+                          onClick={() => { moveMember(account.accountId, 1) }}
+                        >↓</button>
+                      </span>
+                    ) : null}
                     {/* 谁正在计费，用文字说出来：行底色只有 7% 透明度，
-                        「到底哪一行」不能只靠颜色回答。 */}
-                    {account.current ? <span className="dsm-qoder-pool-current-tag">{t('row.poolCurrentBadge')}</span> : null}
+                        「到底哪一行」不能只靠颜色回答。
+                        接管态（servingSource==='failover'：池开着且选中号被排除）
+                        时徽章文字改说「接管中」——请求先打给选中号，被拒后才由
+                        这个号接管计费。否则「当前使用」与选中行的「用量已达
+                        上限」会读起来自相矛盾（用户实拍）。 */}
+                    {account.current
+                      ? <span
+                          className="dsm-qoder-pool-current-tag"
+                          title={t(pool?.servingSource === 'failover' ? 'row.poolCurrentHintFailover' : 'row.poolCurrentHintSelected')}
+                        >
+                          {t(pool?.servingSource === 'failover' ? 'row.poolCurrentBadgeFailover' : 'row.poolCurrentBadge')}
+                        </span>
+                      : null}
                     {/* 成员资格每行写明：未勾选账号的空积分/探针列，否则与
                         「勾了但还没数据」无法区分。 */}
                     <span className={inPool ? 'dsm-qoder-pool-member' : 'dsm-qoder-pool-not-member'}>
@@ -1300,20 +1429,56 @@ function probeSourceClass(source: 'test-batch' | 'live-request' | undefined): st
 }
 
 /**
- * 成员行状态点的颜色（workbuddy 的 stateColor 同规）：被排除的看性质——
- * 限流/不可用是自己会好的等待态（琥珀），凭据被拒等需要用户动手（红）；
- * 未测灰、测过按结果绿/琥珀。
+ * 成员行状态点的颜色。
+ *
+ * 判定与配色都移到了 `account-state.ts`：composer 小面板要画同一个点的颜色，
+ * 两处各写一份迟早会分叉（本轮就是这样——面板的点根本没看数据）。
  */
 function stateColor(account: QoderWebPoolAccount): string {
-  if (account.excludedBy !== undefined) {
-    return account.excludedBy === 'rate-limited' || account.excludedBy === 'unavailable'
-      ? 'var(--dsw-alias-state-warn-primary, #f59e0b)'
-      : 'var(--dsw-alias-state-error-primary, #ef4444)'
-  }
-  if (account.probe === undefined) return 'var(--dsw-alias-label-dimmed, #9aa0a6)'
-  return account.probe.outcome === 'ok'
-    ? 'var(--dsw-alias-state-success-primary, #22a06b)'
-    : 'var(--dsw-alias-state-warn-primary, #f59e0b)'
+  return accountStateColor(accountDotTone({
+    current: account.current === true,
+    ...account.excludedBy === undefined ? {} : { excludedBy: account.excludedBy },
+    ...account.probe === undefined ? {} : { probeOutcome: account.probe.outcome },
+  }))
+}
+
+/**
+ * 按优先级重排账号行。
+ *
+ * **可用性压过用户顺序**，与宿主 `rankPool` 的第 1 层用的是同一条规则
+ * （`excludedBy === undefined`）。这条不能只在宿主生效而表格不管：
+ * 用户实拍（2026-10-18）——`nick1064248741` 用量已达上限却被排在第 1 位，
+ * 而第 2 位的 `shangxinyu2002@msn.com` 写着「✓ 可用」。请求实际发给的是
+ * 第 2 位，表格却宣称第 1 位优先。**名次表撒谎比没有名次表更糟**。
+ *
+ * 用户仍能决定「能用的号之间谁先」，出池的号只是沉到末尾 —— 它们在池里
+ * 也仍然显示名次，只是不参与优先。
+ *
+ * 名单外的账号（非成员、或还没排过序的）保持宿主给的相对顺序接在末尾：
+ * 稳定排序保证同样的输入永远得到同样的行序，否则表格会在每次快照回流时
+ * 无声地抖动 —— 那种「自己会跳」的表比排错更让人不敢用。
+ */
+function sortAccountsByOrder(
+  accounts: readonly QoderWebPoolAccount[],
+  orderIds: readonly string[],
+): readonly QoderWebPoolAccount[] {
+  if (orderIds.length === 0) return accounts
+  const rank = new Map<string, number>()
+  for (const [index, id] of orderIds.entries()) if (!rank.has(id)) rank.set(id, index)
+  const fallback = orderIds.length
+  return accounts
+    .map((account, index) => ({
+      account,
+      index,
+      // 被排除的一律排到可用账号之后（同组内仍按用户顺序）。
+      usable: account.excludedBy === undefined,
+      rank: rank.get(account.accountId) ?? fallback,
+    }))
+    .sort((left, right) => {
+      if (left.usable !== right.usable) return left.usable ? -1 : 1
+      return left.rank - right.rank || left.index - right.index
+    })
+    .map(entry => entry.account)
 }
 
 /** 统计同名字号出现次数（`accountName` 为空串也算一组，显示名会是「未命名」）。 */

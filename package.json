@@ -2,7 +2,7 @@
   "name": "@dmh2002/dsh-connect-qoder",
   "displayName": "DSH Connect Qoder",
   "description": "把 Qoder（通义灵码国内版 / 国际版）接入 DeepSeek Harness：PAT 多账号池、每日签到、积分读数与模型管理。",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
   "license": "MIT",

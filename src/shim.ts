@@ -19,8 +19,9 @@
  * error"）。只有 JSON 错误能把真实的 kind/code 送进宿主的分类器。
  *
  * 账号池故障转移（参考 dsh-connect-workbuddy 的 `src/shim.ts` 相同模式）：
- * - 每次请求先 `resolveServing()` 解析**本次该买单的账号**（账号池排序结果或
- *   用户显式选择；缺省落到 `credential()` 的默认解析）；
+ * - 每次请求先 `resolveServing()` 解析**本次该买单的账号**——就是用户显式
+ *   选中的号（缺省落到 `credential()` 的默认解析：settings → env → 首个
+ *   vault）；账号池的排序**不参与第一发**，它只在下面的接管路径里出场；
  * - 首块字节写出前若上游硬拒（auth / 限流 / 额度 / 瞬时），记录该账号的失败
  *   （`onServingFailure` → live-request 写回账号池），间隔
  *   `failoverGapMs`（默认 2s，可中断）后再 `failoverAccount()` 取下一个候选

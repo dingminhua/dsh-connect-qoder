@@ -20,12 +20,16 @@ import { createPortal } from 'react-dom'
 import { useAnchoredPosition, useDismissOnOutsidePointer } from './popover.ts'
 import {
   QODER_ACCOUNT_CREDITS_PATH,
+  QODER_POOL_PATH,
   QODER_USAGE_PATH,
   withQoderRegion,
+  withQoderRegionAndAction,
+  withQoderRouteAction,
 } from '../status-paths.ts'
 import { writeAccountSlot } from './account-selection.ts'
 import type { QoderAccountScope } from './account-selection.ts'
 import { exclusionText } from './exclusion-text.ts'
+import { accountStateTone, accountStateColor } from './account-state.ts'
 import { QODER_COMPOSER_CSS } from './styles.ts'
 import type { QoderWebAccountCredit, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
 import type { QoderSettingsKey, Translate } from './locales.ts'
@@ -107,7 +111,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [accountCredits, setAccountCredits] = useState<QoderWebAccountCredit[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [switchingId, setSwitchingId] = useState<string | undefined>(undefined)
+  const [testing, setTesting] = useState(false)
   const [failed, setFailed] = useState(false)
+  const [testFailed, setTestFailed] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
   const [open, setOpen] = useState(false)
   const inFlight = useRef(false)
@@ -233,6 +239,62 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     }
   }
 
+  /**
+   * 「一键测试」：设置页工具栏那颗「一键测试所有账号」的同一件事，搬进面板。
+   *
+   * 原来的按钮是「刷新积分」，只重读余额——余额读不出「还能不能用」，而面板的
+   * 点色、第二行的「被拒绝／用量已达上限／限流 · 约 N 分钟后解禁」全部来自
+   * 探针结论。所以这颗按钮真正该做的是把每个成员真跑一次：探针写回宿主快照
+   * 之后，颜色与原因才是刚测出来的，而不是打开面板那一刻的旧账。
+   *
+   * 批量是串行的真实探针（一个号十几秒到几十秒），因此不干等整批响应：边跑边读
+   * 宿主的只读进度（`action=progress`，不碰上游），每落一行就把账号表重取一次，
+   * 用户能看着圆点一行一行翻新。整批结束（成功或失败）后再补最后一读。
+   */
+  const runTestAll = async (): Promise<void> => {
+    if (activeRegion === undefined || testing || busy || switchingId !== undefined) return
+    setTesting(true)
+    setTestFailed(false)
+    setFailed(false)
+    let cursor = 0
+    const pull = async (): Promise<void> => {
+      if (activeRegion === undefined) return
+      try {
+        const response = await fetch(withQoderRegionAndAction(QODER_POOL_PATH, activeRegion, 'progress'), { credentials: 'same-origin' })
+        if (!response.ok) return
+        const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+        const batch = raw['batch']
+        if (typeof batch !== 'object' || batch === null) return
+        const entry = batch as Record<string, unknown>
+        // 动作对不上就不认：上一批的残行或另一个标签页在跑的别的动作，都不该
+        // 让这里重取表格。
+        if (entry['action'] !== 'test' || !Array.isArray(entry['done'])) return
+        const done = entry['done'] as unknown[]
+        if (done.length <= cursor) return
+        cursor = done.length
+        await fetchAccountCredits()
+      } catch { /* 轮询失败不打扰用户：下一拍再试，整批响应仍是最终答案 */ }
+    }
+    let timer: number | undefined
+    try {
+      timer = window.setInterval(() => { void pull() }, 1_500)
+      const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, activeRegion, 'test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    } catch {
+      if (mounted.current) setTestFailed(true)
+    } finally {
+      if (timer !== undefined) window.clearInterval(timer)
+      // 成败都补一读：成功时把最后一行带进来；失败时探针可能已经落了一部分，
+      // 至少别让表格停在测试前的旧账上。
+      await fetchAccountCredits()
+      if (mounted.current) setTesting(false)
+    }
+  }
+
   // Not this plugin's model: render nothing at all.
   if (owned === undefined) return null
 
@@ -299,10 +361,11 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             <button
               type="button"
               className="dsm-qoder-composer-panel-refresh"
-              disabled={busy || switchingId !== undefined}
-              onClick={() => { void fetchUsage() }}
+              disabled={testing || busy || switchingId !== undefined}
+              title={t('composer.testAllHint')}
+              onClick={() => { void runTestAll() }}
             >
-              {busy ? t('composer.refreshing') : t('composer.refresh')}
+              {testing ? t('composer.testing') : t('composer.testAll')}
             </button>
           </div>
           {signedOut
@@ -319,8 +382,26 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                   </thead>
                   <tbody>
                     {rows.map(row => {
-                      const current = row.id === selectedId
-                      const excluded = exclusionText(t, row.excludedBy)
+                      // 「在用」= 宿主算好的 `current`：第一发永远打给区域选中的号，
+                      // 只有池开且选中号此刻被排除时，current 才落在接管它的成员身上
+                      // （与 src/shim.ts 的请求路径同判）。旧宿主没这字段时才退回
+                      // 选中号 —— 面板此前直接读 `selected`，于是绿点给了额度用尽的
+                      // 号、真正在用的号反而是灰的（用户实拍，2026-10-18）。
+                      const current = row.current ?? row.id === selectedId
+                      // 第二行：不能用的写原因（能自己好的再补「约 N 分钟后解禁」），
+                      // 能用且正在用的写「当前选用」——用户的规则（2026-10-18）：
+                      // 「能用的绿色圆点；当前选择的，绿色圆点加第二行提示当前选用；
+                      // 不能用的红色圆点+原因」。颜色只回答能不能用，哪一个是它靠
+                      // 这行字说。
+                      const excluded = exclusionText(t, row.excludedBy, row.retryAtMs)
+                      const mark = excluded ?? (current ? t('composer.currentPick') : undefined)
+                      // 点色只有两种：能用绿、不能用红（account-state.ts 的同一判定，
+                      // 与设置页大表同源）。此前它还要分辨「测过/没测过」，用户改口
+                      // 后没测过但没被排除就是「能用」——绿。
+                      const dotColor = accountStateColor(accountStateTone({
+                        ...row.excludedBy === undefined ? {} : { excludedBy: row.excludedBy },
+                        ...row.probeOutcome === undefined ? {} : { probeOutcome: row.probeOutcome },
+                      }))
                       return (
                         <tr
                           key={row.id}
@@ -334,12 +415,19 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                               aria-label={t('composer.switchTo', { account: row.accountName })}
                               onClick={() => { void switchTo(row.id) }}
                             >
-                              <span className="dsm-qoder-composer-panel-dot" aria-hidden="true" />
+                              <span
+                                className="dsm-qoder-composer-panel-dot"
+                                style={{ background: dotColor }}
+                                aria-hidden="true"
+                              />
                               <span className="dsm-qoder-composer-panel-who">
                                 <span className="dsm-qoder-composer-panel-name">{row.accountName}</span>
-                                {excluded === undefined
+                                {mark === undefined
                                   ? null
-                                  : <span className="dsm-qoder-composer-panel-mark">{excluded}</span>}
+                                  : excluded === undefined
+                                    // 「当前选用」是中性/正向信息，不该用告警色。
+                                    ? <span className="dsm-qoder-composer-panel-pick">{mark}</span>
+                                    : <span className="dsm-qoder-composer-panel-mark">{mark}</span>}
                               </span>
                             </button>
                           </th>
@@ -361,9 +449,11 @@ export function ComposerCredits(props: ComposerCreditsProps) {
               {staleDisplay ? ` · ${t('composer.dataStale')}` : ''}
             </span>
           </div>
-          {failed || signedIn?.refreshError !== undefined
-            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p>
-            : null}
+          {testFailed
+            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.testFailed')}</p>
+            : failed || signedIn?.refreshError !== undefined
+              ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p>
+              : null}
         </div>,
         document.body,
       )}

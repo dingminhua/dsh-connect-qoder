@@ -249,7 +249,27 @@ export function rankPool(
    * is not reliably known.
    */
   modelId?: string,
+  /**
+   * 用户手动排定的账号优先级（`prefs.orderAccountIds`），靠前的先用。
+   *
+   * 它插在**可用性之后、积分策略之前**：
+   *
+   *   · 可用性仍是第一键 —— 用户不能把出池的号排到一个能用的号前面；
+   *   · 用户顺序压过积分策略 —— 手动排序的意义就在于此，否则拖了也不生效；
+   *   · 但**临期积分规则（issue #70）优先于用户顺序**，见下面 `_atRisk` 那一段。
+   *     这是刻意保留的例外：那条规则防的是「今天就要作废的分没花掉」，
+   *     让用户一次误排就永久烧掉积分，代价远大于排序带来的便利。
+   *
+   * 不在这个数组里的成员排在显式排过序的成员之后，彼此仍按积分策略 ——
+   * 新加进池的号不会凭空插到用户精心排好的序列前面。
+   */
+  orderAccountIds?: readonly string[],
 ): QoderPoolRanked[] {
+  // 位置查表：不在表里 = 无优先级（Infinity），保持「新号排最后」。
+  const order = new Map<string, number>()
+  for (const [index, id] of (orderAccountIds ?? []).entries()) {
+    if (!order.has(id)) order.set(id, index)
+  }
   const rows = members.map(member => {
     const excludedBy = exclusionOf(member.probe, nowMs, modelId)
     return {
@@ -263,12 +283,19 @@ export function rankPool(
       _atRisk: (member.credits?.expiringSoon ?? 0) > 0,
       _expiringAmount: member.credits?.expiringSoon ?? 0,
       _expiring: member.credits?.nearestExpiryMs ?? Number.POSITIVE_INFINITY,
+      // 用户排的位置；没排过 = Infinity（排到所有显式排过的成员之后）。
+      _order: order.get(member.account.id) ?? Number.POSITIVE_INFINITY,
     }
   })
   rows.sort((left, right) => {
     if (left._usable !== right._usable) return left._usable ? -1 : 1
-    // Expiring credits before anything else among usable accounts (issue #70).
+    // 临期积分优先于**一切**别的键，包括用户顺序（issue #70）。
+    // 这是刻意的例外：那条规则防的是「今天要作废的分没花掉」，
+    // 让一次误排永久烧掉积分，代价远大于排序的便利。
     if (left._atRisk !== right._atRisk) return left._atRisk ? -1 : 1
+    // 两个都临期 / 都不临期时，用户排序优先。
+    // 放在临期判定之后、金额比较之前：用户拖出来的顺序才真的生效。
+    if (left._order !== right._order) return left._order - right._order
     // Both at risk: whichever lapses FIRST goes first.
     if (left._atRisk && right._atRisk && left._expiring !== right._expiring) {
       return left._expiring - right._expiring

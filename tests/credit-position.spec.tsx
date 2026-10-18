@@ -282,3 +282,216 @@ describe('composer 页脚的数据时刻', () => {
     expect(view.foot).not.toContain('composer.dataStale')
   })
 })
+
+// ==========================================================================
+// composer 面板的点色：与设置页大表同判、同证据
+// ==========================================================================
+
+/**
+ * 用户实拍（2026-10-18）与最终口径：「能用的绿色圆点；当前选择的，绿色圆点
+ * 加第二行提示当前选用；不能用的红色圆点+原因；原因里显示解禁时间」。
+ *
+ * 面板此前的 bug：宿主的 account-credits 表不带探针字段，面板的点落在「没测过」
+ * 的灰上——设置页绿、面板灰。现在颜色只回答「能不能用」：没被排除就绿，被排除
+ * 就红；「哪一个是它」由第二行「当前选用」说明，不再靠颜色区分。
+ *
+ * 这里从 DOM 钉住最终颜色与文字（而不是只测纯函数）：面板此前正是「纯函数没错、
+ * 接线没接」才灰的。
+ */
+describe('composer 面板的点色', () => {
+  // accountStateColor 的两档在用色（var() 令牌的回退值就是这些 hex）。
+  const GREEN = '#22a06b'
+  const RED = '#ef4444'
+
+  const doc: Record<string, unknown> = {
+    status: 'signed-in',
+    accountId: 'a-cur',
+    accountName: 'cur',
+    region: 'cn',
+    enabled: true,
+    accounts: [],
+    models: [],
+    enabledModelKeys: [],
+    offModelKeys: [],
+    imageModelKeys: [],
+    credits: { total: 165, packages: [], expiringSoon: 0 },
+  }
+
+  /**
+   * 挂载 → 开面板 → 把面板交给断言回调 → 拆卸。
+   * `counts.accountCredits` 数账号表请求次数、`counts.test` 数「一键测试」的
+   * 探针请求次数（两者都是既有回归点）。
+   */
+  async function withPanel(
+    rows: Record<string, unknown>[],
+    run: (panel: HTMLElement, counts: { accountCredits: number, test: number }) => Promise<void>,
+  ): Promise<void> {
+    const counts = { accountCredits: 0, test: 0 }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = (init?.method ?? 'GET').toUpperCase()
+      if (url.includes('/account-credits')) {
+        counts.accountCredits += 1
+        return { ok: true, status: 200, json: async () => rows } as Response
+      }
+      // 面板那颗「一键测试」走的就是设置页工具栏同一条路：POST pool?action=test。
+      if (url.includes('/pool') && url.includes('action=test') && method === 'POST') {
+        counts.test += 1
+        return { ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response
+      }
+      // 进度轮询是只读的：这里不给批次，pull 会安静地什么都不做。
+      if (url.includes('/pool') && url.includes('action=progress')) {
+        return { ok: true, status: 200, json: async () => ({}) } as Response
+      }
+      return { ok: true, status: 200, json: async () => doc } as Response
+    }))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    try {
+      await act(async () => {
+        root.render(React.createElement(ComposerCredits, { t, provider: 'qoder', region: 'cn' } as any))
+      })
+      const trigger = container.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-credits-trigger')!
+      await act(async () => { trigger.click() })
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      const panel = document.querySelector('.dsm-qoder-composer-panel') as HTMLElement
+      expect(panel).not.toBeNull()
+      await run(panel, counts)
+    } finally {
+      await act(async () => { root.unmount() })
+      container.remove()
+      document.body.innerHTML = ''
+    }
+  }
+
+  /** 每一行的点色（style 属性原文）与高亮，按账号名索引。 */
+  function rowsOf(panel: HTMLElement): Map<string, { style: string, current: boolean }> {
+    const map = new Map<string, { style: string, current: boolean }>()
+    for (const tr of Array.from(panel.querySelectorAll('tbody tr'))) {
+      const name = tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent ?? ''
+      const dot = tr.querySelector('.dsm-qoder-composer-panel-dot')
+      map.set(name, {
+        style: dot?.getAttribute('style') ?? '',
+        current: tr.className.includes('dsm-qoder-composer-panel-row-current'),
+      })
+    }
+    return map
+  }
+
+  it('在用号（current=true）没测过也是绿点，且行高亮 —— 主回归', async () => {
+    // 宿主还没发 probeOutcome（旧包）时，「在用」本身就该画绿；此前这条
+    // 落在 unknown 的灰上，正是用户实拍的「当前用的那个号没有用绿色」。
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: false, current: true, credits: 165 },
+      { id: 'a-sel', accountName: 'sel', selected: true, current: false, excludedBy: 'out-of-credit', probeOutcome: 'out-of-credit', credits: 500 },
+    ], async panel => {
+      const rows = rowsOf(panel)
+      expect(rows.get('cur')!.style).toContain(GREEN)
+      expect(rows.get('cur')!.current).toBe(true)
+      // 被排除的选中号：红点，不高亮。
+      expect(rows.get('sel')!.style).toContain(RED)
+      expect(rows.get('sel')!.current).toBe(false)
+    })
+  })
+
+  it('在用号测过且 ok → 绿；证据在场时走证据', async () => {
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true, probeOutcome: 'ok', credits: 165 },
+    ], async panel => {
+      expect(rowsOf(panel).get('cur')!.style).toContain(GREEN)
+    })
+  })
+
+  it('在用但被排除（池关时第一发号额度用尽仍 current）→ 红点 + 高亮，不复活绿点', async () => {
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true, excludedBy: 'out-of-credit', probeOutcome: 'out-of-credit', credits: 0 },
+    ], async panel => {
+      const row = rowsOf(panel).get('cur')!
+      expect(row.style).toContain(RED)
+      expect(row.current).toBe(true)
+    })
+  })
+
+  it('能用的一律绿、不能用的一律红（颜色不再分「测过/没测过」）', async () => {
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+      { id: 'a-rl', accountName: 'rl', selected: false, current: false, excludedBy: 'rate-limited', probeOutcome: 'rate-limited' },
+      { id: 'a-rej', accountName: 'rej', selected: false, current: false, excludedBy: 'credential-rejected', probeOutcome: 'credential-rejected' },
+      { id: 'a-unknown', accountName: 'unknown', selected: false, current: false },
+      { id: 'a-ok', accountName: 'ok', selected: false, current: false, probeOutcome: 'ok' },
+    ], async panel => {
+      const rows = rowsOf(panel)
+      // 限流也红：红点说的是「现在别指望它」，还能等多久由原因里的解禁时长说。
+      expect(rows.get('rl')!.style).toContain(RED)
+      expect(rows.get('rej')!.style).toContain(RED)
+      // 没测过但没被排除 = 能用 → 绿。
+      expect(rows.get('unknown')!.style).toContain(GREEN)
+      expect(rows.get('ok')!.style).toContain(GREEN)
+    })
+  })
+
+  it('旧宿主不给 current 时退回选中号（兼容面）：两行都能用，就都绿', async () => {
+    await withPanel([
+      { id: 'a-sel', accountName: 'sel', selected: true },
+      { id: 'a-other', accountName: 'other', selected: false },
+    ], async panel => {
+      const rows = rowsOf(panel)
+      expect(rows.get('sel')!.current).toBe(true)
+      expect(rows.get('sel')!.style).toContain(GREEN)
+      expect(rows.get('other')!.style).toContain(GREEN)
+    })
+  })
+
+  it('当前选用写在第二行：在用号绿点 + 「当前选用」，其他能用的号不写', async () => {
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true, credits: 165 },
+      { id: 'a-other', accountName: 'other', selected: false, current: false, credits: 77 },
+    ], async panel => {
+      const rows = Array.from(panel.querySelectorAll('tbody tr'))
+      const curRow = rows.find(tr => tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent === 'cur')!
+      expect(curRow.querySelector('.dsm-qoder-composer-panel-pick')?.textContent).toBe(t('composer.currentPick'))
+      expect(curRow.querySelector('.dsm-qoder-composer-panel-mark')).toBeNull()
+      const otherRow = rows.find(tr => tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent === 'other')!
+      expect(otherRow.querySelector('.dsm-qoder-composer-panel-pick')).toBeNull()
+    })
+  })
+
+  it('不能用的写原因；上游给了解禁时刻就补相对时长，不写绝对时刻', async () => {
+    const until = Date.now() + 12 * 60 * 1000
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+      { id: 'a-rl', accountName: 'rl', selected: false, current: false, excludedBy: 'rate-limited', probeOutcome: 'rate-limited', retryAtMs: until },
+      { id: 'a-rej', accountName: 'rej', selected: false, current: false, excludedBy: 'credential-rejected', probeOutcome: 'credential-rejected' },
+    ], async panel => {
+      const rows = Array.from(panel.querySelectorAll('tbody tr'))
+      const rl = rows.find(tr => tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent === 'rl')!
+      const mark = rl.querySelector('.dsm-qoder-composer-panel-mark')?.textContent ?? ''
+      expect(mark).toContain(t('row.poolExcludedRateLimited'))
+      // 测试里的 t 是保键翻译器：解禁时刻经 row.unlockSuffix + row.remainingMinutes
+      // 变成相对时长，count=12 说明给的是「约 12 分钟后」而不是绝对时刻。
+      expect(mark).toContain('row.unlockSuffix|when=row.remainingMinutes|count=12')
+      // 「解禁时间」用相对时长给，不出现绝对时刻。
+      expect(mark).not.toMatch(/\d{1,2}[:：]\d{2}/)
+      // 不会自己好的（凭据被拒）：只有原因，没有倒计时。
+      const rej = rows.find(tr => tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent === 'rej')!
+      expect(rej.querySelector('.dsm-qoder-composer-panel-mark')?.textContent).toBe(t('row.poolExcludedRejected'))
+    })
+  })
+
+  it('「一键测试」真的对池成员发探针，并把账号表重新取一遍', async () => {
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+    ], async (panel, counts) => {
+      expect(counts.accountCredits).toBe(1) // 打开时取过一次
+      const button = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
+      // 这颗按钮不再是「刷新积分」：余额读不出「还能不能用」，点色靠探针。
+      expect(button.textContent).toBe(t('composer.testAll'))
+      expect(button.disabled).toBe(false)
+      await act(async () => { button.click() })
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      expect(counts.test).toBe(1)
+      expect(counts.accountCredits).toBe(2)
+    })
+  })
+})

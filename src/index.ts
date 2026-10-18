@@ -184,6 +184,16 @@ const poolConfig = z.object({
   targetModelId: z.string().default(''),
   probeInputTokens: z.number().default(0),
   memberAccountIds: z.array(z.string()).default([]),
+  /**
+   * 用户手动排定的账号优先级（靠前的先用）。
+   *
+   * 与 `memberAccountIds` **分开**存：那个是成员资格（谁在池里），这个是顺序
+   * （先用谁）。合成一个数组会让「取消勾选再勾回来」意外改变优先级，而旧配置
+   * 里的那个顺序只是勾选历史，并不表达意图。
+   *
+   * 空数组 = 完全由 `rankPool` 的积分策略决定（修复前的行为）。
+   */
+  orderAccountIds: z.array(z.string()).default([]),
 })
 
 const regionConfig = z.object({
@@ -449,6 +459,7 @@ function poolPreferencesOf(config: { regions?: Record<string, unknown> | null },
   targetModelId: string
   probeInputTokens: number
   memberAccountIds: readonly string[]
+  orderAccountIds: readonly string[]
 } {
   const state = regionStateOf(config, region)
   const raw = (state.pool ?? {}) as Record<string, unknown>
@@ -457,6 +468,7 @@ function poolPreferencesOf(config: { regions?: Record<string, unknown> | null },
     targetModelId: typeof raw.targetModelId === 'string' ? raw.targetModelId : '',
     probeInputTokens: typeof raw.probeInputTokens === 'number' ? raw.probeInputTokens : 0,
     memberAccountIds: Array.isArray(raw.memberAccountIds) ? (raw.memberAccountIds as string[]) : [],
+    orderAccountIds: Array.isArray(raw.orderAccountIds) ? (raw.orderAccountIds as string[]) : [],
   }
 }
 
@@ -853,7 +865,14 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     }
     // 换号按同一个目标模型判：一条「模型 A 能用」的探针，不能替模型 B
     // 担保。目标模型解析不出来时传 undefined，退回修复前的无作用域行为。
-    const chosen = rankPool(candidates, now, resolveTargetModel(poolModelsOf(region), prefs.targetModelId).modelId)[0]
+    // 用户排定的优先级（`orderAccountIds`）压过积分策略，但可用性与临期积分
+    // 仍然优先（见 `rankPool` 的注释）。没排过就完全按积分策略。
+    const chosen = rankPool(
+      candidates,
+      now,
+      resolveTargetModel(poolModelsOf(region), prefs.targetModelId).modelId,
+      prefs.orderAccountIds,
+    )[0]
     if (chosen === undefined || chosen.excludedBy !== undefined) return undefined
     const credit = await store.credentialFor(chosen.account.id, sourcesOf(region))
     return credit === undefined ? undefined : { accountId: credit.id, accountName: credit.accountName, pat: credit.pat }
@@ -1511,6 +1530,40 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   async function accountCreditsOf(region: QoderRegion, signal?: AbortSignal): Promise<QoderWebAccountCredit[]> {
     const store = stacks[region].store
     const accounts = await store.accounts(sourcesOf(region))
+    const prefs = poolPreferencesOf(config, region)
+    const probes = stacks[region].poolRuntime
+    const now = Date.now()
+    const targetModelId = resolveTargetModel(poolModelsOf(region), prefs.targetModelId).modelId
+    const selectedId = selectedAccountId(config, region)
+    /**
+     * 池开启时的**接管候选**（`rankPool` 第一个可用的成员）。
+     *
+     * 与 `nextFailoverCredential` 同一条判据（同一个 `rankPool`、同一个
+     * `orderAccountIds`、同一个目标模型作用域）——但它只在第一发被硬拒时
+     * 才真正接管线；第一发本来就是选中号。池关闭时缺席——没有换号机制。
+     */
+    let priorityId: string | undefined
+    if (poolAllowsFailover(prefs)) {
+      const candidates: QoderPoolMember[] = []
+      for (const accountId of prefs.memberAccountIds) {
+        const probe = probes[accountId]
+        candidates.push({
+          account: { id: accountId, accountName: accountId },
+          ...probe === undefined ? {} : { probe },
+        })
+      }
+      priorityId = rankPool(candidates, now, targetModelId, prefs.orderAccountIds)
+        .find(row => row.excludedBy === undefined)?.account.id
+    }
+    /**
+     * 每一发的第一击打给谁 —— 直接调 `resolveServing`，与 `src/shim.ts` 的
+     * 请求路径逐字同判（同一个 `store.resolve`）。「在用」跟着第一击走，
+     * 而不是跟着 rankPool 名次；只有第一击被排除**且池开着**时，实际买单的
+     * 才是接管者 `priorityId`（全灭时无人 current）。
+     */
+    const firstShotId = (await resolveServing(region))?.id
+    const firstShotExcluded = firstShotId !== undefined
+      && exclusionOf(probes[firstShotId], now, targetModelId) !== undefined
     const out: QoderWebAccountCredit[] = []
     for (const account of accounts) {
       const credit = await store.credentialFor(account.id, sourcesOf(region))
@@ -1522,10 +1575,26 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       } catch {
         usage = undefined
       }
+      const probe = probes[account.id]
+      const excludedBy = exclusionOf(probe, now, targetModelId)
+      const selected = account.id === selectedId || (account.source !== 'vault' && selectedId === undefined)
       out.push({
         id: account.id,
         accountName: account.accountName || account.source,
-        selected: account.id === selectedAccountId(config, region) || (account.source !== 'vault' && selectedAccountId(config, region) === undefined),
+        selected,
+        // 与 `web-status.ts` 行循环的 `isCurrent` 逐字同判（src/shim.ts 的
+        // 请求路径就是这条）：池开且第一发被排除 → 接管者；其余 → 第一发
+        // 本人（池关时即使被排除也是他——没有第二个人）。
+        current: poolAllowsFailover(prefs) && firstShotExcluded
+          ? priorityId === account.id
+          : firstShotId === account.id,
+        ...excludedBy === undefined ? {} : { excludedBy },
+        // 原始探针结论（不做目标模型过滤，与 AccountPool.tsx 的 stateColor
+        // 吃到同一事实）——面板把「能不能用」折算成绿/红两种颜色。
+        ...probe === undefined ? {} : { probeOutcome: probe.outcome },
+        // 解禁时刻：原因里写「约 N 分钟后解禁」要的就是它。只有上游明确给过
+        // retryAtMs 的探针才有；缺席时面板只显示原因，不编倒计时。
+        ...probe?.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs },
         ...usage === undefined ? {} : { credits: creditsOf(usage).total },
       })
     }

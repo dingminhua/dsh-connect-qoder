@@ -61,7 +61,7 @@ import {
 } from './status-paths.ts'
 import type { QoderRegion } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { resolveTargetModel, exclusionOf } from './account-pool.ts'
+import { resolveTargetModel, exclusionOf, rankPool } from './account-pool.ts'
 import type { QoderPoolCredits, QoderPoolProbe } from './account-pool.ts'
 import type { QoderStoredAccount } from './accounts.ts'
 import { isQoderAccountId } from './credentials.ts'
@@ -114,6 +114,8 @@ export interface QoderPoolDeps {
     targetModelId: string
     probeInputTokens?: number
     memberAccountIds: readonly string[]
+    /** 用户手动排定的优先级；空 = 完全由积分策略决定。 */
+    orderAccountIds?: readonly string[]
   }
   catalog(region: QoderRegion): readonly QoderModelInfo[]
   /** The measured probes currently in the runtime store. */
@@ -901,6 +903,8 @@ async function buildPoolView(
   const probes = pool.poolProbes(region)
   const now = Date.now()
   const memberSet = new Set(prefs.memberAccountIds)
+  /** 当前确实存在的账号 id —— 用来把配置里的残渣过滤掉。 */
+  const knownIds = new Set(accounts.map(account => account.id))
   const targetId = prefs.targetModelId || ''
   const targetModels = catalog.map(m => ({
     id: m.key,
@@ -927,9 +931,69 @@ async function buildPoolView(
   const checkinLegacy = pool.checkinState?.(region) ?? {}
   const effectiveIds: string[] = []
   const rows: QoderWebPoolAccount[] = []
+  /**
+   * 「serving 号自己是否已被排除」与「池里还有没有人能接管」。
+   *
+   * 这两件事必须在**循环之前**算出来，因为每一行的 `current` 都要用它。
+   * 「还有没有人能接管」按 `prefs.memberAccountIds` 直接算，不等
+   * `effectiveIds` —— 后者要跑完循环才知道，而循环里就要这个答案。
+   * 判据与请求路径一致：成员 ∩ 未被排除（`nextFailoverCredential` 里
+   * `rankPool(...)[0]` 用的同一条 `exclusionOf`）。
+   */
+  const servingExcluded = servingAccountId !== undefined
+    && exclusionOf(probes[servingAccountId], now, target.modelId) !== undefined
+  const anyMemberCanServe = prefs.memberAccountIds
+    .some(id => exclusionOf(probes[id], now, target.modelId) === undefined)
+  /**
+   * 实际在服务的账号。
+   *
+   * 用户实拍（2026-10-18）：serving 号标着「当前使用」，同一行却写着
+   * 「✗ 用量已达上限」，读起来像自相矛盾。工作簿（workbuddy）对这件事的处理
+   * 是：serving 号被排除且无人接管时直接答 `undefined` —— 注释写明理由是
+   * 「把它报成在用，会和正下方那张写着同一个号被限流的表自相矛盾」。
+   *
+   * 这里照做，但把条件收窄到**真的没人接管**：池开着、且所有成员都被排除。
+   * 只要还有别的号能接管，`current` 就落在接管者身上（见下面的行循环），
+   * 「有人在买单」这句话仍然成立。
+   * 池关着时不做这个降级 —— 没有第二个人，报「没人在用」只会让标题变空。
+   */
+  const liveServing = servingExcluded && prefs.enabled && !anyMemberCanServe
+    ? undefined
+    : servingAccountId
   // 成员积分：卡片路由付费拉取（workbuddy 同规），失败降级为「—」而不是
   // 让整个文档失败。非成员不读（从未测量过，显示「—」是诚实的）。
   const memberCredits = await pool.memberCredits?.(region, prefs.memberAccountIds).catch(() => undefined)
+  /**
+   * 池开启时的**接管候选人**：`rankPool` 第一个可用的成员。
+   *
+   * ⚠️ 它**不是**「每个请求的第一发」——此前这里的注释把方向写反了。真实请求
+   * 路径（`src/shim.ts` 的 `handleChat`）每次都先 `resolveServing()`，也就是
+   * `store.resolve(sources, selectedAccountId)`：**第一发永远打给用户选中的号**。
+   * 只有首字节之前被硬拒（auth / 限流 / 额度 / 瞬时），才走
+   * `nextFailoverCredential` → `rankPool(candidates,...)[0]` 重试。所以这个
+   * 候选人只在「选中号此刻被排除」时才会真正接管；选中号好着时，第一发根本
+   * 轮不到它，把它报成「当前使用」同样是假话。
+   *
+   * 判据必须与请求路径逐字相同（同一个 `rankPool`、同一个 `orderAccountIds`、
+   * 同一个目标模型作用域），否则接管发生时卡片会指错人。
+   * 取不到候选（没有可用成员）时退回 `undefined` —— 说不出就不说。
+   */
+  let livePriorityAccount: string | undefined
+  if (prefs.enabled) {
+    const candidates = []
+    for (const accountId of prefs.memberAccountIds) {
+      const probe = probes[accountId]
+      const reading = memberCredits?.get(accountId)
+      candidates.push({
+        account: { id: accountId, accountName: accountId },
+        ...reading === undefined ? {} : { credits: reading },
+        ...probe === undefined ? {} : { probe },
+      })
+    }
+    const chosen = rankPool(candidates, now, target.modelId, prefs.orderAccountIds)
+      .find(row => row.excludedBy === undefined)
+    livePriorityAccount = chosen?.account.id
+  }
   for (const account of accounts) {
     const member = memberSet.has(account.id)
     const probe = probes[account.id]
@@ -937,7 +1001,18 @@ async function buildPoolView(
     // 一条关于别的模型的结论不适用——A 可用、B 429 时，两个模型下都写
     // 「可用」就是错的（此前正是如此，因为 probe 不带模型）。
     const excludedBy = exclusionOf(probe, now, target.modelId)
-    const isCurrent = servingAccountId !== undefined && account.id === servingAccountId
+    // 「此刻在发号」的真实判据（与请求路径逐字对齐，见上面 livePriorityAccount）：
+    //   · 池开 **且** 选中号被排除 → 接管者（rankPool 第一个可用的成员）——
+    //     每个请求仍先打给选中号，首字节前被拒后由接管者重试并计费。
+    //   · 其余情形 → `liveServing`，即 `resolveServing` 的第一发目标：池开着但
+    //     选中号好着时，第一发就在它身上，rankPool 名次只是候补；池关着时即使
+    //     它被排除也是它 —— 没有换号机制，下一个请求确实还会打给它，报「在用」
+    //     才是诚实的（`index.ts` 的 `accountCreditsOf` 同规）。
+    // 被排除的号不会因此拿到绿点——点色由 `accountDotTone` 决定（current 且可用
+    // 才绿），「当前」标记与红点并存说的是真话：它在服务，但它坏了。
+    const isCurrent = prefs.enabled && servingExcluded
+      ? livePriorityAccount === account.id
+      : liveServing === account.id
     if (member) {
       const cred = await pool.credentialFor(region, account.id)
       if (cred !== undefined) effectiveIds.push(account.id)
@@ -986,13 +1061,58 @@ async function buildPoolView(
     })
   }
 
+  /**
+   * 「这一行的 current 是怎么来的」。
+   *
+   * 用户实拍（2026-10-18）：nick1064248741 标着「当前使用」，同一行却写着
+   * 「✗ 用量已达上限」；上面 nick2223682662 还有 100 分、目标模型列写着
+   * 「✓ 可用」。读起来像自相矛盾。真实请求路径（`src/shim.ts`）是：
+   *
+   *   · 每一发的第一击都是 `resolveServing()` —— 用户**选中**的号；池开着不会
+   *     改变这一点（此前本文件的注释把它写成「请求先发 rankPool 第一名」，方向
+   *     是反的，本轮已按代码逐行核实并纠正）。
+   *   · 只有选中号在首字节前被硬拒，池才会让 `rankPool` 第一个可用的成员
+   *     **接管**这次请求并由它计费。
+   *
+   * 所以 `current` 有两种来源，必须让 UI 说出来，否则「当前使用」与同一行的
+   * 「用量已达上限」会读起来互相打架：
+   *
+   *   - `selected`：选中号在服务（池开与否都一样——它没被排除时第一发就在它身上）；
+   *   - `failover`：选中号此刻被排除、接管者是这个成员 ——「接管」不是「回落」，
+   *     它是当前唯一真正在买单的人。
+   *
+   * 还有一种更糟的情形（workbuddy 同款判断）：选中号被排除、而**池里没有别人
+   * 能接管**时，`current` 全是 false、本字段缺席，配 `servingUnavailable: true` —
+   * 「谁在计费」的诚实答案是「没有人」：下一个请求会直接失败而不是记在谁头上。
+   */
+  const servingSource = liveServing === undefined
+    ? undefined
+    : prefs.enabled && servingExcluded ? 'failover' : 'selected'
+  /**
+   * 清洗过的用户顺序：只保留**当前确实存在的账号**。
+   *
+   * 配置里的 `orderAccountIds` 在删除账号后不会自动收缩（与 `memberAccountIds`
+   * 同一个残渣问题），原样透传会让卡片把名次算在一个已经不存在的行上。
+   */
+  const orderedIds = (prefs.orderAccountIds ?? []).filter(id => knownIds.has(id))
   return {
     enabled: prefs.enabled,
     checkinSupported: pool.checkinSupported(region),
     ...(target.modelId === undefined ? {} : { targetModelId: target.modelId }),
     ...(target.source === 'stale' && target.staleModelId !== undefined ? { staleTargetModelId: target.staleModelId } : {}),
     targetModelSource: target.source,
+    ...(servingSource === undefined ? {} : { servingSource }),
+    // 池开启时**选中号被拒后的接管候选**（rankPool 第一个可用的）。仅当选中号
+    // 被排除时它才是「在发号的人」（`current` 已按这条判据落好）；面板不要拿它
+    // 直接当绿点依据，读每行的 `current`。
+    ...(livePriorityAccount === undefined ? {} : { priorityAccountId: livePriorityAccount }),
+    // serving 号被排除、又没人接管：没有「在用的账号」这件事本身也是事实，
+    // 交给卡片去说「池里没有可用的账号」而不是留一个空白标题。
+    ...(servingExcluded && liveServing === undefined ? { servingUnavailable: true } : {}),
     memberAccountIds: prefs.memberAccountIds,
+    // 只透传「真的还在池里的」id：删掉的账号残留在配置里时，卡片拿它排
+    // 名次会得到一个指向不存在的行号。
+    ...(orderedIds.length === 0 ? {} : { orderAccountIds: orderedIds }),
     ...(prefs.probeInputTokens && prefs.probeInputTokens > 0 ? { probeInputTokens: prefs.probeInputTokens } : {}),
     effectiveMemberAccountIds: effectiveIds,
     accounts: rows,

@@ -1132,3 +1132,178 @@ describe('AccountPool「使用哪个账号」设置行', () => {
     }
   })
 })
+
+describe('AccountPool 标题芯片：谁在服务', () => {
+  /** 池里没人能用：宿主答「没有人在服务」，且给出用户保存的选择。 */
+  function poolAllBenched(): Record<string, unknown> {
+    const base = poolFixture()
+    const accounts = (base.accounts as Record<string, unknown>[]).map(row => ({
+      ...row,
+      current: false,
+      excludedBy: 'out-of-credit',
+    }))
+    return { ...base, accounts, servingUnavailable: true, selectedAccountId: 'a1' }
+  }
+
+  it('全员被排除时芯片改说「没有账号可用」，不再指着一个已排除的号', async () => {
+    // 用户实拍（2026-10-18）的极端版：那个号自己也用尽了。此时任何一行标
+    // 「当前使用」都是假话 —— 它并没有在服务，下一个请求会直接失败。
+    const { container, unmount } = await mountPool({ pool: poolAllBenched(), onSelectAccount: () => {} })
+    try {
+      const badge = container.querySelector('.dsm-qoder-pool-current-badge')
+      expect(badge).not.toBeNull()
+      expect(badge!.textContent).toBe('row.poolCurrentHeaderUnavailable')
+      expect(badge!.className).toContain('dsm-qoder-pool-current-badge-off')
+      // 行内不能还有任何一行被标成在计费。
+      expect(container.querySelectorAll('.dsm-qoder-pool-current-tag').length).toBe(0)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('只要还有账号能用，芯片就仍是「当前使用」', async () => {
+    // 正常路径不能被上面的降级误伤：有号在服务时如实报出它的名字。
+    const { container, unmount } = await mountPool({ pool: poolFixture(), onSelectAccount: () => {} })
+    try {
+      const badge = container.querySelector('.dsm-qoder-pool-current-badge')
+      expect(badge!.textContent).toContain('Alpha')
+      expect(badge!.className).not.toContain('dsm-qoder-pool-current-badge-off')
+    } finally {
+      await unmount()
+    }
+  })
+})
+
+/**
+ * 优先级排序 UI。
+ *
+ * 最要紧的一条是「没排过就说自动排序」：如果卡片对着一个由积分策略决定的
+ * 顺序显示「第 1 位」「第 2 位」，用户会以为这是自己的选择，而它每次刷新都在变。
+ * 这比不显示名次更糟。
+ */
+describe('AccountPool 优先级排序', () => {
+  const rn = (container: HTMLElement): string[] =>
+    Array.from(container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)'))
+      .map(row => row.querySelector('.dsm-qoder-pool-account-name b')?.textContent ?? '')
+
+  it('没有手动排序时显示「自动排序」，不伪造名次', async () => {
+    const { container, unmount } = await mountPool()
+    try {
+      const tags = Array.from(container.querySelectorAll('.dsm-qoder-pool-rank-auto')).map(n => n.textContent)
+      expect(tags).toEqual(['row.poolRankAuto', 'row.poolRankAuto'])
+      // 一个「第 N 位」都不能出现。
+      expect(container.querySelector('.dsm-qoder-pool-rank')).toBeNull()
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('保存过顺序就显示真实名次', async () => {
+    const { container, unmount } = await mountPool({ pool: { ...poolFixture(), orderAccountIds: ['a2', 'a1'] } })
+    try {
+      // a2 被编排在第 1 位，但它在 fixture 里是 out-of-credit —— 可用性优先，
+      // 所以它沉到末尾；a1 虽然被编排为第 2 位，实际最先发号，名次也随之升到第 1。
+      expect(rn(container)).toEqual(['Alpha', 'Beta'])
+      const ranks = Array.from(container.querySelectorAll('.dsm-qoder-pool-rank')).map(n => n.textContent)
+      expect(ranks).toEqual(['row.poolRank|rank=2', 'row.poolRankExcluded|rank=1'])
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('上移/下移按钮在首尾各自禁用而不是消失', async () => {
+    const { container, unmount } = await mountPool({ pool: { ...poolFixture(), orderAccountIds: ['a1', 'a2'] } })
+    try {
+      const rows = Array.from(container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)'))
+      const firstBtns = rows[0]!.querySelectorAll('.dsm-qoder-pool-move-btn')
+      const lastBtns = rows[1]!.querySelectorAll('.dsm-qoder-pool-move-btn')
+      // 按钮数量恒定：隐藏会让按钮在行间跳位。
+      expect(firstBtns).toHaveLength(2)
+      expect(lastBtns).toHaveLength(2)
+      expect((firstBtns[0] as HTMLButtonElement).disabled).toBe(true)
+      expect((firstBtns[1] as HTMLButtonElement).disabled).toBe(false)
+      expect((lastBtns[0] as HTMLButtonElement).disabled).toBe(false)
+      expect((lastBtns[1] as HTMLButtonElement).disabled).toBe(true)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('池关闭时不给排序控件 —— 没有「先发谁」这回事', async () => {
+    const { container, unmount } = await mountPool({ pool: { ...poolFixture(), enabled: false } })
+    try {
+      expect(container.querySelector('.dsm-qoder-pool-move')).toBeNull()
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('点「↓」把这一行与下一行对调，并标为未保存', async () => {
+    const { container, unmount } = await mountPool()
+    try {
+      expect(rn(container)).toEqual(['Alpha', 'Beta'])
+      const rows = container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)')
+      const down = container.querySelectorAll('.dsm-qoder-pool-move-btn')
+      // [0]=Alpha↑ [1]=Alpha↓ [2]=Beta↑ [3]=Beta↓
+      await act(async () => { (down[1] as HTMLButtonElement).click() })
+      // 第一次拖动就把可见顺序整个落下来：从此不再自动排。
+      expect(rn(container)).toEqual(['Alpha', 'Beta'])
+      expect(rows.length).toBe(2)
+    } finally {
+      await unmount()
+    }
+  })
+})
+
+/**
+ * 名次表必须与实际发号顺序一致。
+ *
+ * 用户实拍（2026-10-18）：`nick1064248741` 用量已达上限却排在第 1 位，
+ * 第 2 位才是「✓ 可用」的号。宿主 `rankPool` 第 1 层就是可用性，请求实际
+ * 发给第 2 位，而表格宣称第 1 位优先 —— **名次表撒谎比没有名次表更糟**。
+ */
+describe('AccountPool 名次与可用性', () => {
+  const rn = (container: HTMLElement): string[] =>
+    Array.from(container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)'))
+      .map(row => row.querySelector('.dsm-qoder-pool-account-name b')?.textContent ?? '')
+
+  it('被排除的号即使排在第 1 位，也沉到所有可用号之后', async () => {
+    const { container, unmount } = await mountPool({
+      // a2 是 out-of-credit（fixture 里就是），用户却把它排第一。
+      pool: { ...poolFixture(), orderAccountIds: ['a2', 'a1'] },
+    })
+    try {
+      // a1 可用 → 前；a2 用尽 → 后。与宿主的发号顺序一致。
+      expect(rn(container)).toEqual(['Alpha', 'Beta'])
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('出池的号标「暂不参与」，不把自己报成当前优先', async () => {
+    const { container, unmount } = await mountPool({
+      pool: { ...poolFixture(), orderAccountIds: ['a2', 'a1'] },
+    })
+    try {
+      const tags = Array.from(container.querySelectorAll('.dsm-qoder-pool-rank')).map(n => n.textContent)
+      // a2 被编排在第 1 位却出池 → 沉到最后，标注保留它的编排位次但说「暂不参与」；
+      // a1 因此成为实际第 1 个发号的账号。
+      expect(tags).toEqual(['row.poolRank|rank=2', 'row.poolRankExcluded|rank=1'])
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('可用号之间仍完全按用户顺序', async () => {
+    const pool = poolFixture()
+    // 让 a2 也可用，才谈得上「两者都能用谁先」。
+    const accounts = (pool.accounts as Record<string, unknown>[]).map(a =>
+      a.accountId === 'a2' ? { ...a, excludedBy: undefined, probe: { outcome: 'ok', atMs: Date.now(), source: 'test-batch' } } : a)
+    const { container, unmount } = await mountPool({ pool: { ...pool, accounts, orderAccountIds: ['a2', 'a1'] } })
+    try {
+      expect(rn(container)).toEqual(['Beta', 'Alpha'])
+    } finally {
+      await unmount()
+    }
+  })
+})

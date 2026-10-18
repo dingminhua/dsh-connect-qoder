@@ -239,12 +239,16 @@ export async function writePoolPreferences(
     targetModelId: string
     probeInputTokens?: number
     memberAccountIds: readonly string[]
+    /** 用户手动排定的优先级；省略或空 = 由积分策略自动排序。 */
+    orderAccountIds?: readonly string[]
   },
 ): Promise<void> {
+  const orderAccountIds = preferences.orderAccountIds ?? []
   const slot: Record<string, unknown> = {
     enabled: preferences.enabled,
     targetModelId: preferences.targetModelId,
     memberAccountIds: preferences.memberAccountIds,
+    orderAccountIds,
   }
   if (preferences.probeInputTokens !== undefined) {
     slot['probeInputTokens'] = preferences.probeInputTokens
@@ -264,7 +268,12 @@ export async function writePoolPreferences(
     const stored = pool['memberAccountIds']
     if (!Array.isArray(stored) || stored.length !== preferences.memberAccountIds.length) return false
     const wanted = new Set(preferences.memberAccountIds)
-    return stored.every(id => typeof id === 'string' && wanted.has(id))
+    if (!stored.every(id => typeof id === 'string' && wanted.has(id))) return false
+    // 顺序必须**逐位**比对：排序功能的意义就是这个数组的次序，
+    // 只比集合会把「拖了但没生效」当成保存成功。
+    const storedOrder = pool['orderAccountIds']
+    if (!Array.isArray(storedOrder) || storedOrder.length !== orderAccountIds.length) return false
+    return storedOrder.every((id, index) => id === orderAccountIds[index])
   })
 }
 

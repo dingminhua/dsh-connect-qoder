@@ -256,6 +256,8 @@ export const QODER_CARD_CSS = `
 /* 积分开关已搬进设置区顶部那两行（形状照 dsh-connect-trae），标题行不再有
    额外的壳——它当初存在只因「开关要和标题挤一行」。 */
 .dsm-qoder-pool-current-badge{margin-left:auto;padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
+/* 池里没有可用账号时的芯片：灰掉，因为它在说「没有人在服务」而不是「是这个号」 */
+.dsm-qoder-pool-current-badge-off{background:rgba(120,120,128,.14);color:var(--dsw-alias-text-secondary,#6b6b70)}
 .dsm-qoder-pool-account-select{min-width:200px}
 .dsm-qoder-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-qoder-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}
@@ -315,6 +317,15 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-checkin-due{color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-qoder-pool-unknown{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
 .dsm-qoder-pool-member{color:var(--dsw-alias-brand-primary,#5686fe)}
+/* 优先级名次。手动排序用品牌色实心底（这是用户自己定的，是「生效的顺序」）；
+   自动排序用虚线灰框（不占位、不抢注意力，也不假装名次已经固定）。 */
+.dsm-qoder-pool-rank{flex:none;padding:0 6px;border-radius:9px;font-size:11px;line-height:17px;font-weight:600;color:var(--dsw-alias-brand-primary,#5686fe);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#5686fe) 14%,transparent)}
+.dsm-qoder-pool-rank-auto{flex:none;padding:0 6px;border-radius:9px;font-size:11px;line-height:17px;color:var(--dsw-alias-label-dimmed,#9aa0a6);border:1px dashed var(--dsw-alias-border-l2,#3a3d45)}
+.dsm-qoder-pool-move{display:inline-flex;gap:2px;margin-left:2px}
+.dsm-qoder-pool-move-btn{width:20px;height:20px;padding:0;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);background:transparent;color:var(--dsw-alias-label-secondary,#b6bcc6);font-size:12px;line-height:1;cursor:pointer}
+.dsm-qoder-pool-move-btn:hover:not(:disabled){border-color:var(--dsw-alias-brand-primary,#5686fe);color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-qoder-pool-move-btn:disabled{opacity:.35;cursor:default}
+.dsm-qoder-pool-move-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 .dsm-qoder-pool-not-member{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
 .dsm-qoder-pool-settings-wrap{display:flex;flex-direction:column;gap:10px}
 .dsm-qoder-pool-dirty{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
@@ -541,9 +552,15 @@ export const QODER_COMPOSER_CSS = `
 .dsm-qoder-composer-panel-switch>span:last-child{overflow:hidden;text-overflow:ellipsis}
 .dsm-qoder-composer-panel-who{display:flex;flex-direction:column;min-width:0;gap:1px}
 .dsm-qoder-composer-panel-name{overflow:hidden;text-overflow:ellipsis}
+/* 第二行的两种文字：原因（不能用的红字，与红点同义）与「当前选用」
+   （能用的正向提示，绿字）。此前只有一个琥珀色的 reason 样式。 */
 .dsm-qoder-composer-panel-mark{
   font-size:11px;line-height:15px;
-  color:var(--dsw-alias-state-warn-primary,#f59e0b);
+  color:var(--dsw-alias-state-error-primary,#ef4444);
+}
+.dsm-qoder-composer-panel-pick{
+  font-size:11px;line-height:15px;
+  color:var(--dsw-alias-state-success-primary,#22a06b);
 }
 .dsm-qoder-composer-panel-switch:hover:not(:disabled){
   background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));
@@ -552,12 +569,11 @@ export const QODER_COMPOSER_CSS = `
   outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:-1px;
 }
 .dsm-qoder-composer-panel-switch:disabled{cursor:default}
+/* 点的颜色由数据驱动（行内 style，见 account-state.ts），这里只留尺寸。
+   此前的两条规则把颜色钉死在 CSS 里 -- 面板于是不看数据就报「当前使用」，
+   额度用尽的号顶着绿点、能用的号是灰的（用户实拍 2026-10-18）。 */
 .dsm-qoder-composer-panel-dot{
   flex:none;width:7px;height:7px;border-radius:50%;
-  background:var(--dsw-alias-label-dimmed,rgba(127,127,127,.5));
-}
-.dsm-qoder-composer-panel-table tr.dsm-qoder-composer-panel-row-current .dsm-qoder-composer-panel-dot{
-  background:var(--dsw-state-success,#22a06b);
 }
 .dsm-qoder-composer-panel-foot{
   display:flex;justify-content:space-between;gap:8px;

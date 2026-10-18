@@ -571,3 +571,91 @@ describe('probe modelId scope', () => {
     expect(pickAccount([onlyA], AT + 1000, 'gpt-a')).toBeUndefined()
   })
 })
+
+/**
+ * 用户手动排序（`orderAccountIds`）。
+ *
+ * 这条功能的层次是刻意的：**可用性 → 临期积分 → 用户顺序 → 金额 → 分数**。
+ * 下面每组用例各钉住一层，尤其最后一组 —— 它是和用户意图「打架」的那条例外，
+ * 必须有测试告诉后来的人那不是 bug。
+ */
+describe('rankPool: user-defined order', () => {
+  const three = [
+    member('rich', { credits: 900 }),
+    member('mid', { credits: 500 }),
+    member('poor', { credits: 10 }),
+  ]
+
+  it('without an order, falls back to the credit policy', () => {
+    const ranked = rankPool(three, NOW)
+    expect(ranked.map(row => row.account.id)).toEqual(['rich', 'mid', 'poor'])
+  })
+
+  it('a manual order overrides the credit policy among usable accounts', () => {
+    // 用户把余额最少的号排第一 —— 这就是他要的，积分策略必须让位。
+    const ranked = rankPool(three, NOW, undefined, ['poor', 'mid', 'rich'])
+    expect(ranked.map(row => row.account.id)).toEqual(['poor', 'mid', 'rich'])
+  })
+
+  it('members missing from the order sink below every explicitly ordered one', () => {
+    // 新加进池的号（没排过）不能凭空插到用户精心排好的序列前面。
+    const ranked = rankPool(three, NOW, undefined, ['poor'])
+    expect(ranked[0]?.account.id).toBe('poor')
+    // 其余仍按积分策略：rich 在 mid 之前。
+    expect(ranked.map(row => row.account.id)).toEqual(['poor', 'rich', 'mid'])
+  })
+
+  it('never lifts an excluded account above a usable one', () => {
+    // 可用性压过一切：用户把被限流的号排第一也没用。
+    const ranked = rankPool([
+      member('limited', { credits: 9_000, probe: { outcome: 'rate-limited', atMs: NOW, retryAtMs: NOW + 60_000 } }),
+      member('ok', { credits: 1 }),
+    ], NOW, undefined, ['limited', 'ok'])
+    expect(ranked[0]?.account.id).toBe('ok')
+    expect(ranked[1]?.excludedBy).toBe('rate-limited')
+  })
+
+  /**
+   * 这是「排序功能」与 issue #70 之间的**唯一**冲突点，决定是刻意保留的：
+   * 临期积分规则优先于用户顺序。理由写在 `rankPool` 的注释里 —— 一次误排若
+   * 能烧掉当天就要作废的积分，代价远大于排序带来的便利。这条测试的存在就是
+   * 为了让这个决定是**可见**的，而不是被后人当 bug「修掉」。
+   */
+  it('expiring credits still outrank the manual order (issue #70 wins)', () => {
+    const ranked = rankPool([
+      member('expiringSoon', { credits: 5, expiringSoon: 5, nearestExpiryMs: NOW + 3_600_000 }),
+      member('stable', { credits: 9_000 }),
+    ], NOW, undefined, ['stable', 'expiringSoon'])
+    expect(ranked[0]?.account.id).toBe('expiringSoon')
+  })
+
+  it('among accounts with nothing expiring, the manual order is fully respected', () => {
+    // 两个都有临期时用户顺序优先；这里验的是「都**不**临期」也走用户顺序。
+    const ranked = rankPool([
+      member('a', { credits: 100, nearestExpiryMs: NOW + 86_400_000 }),
+      member('b', { credits: 100, nearestExpiryMs: NOW + 86_400_000 }),
+    ], NOW, undefined, ['b', 'a'])
+    expect(ranked[0]?.account.id).toBe('b')
+  })
+
+  it('ignores unknown ids in the order list', () => {
+    // 配置里残留已删除账号的 id 时不能把真实成员挤下去。
+    const ranked = rankPool(three, NOW, undefined, ['ghost', 'poor', 'rich'])
+    expect(ranked.map(row => row.account.id)).toEqual(['poor', 'rich', 'mid'])
+  })
+
+  it('is stable when the same id is listed twice', () => {
+    // 首次出现的位置生效，重复项不能让名次整体漂移。
+    const ranked = rankPool(three, NOW, undefined, ['poor', 'poor', 'rich'])
+    expect(ranked.map(row => row.account.id)).toEqual(['poor', 'rich', 'mid'])
+  })
+
+  it('the order is scoped like everything else: an excluded-for-this-model account still sinks', () => {
+    const limited = member('limitedOnA', {
+      probe: { outcome: 'rate-limited', atMs: NOW, source: 'test-batch', modelId: 'gpt-a' },
+    })
+    const open = member('open', { credits: 1 })
+    expect(rankPool([limited, open], NOW, 'gpt-a', ['limitedOnA', 'open'])[0]?.account.id).toBe('open')
+    expect(rankPool([limited, open], NOW, 'gpt-b', ['limitedOnA', 'open'])[0]?.account.id).toBe('limitedOnA')
+  })
+})
