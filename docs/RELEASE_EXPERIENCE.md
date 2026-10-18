@@ -323,3 +323,47 @@ POST 挂起等 release，GET 立刻回当前进度。
 *来源：`dsh-connect-qoder` 0.4.3 发布实录（2026-10-13）+ 同族
 `dsh-connect-trae/docs/RELEASE_EXPERIENCE.md`（MIT，Copyright (c) 2026 LaoDing）。新增经验请继续追加，
 并保持与根目录 `RELEASING.md` 的权威流程一致。*
+
+## 10. 1.4.0 实测两笔（2026-10-18）
+
+### 10.1 tarball 滞后**不是固定值**：1.2.1 是约 3 分钟，1.4.0 是 0 秒
+
+1.2.1 那次 `latest` 翻转后 tarball 直链还 404 了约 3 分钟（见 §2 的 1.2.1 实测）。
+1.4.0 这次完全另一副样子：
+
+```
+直连 packument 轮询：第 1–3 次 latest=1.3.0，第 4 次（约 60 秒）翻转
+                          → time['1.4.0']=2026-10-18T00:19:06.617Z
+                          → dist.shasum=fb2d65e1… 与本地 dry-run 逐字相同
+翻转后立刻试 tarball 直链 → 第 1 次就 HTTP 200
+```
+
+所以「轮询到第 N 次仍 404」不能当健康度读，它只是 CDN 资产还没到位。
+**判据始终是 packument 的 `time['X.Y.Z']` + `dist.shasum`**，这两条不需要下载 tarball；
+真要比对字节时再放宽几分钟，别因为 404 就重发。
+
+### 10.2 视觉改动要**真的渲染出来量**，别读 CSS 推
+
+1.4.0 的间距问题（说明行距分隔线只剩 4 CSS px、「账号池」标题在两条线之间偏上 4px）
+都是用户实拍打回后发现的。此前若干轮的做法是「读 `styles.ts` 的 px 相加推断」，
+推断与实际渲染连续对不上 —— 因为间距往往是**三层**叠加（元素自身 padding +
+容器 gap + 相邻元素的 border/padding），手算漏一层就偏几像素。
+
+可用的量测闭环（一次性、跑完即弃，不需要宿主）：
+
+1. 用一个临时目录（如 `/tmp/qp`）放 `index.html` + `entry.tsx`，`entry.tsx` 直接
+   import 仓库里的卡片组件，并 `vi`/手工 stub 掉 `fetch`（喂一份与实拍同形的 usage 文档）；
+2. 用仓库自己的 vite 起服务：`node_modules/.bin/vite`（pnpm 布局下顶层没有 vite 包，
+   `node -e "require('vite')"` 会失败），`server.fs.allow` 要同时放行临时目录的
+   **`/tmp/…` 与 `/private/tmp/…`** 两种写法；
+3. 截图用无头 Chromium：
+   `~/Library/Caches/ms-playwright/chromium_headless_shell-<ver>/chrome-headless-shell-mac-arm64/chrome-headless-shell`
+   —— 必须带 `--virtual-time-budget=3000`，否则页面因 vite 的 HMR WebSocket 永不
+   “idle”，进程会一直挂着（表现是命令超时转后台）；`--force-device-scale-factor=2`
+   时 **CSS px = device px / 2**；
+4. 量法：横线扫「整行 >90% 采样点落在线的色带里」的行；文字带要**限定 x 区间**扫深色
+   像素 —— 卡片外框是贯穿全高的竖线，按「最左侧深色像素」扫会把每一行都量成边框位置，
+   得出「左缘全都对齐」的错误结论。
+
+量到的两个数（改前 → 改后）：说明行到分隔线 4 → 12 CSS px；标题居中偏差 10.5 → 0.0 CSS px。
+改完值再截一次同样量，别只看代码改对了没有。

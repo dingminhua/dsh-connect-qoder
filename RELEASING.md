@@ -181,7 +181,7 @@ curl -s --noproxy '*' -H "Cache-Control: no-cache" https://registry.npmjs.org/@d
 
 应打印 `latest: X.Y.Z` 与本次发布时间。**再核对 tarball 的 shasum 与本地 `npm pack --dry-run` 输出一致**，确认上传的就是本次构建的代码。
 
-> ⚠️ **先看 packument，别用 tarball 直链下结论（1.2.1 实测）。** packument 与 tarball 是**两个**传播时刻：`time['X.Y.Z']` 出现（约 2 分钟）后，tarball 直链仍可能 **404 约 3 分钟**——返回的是 21 字节的 `{"error":"Not found"}`（`file` 会告诉你那是 JSON 不是 gzip）。**registry 的 `dist.shasum` 与本地 dry-run 一致即已足够**，不需要下载就能核；真要逐字节比对产物，把下载重试放宽到几分钟。把「packument 有版本 + tarball 404」读成失败，会把一次**成功**的发布误判掉。
+> ⚠️ **先看 packument，别用 tarball 直链下结论（1.2.1 实测）。** packument 与 tarball 是**两个**传播时刻：`time['X.Y.Z']` 出现（约 2 分钟）后，tarball 直链仍可能 **404 约 3 分钟**——返回的是 21 字节的 `{"error":"Not found"}`（`file` 会告诉你那是 JSON 不是 gzip）。**registry 的 `dist.shasum` 与本地 dry-run 一致即已足够**，不需要下载就能核；真要逐字节比对产物，把下载重试放宽到几分钟。把「packument 有版本 + tarball 404」读成失败，会把一次**成功**的发布误判掉。这个滞后**不是固定值**：1.4.0 那次 `latest` 翻转后 tarball 立刻就是 HTTP 200（见 [`docs/RELEASE_EXPERIENCE.md`](docs/RELEASE_EXPERIENCE.md) §10.1），所以「轮询第 N 次仍 404」不能当健康度读——判据始终是 packument 的 `time` 与 `dist.shasum`。
 
 > ⚠️ **本机 `~/.npmrc` 可能配置了本地代理**，`npm view` 与普通 `curl` 会走代理并可能读到**缓存的旧版本**，从而把一次**成功**的发布误判成失败。验证发布**只认上面那条 `--noproxy '*'` 的直连命令**，不要用裸 `npm view` 下结论。
 
