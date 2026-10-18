@@ -131,16 +131,6 @@ export interface AccountPoolProps {
    * owns these (they need its refresh + region), so they arrive as a node.
    */
   accountTools?: ReactNode | undefined
-  /**
-   * 「在对话框显示积分」开关，渲染在账号池标题那一行的右侧（`pool-head`）。
-   *
-   * 它原来在卡片正文里独占一行，约 30px 高却只有一个勾选框。用户要求
-   * 「放到账号池这个标题旁边吧，节约点空间」——放在这里语义也顺：它决定的是
-   * 「积分怎么显示」，而积分明细正是下面这张表的内容。
-   * 卡片持有写权限与区域，所以它作为节点传进来（与 `accountTools` 同规）。
-   * 与「当前使用」芯片并列时开关排在前：一个是可操作的控件，一个是状态。
-   */
-  creditsSwitch?: ReactNode | undefined
   /** Whether this region may be edited (not while the provider is off). */
   canWrite: boolean
   /** Force the card to re-read its usage snapshot after a Host-side action. */
@@ -164,7 +154,7 @@ export interface AccountPoolProps {
 }
 
 export function AccountPool(props: AccountPoolProps): ReactNode {
-  const { t, region, pool, settingsScope, siblingBusy, canWrite, onChanged, onBusyChange, accountTools, creditsSwitch, onSelectAccount } = props
+  const { t, region, pool, settingsScope, siblingBusy, canWrite, onChanged, onBusyChange, accountTools, onSelectAccount } = props
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -706,12 +696,9 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 
       <div className="dsm-qoder-pool-head">
         <h3 className="dsm-qoder-pool-title">{t('row.poolTitle')}</h3>
-        {/* 积分开关紧挨着标题（workbuddy 的 `pool-head-extra` 同位同形）：
-            它是这一行里标题之外唯一**可操作**的东西，放在标题正后方读起来
-            像它的附属，而不是被推到右端跟状态芯片挤在一起。 */}
-        {creditsSwitch === undefined
-          ? null
-          : <span className="dsm-qoder-pool-head-extra">{creditsSwitch}</span>}
+        {/* 积分开关**不在这里**：它已搬进设置区顶部那两行（形状照
+            dsh-connect-trae 的「在输入框工具栏显示积分读数」）。标题行只剩
+            标题与右端的状态芯片——一个是名字，一个是状态，各归各位。 */}
         {/* 「当前使用」芯片：由宿主给出的 `current` 事实驱动（正在计费的那个
             账号），不是从排序或列表位置猜出来的——否则卡片会宣称一次并未发生
             的切换。靠 `margin-left:auto` 推到右端（workbuddy 同规）：这样开关

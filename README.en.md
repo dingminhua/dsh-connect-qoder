@@ -178,6 +178,8 @@ The last two rows are deliberate: checking in and testing are **manual actions**
 
 Neither batch action **locks the interface**: the button itself turns into "Checking in… / Testing…", and as each account finishes its row is updated and its line lands in the activity log **individually**, stamped with that account's own completion time rather than the second the batch ended. Everything else stays usable. Only **saving the config** and **deleting an account** put a veil up — the former is writing to disk, the latter is irreversible.
 
+How the settings card is laid out: two **independent provider cards** sit at the top (CN / international), each with its own border, background and switch on the right, and the selected one carries the brand-coloured outline — **one card is one unit**: click the name to switch tabs, click the switch to enable that provider. Below them come the two credit rows ("show credits in the composer" and "position"; the whole row is clickable and the description sits under the title), then the account pool, then model management. Those two rows decide whether the credit readout appears and where it sits — they take effect **immediately, with no save needed**.
+
 There is **no automatic** check-in: claiming collects a real reward, so it only happens when you press the button.
 
 ## CLI diagnostics

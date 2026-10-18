@@ -29,7 +29,7 @@
  * @module dsh-connect-qoder/client/QoderCard
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import {
   QODER_GITHUB_URL,
@@ -156,6 +156,10 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   // Re-fetch the region's usage on the 60 s cadence, plus on demand.
   const [open, setOpen] = useState(view === 'page')
   const [activeRegion, setActiveRegion] = useState<QoderWebRegion>(() => 'cn')
+  // 积分那两行的无障碍关联（复选框 aria-describedby → 它自己那行说明）。
+  // 用 useId 而不是手写 id：同一页可能挂两张同样的卡片，写死的 id 会重复。
+  const creditsLabelId = useId()
+  const creditsHintId = useId()
   const [usages, setUsages] = useState<Partial<Record<QoderWebRegion, QoderWebUsage | undefined>>>({})
   const [busyRegions, setBusyRegions] = useState<ReadonlySet<QoderWebRegion>>(new Set())
   const [probes, setProbes] = useState<Partial<Record<QoderWebRegion, Record<string, QoderWebProbeResult | undefined>>>>({})
@@ -448,11 +452,20 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                 const regionStatus = usages[region]?.status ?? 'signed-out'
                 const regionOnState = regionOnOf(usages[region])
                 return (
-                  <div key={region} className="dsm-qoder-tab-cell">
+                  // 选中的那一格把激活类挂在 CELL 上（`dsm-qoder-tab-cell-active`），
+                  // 不挂在按钮上——照 `dsh-connect-trae` 的做法：边框画在最外层那个
+                  // 圆角块上，内部的按钮与右侧开关才同属一个视觉单位。此前是按钮自己
+                  // 描一圈 inset 边框，而它外面还套着整条 tab 栏的边框，两道边框相距
+                  // 几像素，看起来像渲染出错。用户给的参照图就是这个形状：**一格一个
+                  // 卡片，选中的那格描彩色边**。
+                  <div key={region} className={`dsm-qoder-tab-cell${on ? ' dsm-qoder-tab-cell-active' : ''}`}>
                     <button
                       type="button"
                       role="tab"
                       aria-selected={on}
+                      // 按钮保留 `dsm-qoder-tab-active`：它是给测试与辅助技术读的
+                      // 状态标记（既有用例按 `button.dsm-qoder-tab-active` 取选中页），
+                      // 但**不再由它自己画边框**。
                       className={`dsm-qoder-tab${on ? ' dsm-qoder-tab-active' : ''}${regionOnState ? '' : ' dsm-qoder-tab-off'}`}
                       onClick={() => { setActiveRegion(region as 'cn' | 'global'); setSaveError(undefined) }}
                     >
@@ -507,6 +520,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                   账号池是「谁在服务、花多少」的决定区，排在模型列表之前；
                   原先排在模型列表之后，用户要先翻过整张模型表才够到它。
                   error 分支不渲染这些空壳——与 workbuddy 同规，只留错误行。 */}
+              {/* 积分显示那两行在账号池**之上**（用户实拍要求「这段内容移动到账号池
+                  上面」）。它管的是读数显不显示、立即生效，既不属于「谁在服务」那张
+                  表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
+                  不随区域有没有字节池而消失。 */}
+              {renderCreditsSwitch()}
               {renderPool()}
               {renderModels()}
             </>
@@ -830,11 +848,65 @@ export function QoderCard(props: QoderCardProps): ReactElement {
    * `status === 'error'` 仍不渲染：那是一份没读成的文档，它的 pool 字段根本没
    * 有过，渲染一个空壳只会把错误行挤到下面（与 workbuddy 同规）。
    */
+  /** 「在对话框显示积分」那两行（- 复选框+标题+说明 / - 显示位置+说明）。
+   *
+   *  池存在时交给账号池的设置区渲染在最上面；池不存在时由 renderPool 就地
+   *  渲染——它管的是「读数显不显示」，跟有没有账号池是两件事。
+   */
+  function renderCreditsSwitch(): ReactElement {
+    return (
+        <div className="dsm-qoder-prefs">
+          <label className="dsm-qoder-pref dsm-qoder-credit-toggle" title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}>
+            <input
+              type="checkbox"
+              className="dsm-qoder-pref-check"
+              checked={regionOn ? creditsShownOf(usage) : false}
+              disabled={!regionOn || !canWrite(scope) || siblingBusy || poolBusy}
+              aria-describedby={creditsHintId}
+              onChange={(event) => { toggleCreditsShown(event.target.checked) }}
+            />
+            <span className="dsm-qoder-pref-copy">
+              <span className="dsm-qoder-pref-label" id={creditsLabelId}>
+                {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
+              </span>
+              <span className="dsm-qoder-pref-hint" id={creditsHintId}>
+                {activeRegion === 'cn' ? t('row.showCreditsCnDesc') : t('row.showCreditsGlobalDesc')}
+              </span>
+            </span>
+          </label>
+          {/* 读数位置：这一行没有复选框，靠 padding 借用复选框那一列，让它的标题
+              和上面那条主标题对齐到同一条左边缘（15px 勾选框 + 10px 间距）。
+              关掉开关时置灰而不是藏起来——藏起来会让「有这个选项」本身消失。 */}
+          <label className="dsm-qoder-pref dsm-qoder-credit-position-pref" title={t('row.creditPositionHint')}>
+            <span className="dsm-qoder-pref-copy">
+              <span className="dsm-qoder-pref-lead">
+                <span className="dsm-qoder-pref-label">{t('row.creditPositionLabel')}</span>
+                <select
+                  className="dsm-qoder-credit-position"
+                  value={creditsPositionOf(usage)}
+                  disabled={!regionOn || !creditsShownOf(usage) || !canWrite(scope) || siblingBusy || poolBusy}
+                  aria-label={t('row.creditPositionAria', { region: activeRegion === 'cn' ? 'QD CN' : 'QD AI' })}
+                  onChange={(event) => { changeCreditPosition(event.target.value === 'stats' ? 'stats' : 'composer') }}
+                >
+                  <option value="composer">{t('row.creditPositionComposer')}</option>
+                  <option value="stats">{t('row.creditPositionStats')}</option>
+                </select>
+              </span>
+              <span className="dsm-qoder-pref-hint">{t('row.creditPositionHint')}</span>
+            </span>
+          </label>
+    </div>
+    )
+  }
+
   function renderPool(): ReactElement {
     // `error` 变体没有 pool / accounts 字段（那份文档根本没读成），所以在这里
     // 就把它排除掉 —— 早于任何 `.accounts` 访问，窄化才有意义。
     const doc = usage?.status === 'error' ? undefined : usage
     const pool = doc?.pool
+    // 没有字节池就整段不渲染（否则会读到 undefined）。积分显示那两行**不在这里**
+    // ——它们已上移到卡片正文、账号池之上（用户实拍要求「这段内容移动到账号池上面」），
+    // 因此与本函数是否渲染无关。
     if (pool === undefined || doc === undefined) return <span />
     // 账号工具（添加 PAT / 导出导入）交给账号池设置区渲染：workbuddy 把它们
     // 放在「账号池设置」标题下、说明行之前的虚线框里（`pool-tools`），而不是
@@ -850,40 +922,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         />
       </>
     )
-    // 「在对话框显示积分」开关：卡片持有写权限与区域，所以由卡片构造、交给
-    // 账号池渲染在标题行右端（用户要求：放到账号池标题旁边，省一行空间）。
-    const creditsSwitch = (
-      <>
-      <label
-        className="dsm-qoder-credits-switch"
-        title={activeRegion === 'cn' ? t('row.showCreditsCnHint') : t('row.showCreditsGlobalHint')}
-      >
-        <input
-          type="checkbox"
-          checked={regionOn ? creditsShownOf(usage) : false}
-          disabled={!regionOn || !canWrite(scope) || siblingBusy || poolBusy}
-          onChange={(event) => { toggleCreditsShown(event.target.checked) }}
-        />
-        {activeRegion === 'cn' ? t('row.showCreditsCn') : t('row.showCreditsGlobal')}
-      </label>
-      {/* 读数位置二选一：与开关同一行、紧随其后。只在开关打开时有意义——
-          关掉时两个席位都不渲染，位置无从谈起，所以置灰而不是藏起来（藏起来
-          会让「有这个选项」这件事本身消失）。 */}
-      <span className="dsm-qoder-credit-position-switch">
-        <select
-          className="dsm-qoder-credit-position"
-          aria-label={t('row.creditPositionAria', { region: activeRegion === 'cn' ? 'QD CN' : 'QD AI' })}
-          title={t('row.creditPositionHint')}
-          value={creditsPositionOf(usage)}
-          disabled={!regionOn || !creditsShownOf(usage) || !canWrite(scope) || siblingBusy || poolBusy}
-          onChange={(event) => { changeCreditPosition(event.target.value === 'stats' ? 'stats' : 'composer') }}
-        >
-          <option value="composer">{t('row.creditPositionComposer')}</option>
-          <option value="stats">{t('row.creditPositionStats')}</option>
-        </select>
-      </span>
-      </>
-    )
     return (
       <AccountPool
         t={t}
@@ -894,7 +932,6 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         canWrite={canWrite(scope)}
         onBusyChange={setPoolBusy}
         accountTools={accountTools}
-        creditsSwitch={creditsSwitch}
         onChanged={() => refresh(activeRegion, true)}
         onSelectAccount={(accountId) => {
           // 「使用哪个账号」立即生效、不走保存（与账号池的草稿式保存不同）：

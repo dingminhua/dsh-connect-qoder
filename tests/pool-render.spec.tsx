@@ -291,26 +291,24 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     expect(await withState(undefined)).toContain('row.poolCheckinUnknown')
   })
 
-  it('积分开关紧挨标题同排，芯片靠 margin-left:auto 推右（workbuddy 同规）', async () => {
-    // 用户要求把「在对话框显示积分」挪到账号池标题旁边省一行空间。
-    // 卡片构造这个节点（它持有写权限与区域），账号池只负责安置。
-    const { container, unmount } = await mountPool({
-      creditsSwitch: React.createElement('label', { className: 'dsm-qoder-credits-switch' }, 'SW'),
-    })
+  it('账号池不再接收积分开关：它已上移到卡片正文、账号池之上', async () => {
+    // 它搬过好几次家：卡片正文独占一行 → 挤在 <h3>账号池</h3> 后面 → 设置区顶部
+    // → 现在是**卡片正文里、账号池之上**（用户实拍：「这段内容移动到账号池上面」）。
+    // 因此账号池这一层不再有安置它的职责：既没有 props，设置区里也不该冒出
+    // `.dsm-qoder-prefs`——否则同一块会渲染两次。
+    const { container, unmount } = await mountPool()
     try {
-      const head = container.querySelector('.dsm-qoder-pool-head')
-      const extra = head?.querySelector('.dsm-qoder-pool-head-extra')
+      expect(container.querySelector('.dsm-qoder-prefs')).toBeNull()
+      // 设置区仍是「标题 → 账号工具虚线框（若有）→ 说明行 → 设置卡片」。
+      const wrap = container.querySelector('.dsm-qoder-pool-settings-wrap')
+      expect(wrap).not.toBeNull()
+      const head = wrap!.querySelector('.dsm-qoder-pool-head')
       expect(head).not.toBeNull()
-      expect(extra).not.toBeNull()
-      // 开关包在自己的壳里，壳紧挨标题（不是被推到右端的独立分组）。
-      expect(extra!.querySelector('.dsm-qoder-credits-switch')).not.toBeNull()
-      expect(container.querySelector('.dsm-qoder-credits-row')).toBeNull()
+      expect(head!.querySelector('.dsm-qoder-pool-head-extra')).toBeNull()
+      expect(head!.querySelector('.dsm-qoder-pref')).toBeNull()
+      expect(head!.querySelector('.dsm-qoder-pool-title')).not.toBeNull()
+      // 芯片仍靠 CSS 的 margin-left:auto 靠右，而不是靠 space-between 容器。
       expect(container.querySelector('.dsm-qoder-pool-head-right')).toBeNull()
-      // DOM 顺序 = 标题 → 开关壳 → 芯片；芯片靠 CSS 的 margin-left:auto 靠右，
-      // 而不是靠一层 justify-content:space-between 的容器。
-      const html = head!.innerHTML
-      expect(html.indexOf('pool-title')).toBeLessThan(html.indexOf('head-extra'))
-      expect(html.indexOf('head-extra')).toBeLessThan(html.indexOf('current-badge'))
     } finally {
       await unmount()
     }

@@ -79,22 +79,49 @@ describe('QODER_CARD_CSS', () => {
     // 说明行自己的上下内边距（它此前只有 padding-left）
     expect(hint).toMatch(/margin:0/)
     expect(hint).toMatch(/padding:6px 0 6px 19px/)
-    // 账号池**自己的**间距保持 8px —— 它不属于用户圈的那两处。
-    expect(pool).toMatch(/padding:8px 0 4px/)
+    // 账号池标题行要**夹在两条线中间垂直居中**：上方是本块的 border-top，
+    // 下方是 .dsm-qoder-pool-actions 的 border-top，中间隔着容器的 gap:12px。
+    // 所以上内边距必须等于那个 gap（12px），否则文字离上线近、离下线远。
+    // 原来是 8px —— 用户实拍：「让文字在两条线中间垂直居中」。
+    expect(pool).toMatch(/padding:12px 0 4px/)
+    expect(pool).toMatch(/gap:12px/)
   })
 
-  it('积分开关与标题同行（workbuddy 的 pool-head-extra 同规）', () => {
-    // 它原本在卡片正文里独占一行、套着为「积分明细列表」准备的 .dsm-qoder-usage
-    // （padding:16px 0 4px + gap:16px）；明细移到账号池表格后，那层留白就成了
-    // 纯空档。现在紧挨标题同行（用户要求「节约点空间」）。
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-switch')).toContain('margin:0')
-    // 那个为明细列表准备的外壳不该再套在开关上。
+  it('积分偏好两行照 dsh-connect-trae 的 .dsm-trae-pref：整行可点、标题与说明分两行、控件贴左', () => {
+    // 用户给参照图圈出 trae 那两行，要求「改成一样的样式」。结构（不是配色）
+    // 才是被参照的东西，所以这里钉的是结构与间距：
+    //   1. 一行一个开关，label 包住勾选框 → 整行都是点击区；
+    //   2. 主标题 + 副说明**分两行**（此前三条说明只挂在 title 属性上，要悬停才看得见）；
+    //   3. 下级控件（显示位置的下拉）排在标题右侧同一行，不甩到卡片另一头。
+    const prefs = ruleOf(QODER_CARD_CSS, 'dsm-qoder-prefs')
+    expect(prefs).toContain('display:flex')
+    expect(prefs).toContain('flex-direction:column')
+    expect(prefs).toContain('gap:14px')
+    // 底部 8px：这组的最后一行说明下面紧跟账号池那条分隔线，说明自己只有
+    // padding-bottom:6px，实测文字到线只剩 4 CSS px（用户实拍：「这里文字和线
+    // 距离不对」）。补到 8px 后实测 12 CSS px，与线下到标题那截相称。
+    expect(prefs).toContain('padding:2px 2px 8px')
+    const pref = ruleOf(QODER_CARD_CSS, 'dsm-qoder-pref')
+    expect(pref).toContain('align-items:flex-start')
+    expect(pref).toContain('gap:10px')
+    expect(pref).toContain('cursor:pointer')
+    // 标题与说明是两行，不是挤在一行里的一句长话。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pref-copy')).toContain('flex-direction:column')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pref-label')).toContain('font-weight:500')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pref-hint')).toContain('line-height:17px')
+    // 「显示位置 [下拉]」从左侧排起，谁也不拉伸。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pref-lead')).toContain('justify-content:flex-start')
+    // 没有勾选框的那一行借用勾选框那一列做内边距，让两条标题左边缘对齐。
+    // 缩进走变量：第一行声明 --dsm-qoder-pref-indent，第二行消费它——写死数值时
+    // 两行各算各的，位置一旦对不上就整体偏左（用户实拍过这一幕）。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credit-toggle')).toContain('--dsm-qoder-pref-indent:25px')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credit-position-pref')).toContain('padding-left:var(--dsm-qoder-pref-indent')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credit-position')).toContain('flex:none')
+    // 只为「和标题挤一行」而存在的两个类都不该再留规则。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-switch')).toBeUndefined()
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head-extra')).toBeUndefined()
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-credits-row')).toBeUndefined()
-    // workbuddy 是 `head{gap:10px}` + `head-extra{inline-flex}` +
-    // `current-badge{margin-left:auto}`，qoder 逐字对齐。
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head')?.replace(/\s/g, ''))
-      .toBe('display:flex;align-items:center;gap:10px;flex-wrap:wrap')
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-head-extra')).toContain('inline-flex')
+    // 芯片仍靠 margin-left:auto 靠右。
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-current-badge')).toContain('margin-left:auto')
   })
 

@@ -54,32 +54,73 @@ export const QODER_CARD_CSS = `
  * 下侧 4px 保持：说明行与账号池之间还隔着账号池自己的 padding-top 与边框。
  */
 .dsm-qoder-usage{display:flex;flex-direction:column;gap:10px;margin:0;padding:12px 0 2px}
-.dsm-qoder-tabs{display:flex;gap:6px;padding:4px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
-.dsm-qoder-tab{appearance:none;font:inherit;cursor:pointer;flex:1;border:0;border-radius:7px;padding:7px 10px;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:500;line-height:18px;background:transparent;transition:color .15s,background .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+/*
+ * Tab 栏：**两格独立的卡片**，不再是「一条通栏长条里塞两个按钮」。
+ * 形状照 dsh-connect-trae（用户给了参照图并指出「这个区域的设计，学习一下」）：
+ *   - 每格自带 1px 边框 + 圆角 + 自己的底色，格与格之间留 8px 缝；
+ *   - **选中的那格**描品牌色边（--dsw-alias-brand-primary）、底色降一层；
+ *   - 圆点/供应商名/开关三样都在同一格内，右侧开关前有一条细分隔线，
+ *     让「这格是哪个供应商」与「它开没开」读成一个单位；
+ *   - 未开启的供应商整格压到 55% 不透明度，而不是只压名字。
+ * 通栏那条外框与「按钮自带 inset 边框」一起删掉了：外面一条、里面再一条，
+ * 两道边框相距几像素，看起来像渲染出错（trae 的注释里记的正是这一条）。
+ */
+.dsm-qoder-tabs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.dsm-qoder-tab-cell{display:flex;align-items:center;gap:4px;min-width:0;padding:8px 12px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#2a2c33);transition:border-color .15s,background .15s}
+.dsm-qoder-tab-cell:hover{border-color:var(--dsw-alias-label-dimmed,#777)}
+/* 选中态挂在 CELL 上：一格一个单位，开关也在这格的边框里。 */
+.dsm-qoder-tab-cell-active{border-color:var(--dsw-alias-brand-primary,#5686fe);background:var(--dsw-alias-bg-layer-2,#232529)}
+.dsm-qoder-tab{appearance:none;font:inherit;cursor:pointer;flex:1;min-width:0;border:0;border-radius:7px;padding:0;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:600;line-height:20px;background:transparent;text-align:left;transition:color .15s;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .dsm-qoder-tab:hover:not(:disabled):not(.dsm-qoder-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-qoder-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsm-qoder-tab-active{color:var(--dsw-alias-label-primary,#e6e6e6);background:var(--dsw-alias-bg-layer-2,#232529);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l2,#3a3d45)}
-.dsm-qoder-tab-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:6px;vertical-align:baseline}
-.dsm-qoder-tab-cell{display:flex;align-items:center;gap:2px;flex:1;min-width:0}
-.dsm-qoder-tab-switch{display:inline-flex;align-items:center;flex:none;padding:0 8px 0 2px;cursor:pointer}
-.dsm-qoder-tab-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-qoder-tab-switch input:disabled{opacity:.4;cursor:default}
-/* One sidebar-credit switch, belonging to the ACTIVE tab's region. */
-/*
- * 「在对话框显示积分」开关：渲染在账号池标题行里、紧挨标题
- * （.dsm-qoder-pool-head-extra，workbuddy 的 pool-head-extra 同规），不再在卡片
- * 正文里独占一行——用户要求「放到账号池这个标题旁边吧，节约点空间」。它曾套着
- * 为「积分明细列表」准备的 .dsm-qoder-usage（16px 上内边距 + 16px gap），明细
- * 移走后那层留白变成纯空档。字号 12px，不抢标题的视觉重量。
- */
-.dsm-qoder-credits-switch{display:inline-flex;align-items:center;gap:6px;margin:0;cursor:pointer;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-.dsm-qoder-credits-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-qoder-credits-switch input:disabled{opacity:.4;cursor:default}
-/* 读数位置二选一：与积分开关同一行、紧随其后（用户要的是同处一行紧凑摆放）。 */
-.dsm-qoder-credit-position-switch{display:inline-flex;align-items:center;gap:6px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-.dsm-qoder-credit-position{max-width:150px;padding:2px 6px;font-size:12px}
-.dsm-qoder-credit-position:disabled{opacity:.4;cursor:default}
+/* 只管字色；边框与底色由上级那条 .dsm-qoder-tab-cell-active 负责。 */
+.dsm-qoder-tab-active{color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-qoder-tab-dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:7px;vertical-align:baseline}
 .dsm-qoder-tab-off{opacity:.55}
+/* 开关与名字同一行、靠右，前面一条细分隔线；点击区只包住开关本身，不盖住
+   按钮，否则点名字会被当成点开关。 */
+.dsm-qoder-tab-switch{display:inline-flex;align-items:center;flex:none;margin-left:auto;padding-left:10px;border-left:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24));cursor:pointer}
+.dsm-qoder-tab-switch input{margin:0;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-qoder-tab-switch input:disabled{cursor:default}
+.dsm-qoder-tab-switch:has(input:disabled){opacity:.6;cursor:default}
+/*
+ * 积分显示：设置区顶部的**两行**，结构照 dsh-connect-trae 的 .dsm-trae-pref*
+ * （用户给参照图，圈出「在输入框工具栏显示积分读数 / 显示位置」这两行，要求
+ * 「改成一样的样式」）。三条规矩逐字对齐：
+ *   1. 一行一个开关，label 包住勾选框，**整行都是点击区**（不必瞄准那个小方块）；
+ *   2. 主标题与副说明分两行：先说「这个开关做什么」，再说「它会带来什么」；
+ *   3. 下级控件（显示位置的下拉）**排在主标题右侧同一行**，不甩到卡片另一头
+ *      ——推到对面等于把一句话拆成两个物件，中间留半张卡片空白。
+ * 上一版是「勾选框 + 短标签 + 下拉」挤在 <h3>账号池</h3> 之后，没有一句可见
+ * 说明（三条说明只挂在 title 上，要悬停才看得见）。
+ */
+/* 底部留 8px：这句说明的下一行就是账号池那条分隔线，而说明自己只有
+   padding-bottom:6px —— 实测文字到线只剩 4 CSS px，紧得像贴上去
+   （用户实拍：「这里文字和线 距离不对」）。补 8px 后约 12px，与线下到
+   「账号池」标题的那截间距相称。 */
+.dsm-qoder-prefs{display:flex;flex-direction:column;gap:14px;padding:2px 2px 8px}
+.dsm-qoder-pref{display:flex;align-items:flex-start;gap:10px;font-size:13px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0);cursor:pointer}
+.dsm-qoder-pref input{flex:none;cursor:pointer;accent-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-qoder-pref-check{inline-size:15px;block-size:15px;margin:3px 0 0}
+.dsm-qoder-pref-copy{display:flex;flex-direction:column;gap:3px;min-width:0}
+.dsm-qoder-pref-label{font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6)}
+/* 「显示位置 [下拉]」：从左侧排起、谁也不拉伸，控件贴着问它的那几个字。 */
+.dsm-qoder-pref-lead{display:flex;align-items:center;justify-content:flex-start;gap:10px;min-width:0}
+.dsm-qoder-pref-lead .dsm-qoder-pref-label{flex:none}
+.dsm-qoder-pref input:disabled{cursor:default}
+.dsm-qoder-pref:has(input:disabled){opacity:.6;cursor:default}
+.dsm-qoder-pref-hint{color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:17px}
+.dsm-qoder-pref span{min-width:0}
+/* 这一行没有勾选框，借用它的那一列作内边距，好让标题和上面那条左边缘对齐
+   （15px 勾选框 + 10px 间距 = 25px）。 */
+/* 第一行先声明这一列，第二行才能吃到同一个值——两行的左边缘因此对齐到
+   主标题，而不是各算各的（之前写死 25px，与勾选框的实际尺寸各算各的，
+   位置一旦对不上就整体偏左）。 */
+.dsm-qoder-credit-toggle{--dsm-qoder-pref-indent:25px}
+.dsm-qoder-credit-position-pref{align-items:flex-start;padding-left:var(--dsm-qoder-pref-indent,25px)}
+/* 下拉按自己那两个选项的宽度定尺寸，不拉伸：它回答的是一个很短的问题。 */
+.dsm-qoder-credit-position{flex:none;max-width:none;margin-top:0;padding:3px 8px;font-size:12px;line-height:16px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:7px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e6e6e6);cursor:pointer}
+.dsm-qoder-credit-position:disabled{cursor:default}
 .dsm-qoder-usage-account-actions{display:flex;gap:8px;margin:10px 0 0}
 .dsm-qoder-account-confirm{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;padding:4px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
 .dsm-qoder-account-confirm-text{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
@@ -203,12 +244,17 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-usage-cheer:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:2px}
 
 /* ---- Account pool ---- */
-/* 区块分隔线之上只留 8px：上方的「在对话框显示积分」勾选框只有一行，
-   16px 会让这截空档看着像丢了内容（用户实拍：「红色的部分向上靠拢一些」）。 */
-.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:8px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+/* 「账号池」标题行夹在**两条线**中间：上面是本块的 border-top，下面是
+   .dsm-qoder-pool-actions 的 border-top。要让文字垂直居中，上内边距就必须
+   等于它下方那截间距 —— 下方是容器的 gap:12px，所以这里也取 12px。
+   原来是 8px，文字因此偏上 4px（用户实拍：「让文字在两条线中间垂直居中」）。
+   上一版把上边距压到 8px 是为了回应「红色的部分向上靠拢一些」，那个诉求指的
+   是**标题与上方说明行**之间的空档；几何上正解是让标题居中，而不是继续压小
+   ——压到 8px 会让它离上线近、离下线远，反而更明显。 */
+.dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:12px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-qoder-pool-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-/* 积分开关的壳：紧挨标题（workbuddy 的 pool-head-extra 同规）。 */
-.dsm-qoder-pool-head-extra{display:inline-flex;align-items:center}
+/* 积分开关已搬进设置区顶部那两行（形状照 dsh-connect-trae），标题行不再有
+   额外的壳——它当初存在只因「开关要和标题挤一行」。 */
 .dsm-qoder-pool-current-badge{margin-left:auto;padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
 .dsm-qoder-pool-account-select{min-width:200px}
 .dsm-qoder-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}

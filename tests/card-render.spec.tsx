@@ -150,6 +150,30 @@ describe('QoderCard render', () => {
     }
   })
 
+  // 形状照 `dsh-connect-trae` 的供应商格：**选中态挂在整格上**（描彩色边），
+  // 不挂在里面的按钮上。按钮自带 inset 边框时，它外面还有一条通栏边框，两道
+  // 边框相距几像素，看起来像渲染出错——用户给的参照图是一格一张卡片。
+  it('tab 选中态挂在格子上：选中格的按钮与开关同属一个描边单位', async () => {
+    const { container, unmount } = await mountCard()
+    try {
+      const tabs = container.querySelector('.dsm-qoder-tabs')!
+      const cells = Array.from(tabs.querySelectorAll<HTMLElement>(':scope > .dsm-qoder-tab-cell'))
+      const activeCells = cells.filter(cell => cell.classList.contains('dsm-qoder-tab-cell-active'))
+      expect(activeCells).toHaveLength(1)
+      const activeCell = activeCells[0]!
+      // 那一格内部：选中的 tab 按钮 + 它的开关
+      expect(activeCell.querySelector('button.dsm-qoder-tab-active')).not.toBeNull()
+      expect(activeCell.querySelector('label.dsm-qoder-tab-switch input[type="checkbox"]')).not.toBeNull()
+      // 另外那格不许冒领选中态
+      for (const cell of cells) {
+        if (cell === activeCell) continue
+        expect(cell.classList.contains('dsm-qoder-tab-cell-active')).toBe(false)
+      }
+    } finally {
+      await unmount()
+    }
+  })
+
   it('模型行渲染 displayName 与「免费」标记，而不是文案键字面量', async () => {
     const { container, unmount } = await mountCard()
     try {
@@ -815,6 +839,24 @@ describe('积分读数席位控件', () => {
     }))
   }
 
+  it('积分那两行在卡片正文里、账号池之上（用户实拍要求）', async () => {
+    stubUsage(region => withPosition('stats'))
+    const { container, unmount } = await mountCard()
+    try {
+      const prefs = container.querySelector('.dsm-qoder-prefs')
+      expect(prefs).not.toBeNull()
+      const pool = container.querySelector('.dsm-qoder-pool')
+      expect(pool).not.toBeNull()
+      // 在账号池之前，且不落在账号池内部（不在它的设置区里，否则会重复渲染）。
+      expect(prefs!.compareDocumentPosition(pool!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+      expect(pool!.contains(prefs!)).toBe(false)
+      // 同一个容器里只出现一次。
+      expect(container.querySelectorAll('.dsm-qoder-prefs')).toHaveLength(1)
+    } finally {
+      await unmount()
+    }
+  })
+
   it('渲染二选一控件，值取自 Host 的 usage 应答', async () => {
     stubUsage(region => withPosition('stats'))
     const { container, unmount } = await mountCard()
@@ -825,10 +867,14 @@ describe('积分读数席位控件', () => {
       expect(select!.value).toBe('stats')
       const values = Array.from(select!.querySelectorAll('option')).map(o => o.value)
       expect(values).toEqual(['composer', 'stats'])
-      // 与积分开关同处一行（用户要求：紧挨着放，不新起一行）。
-      expect(select!.closest('.dsm-qoder-credit-position-switch')).not.toBeNull()
-      expect(container.querySelector('.dsm-qoder-credit-position-switch')!.parentElement)
-        .toBe(container.querySelector('.dsm-qoder-credits-switch')!.parentElement)
+      // 位置控件现在是**下级一格**（用户圈出参照图要求照 dsh-connect-trae
+      // 的「显示位置 [下拉]」：开关行在前，位置与它的说明缩进在后）。
+      // 它不再与勾选框同一 flex 行，但必须仍与勾选框同属一个 .dsm-qoder-prefs 块。
+      const row = select!.closest('.dsm-qoder-credit-position-pref')
+      expect(row).not.toBeNull()
+      expect(row!.closest('.dsm-qoder-prefs')).not.toBeNull()
+      expect(row!.closest('.dsm-qoder-prefs'))
+        .toBe(container.querySelector('.dsm-qoder-credit-toggle')!.closest('.dsm-qoder-prefs'))
     } finally {
       await unmount()
     }
