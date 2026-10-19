@@ -129,11 +129,59 @@ export function thinkingOf(config: Record<string, unknown> | undefined): {
   }
 }
 
+/**
+ * 该条目**是否支持思考**：上游的 `thinking_config` 说了算，`is_reasoning` 只作
+ * 补充。任一为真即成立。
+ *
+ * 为什么不能只看 `is_reasoning`（issue #1「不能调节推理等级」的根因）：实测两个
+ * 区域的 `model/list` 里 `is_reasoning` 与 `thinking_config` **自相矛盾**，而且
+ * 同一个模型换个区域就翻转 ——
+ *
+ * | 区域   | key             | `is_reasoning` | `efforts`          |
+ * | ------ | --------------- | -------------- | ------------------ |
+ * | cn     | `dfmodel`       | false          | low / high / max   |
+ * | cn     | `kmodel_latest` | false          | low / high / max   |
+ * | global | `performance`   | false          | low / medium / high / xhigh / max |
+ * | global | `kmodel_latest` | false          | low / high / max   |
+ * | global | `kmodel`        | false          | low / high / max   |
+ *
+ * 还有 `dfmodel`（cn false / global true）、`qmodel`、`qmodel_latest`、`auto`
+ * （cn true / global false）—— 同一模型两边声明相反，说明 `is_reasoning` 是上游
+ * 侧的配置漂移，不是模型能力。而 `thinking_config` 给全了默认档、逐档
+ * `is_default` 与 `disabled` 描述，是一份**完整**的推理配置；它声明了档位，就
+ * 一定支持强度选择。采信 `is_reasoning:false` 的结果就是这些模型在 DSH 里连
+ * 思考强度控件都不渲染（用户实拍）。
+ *
+ * 方向的偏置是刻意的：只把 false 补成 true，**绝不**把 true 降成 false（实测
+ * 29 条目录中 5 条改变，24 条不动，0 条反向回退）。`efforts` 缺失的条目
+ * （`auto`、`efficient`、`qmodel` 等）保持 `is_reasoning` 原值，不会被误开。
+ */
+export function supportsThinkingOf(raw: QoderUpstreamModel): boolean {
+  if (raw.is_reasoning) return true
+  return thinkingOf(raw.thinking_config).thinkingEfforts !== undefined
+}
+
+/**
+ * 该条目**能否关闭思考**：`thinking_config.disabled` 存在，或它被声明为推理
+ * 模型——此时「不能关」是一句反事实的断言，不采信（同一处数据漂移的另一面）。
+ *
+ * 上游真正做不到时，用户勾选后的一次请求会失败并被如实报出；而按 `is_reasoning`
+ * 藏起一个本可用的 off 档，代价是用户**永远**没有这个选项（与
+ * `src/off-thinking.ts` 的取舍方向一致：宁可多提供，因为它可撤回）。
+ *
+ * 注意顺序：这里用的是**修正后**的 `supportsThinking`，所以像 global 的
+ * `qmodel` / `qmodel_latest` / `kmodel` 这类「`disabled` 有、`efforts` 没有」
+ * 的条目也能拿到 off 档。
+ */
+export function canDisableThinkingOf(raw: QoderUpstreamModel, supportsThinking: boolean): boolean {
+  return raw.thinking_config?.disabled !== undefined || supportsThinking
+}
+
 /** 把上游 snake_case 条目解析成 DSH 侧模型信息。 */
 export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
   const contextWindow = pickDefaultContextWindow(raw) ?? raw.max_input_tokens ?? QODER_DEFAULT_CONTEXT
-  const canDisable = raw.thinking_config?.disabled !== undefined
   const reasoning = thinkingOf(raw.thinking_config)
+  const supportsThinking = supportsThinkingOf(raw)
   return {
     key: raw.key,
     displayName: raw.display_name,
@@ -141,8 +189,11 @@ export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
     contextWindow,
     maxOutputTokens: raw.max_output_tokens ?? 32_768,
     supportsImages: raw.is_vl,
-    supportsThinking: raw.is_reasoning,
-    canDisableThinking: canDisable || raw.is_reasoning === false,
+    // 两项都按 `thinking_config` 判，不单看 `is_reasoning`（见上两处注释与
+    // issue #1）。旧写法 `canDisableThinking: canDisable || raw.is_reasoning === false`
+    // 会把**所有**非推理模型都标成可关闭思考，卡片上就是一堆打不开的勾选。
+    supportsThinking,
+    canDisableThinking: canDisableThinkingOf(raw, supportsThinking),
     ...reasoning,
     isDefault: raw.is_default,
     isFree: raw.is_free === true,

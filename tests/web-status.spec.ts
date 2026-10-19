@@ -322,6 +322,40 @@ describe('usage route', () => {  it('answers 200 with a signed-in document for t
     await usage(request('GET', undefined, `${QODER_USAGE_PATH}?region=xx`), res)
     expect(status()).toBe(400)
   })
+
+  it('echoes offModelKeys exactly as saved — never topped up with non-reasoning models (issue #1)', async () => {
+    // 用户实拍的第二症状：某行「可关闭思考」取消勾选并保存后，重开设置页又变回
+    // 勾选。保存确实成功了，是回显层把它并了回来 —— 旧判据
+    // `offKeysRaw.includes(key) || !m.supportsThinking` 把所有非推理模型强制并入。
+    //
+    // 断言方式：保存值为空，目录里放一个**不推理**的模型。回显必须为空，否则
+    // 用户永远取消不掉这一项。
+    const NON_REASONING: QoderModelInfo = { ...FREE_MODEL, key: 'mmodel', displayName: 'MiniMax-M2.7', supportsThinking: false, canDisableThinking: false, isFree: false, isDefault: false }
+    const captured = await mountRoutes(deps({
+      catalogs: { cn: { current: () => [NON_REASONING] }, global: { current: () => [NON_REASONING] } },
+      offModelKeys: () => [],
+    }))
+    const usage = findHandler(captured, QODER_USAGE_PATH)
+    const { res, status, body } = response()
+    await usage(request('GET', undefined, `${QODER_USAGE_PATH}?region=cn`), res)
+    expect(status()).toBe(200)
+    expect((body() as { offModelKeys: string[] }).offModelKeys).toEqual([])
+    // 这一行仍然被判为非推理（控件因此不渲染 off 档）——回显与能力是两件事。
+    expect((body() as { models: Array<{ key: string, supportsThinking: boolean }> }).models[0]).toMatchObject({ key: 'mmodel', supportsThinking: false })
+  })
+
+  it('echoes a saved off selection for a reasoning model', async () => {
+    // 反向：用户**勾了**就一定回显勾上。两条链都以保存值为准。
+    const DECLARED: QoderModelInfo = { ...FREE_MODEL, key: 'dfmodel', supportsThinking: true }
+    const captured = await mountRoutes(deps({
+      catalogs: { cn: { current: () => [DECLARED] }, global: { current: () => [DECLARED] } },
+      offModelKeys: () => ['dfmodel'],
+    }))
+    const usage = findHandler(captured, QODER_USAGE_PATH)
+    const { res, body } = response()
+    await usage(request('GET', undefined, `${QODER_USAGE_PATH}?region=cn`), res)
+    expect((body() as { offModelKeys: string[] }).offModelKeys).toEqual(['dfmodel'])
+  })
 })
 
 describe('account-credits route', () => {

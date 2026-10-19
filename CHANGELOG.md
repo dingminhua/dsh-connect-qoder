@@ -2,6 +2,64 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.5.2 (2026-10-19)
+
+> 版本号取 **patch**：只改「上游字段怎么读」与一处回显判据，配置键、落盘格式、
+> 请求形状、CLI、peer 宿主范围全都不动。已有 profile 不需要迁移。
+
+### Fixed
+
+- **部分模型不能调节推理等级（issue #1）。** 症状：DeepSeek-Flash 等模型在 DSH
+  的模型设置里**没有思考强度控件**，而同一个网关上的模型却有；卡片里那行
+  「可关闭思考」取消勾选并保存后，重开设置页又变回勾选。
+
+  根因不在 DSH，也不在某个模型，而是上游 `GET /algo/api/v2/model/list` 把自己
+  说矛盾了：`is_reasoning: false`，同一份条目里的 `thinking_config` 却给全了
+  默认档、逐档 `is_default` 与 `disabled` 描述。插件原先只信 `is_reasoning`
+  （`src/catalog.ts` 的 `parseUpstreamModel`），于是 `supportsThinking === false`
+  → `qoderThinkingLevelMap()` 首行短路 → 模型被注册成 `reasoning: false` → DSH
+  不渲染强度控件。
+
+  实测（2026-10-19，两个区域共 29 条目录，`dfmodel`/`kmodel_latest`/`performance`
+  等 **5 条**自相矛盾）：
+
+  | 区域   | key             | `is_reasoning` | `efforts`              |
+  | ------ | --------------- | -------------- | ---------------------- |
+  | cn     | `dfmodel`       | false          | low / high / max       |
+  | cn     | `kmodel_latest` | false          | low / high / max       |
+  | global | `performance`   | false          | low / medium / high / xhigh / max |
+  | global | `kmodel_latest` | false          | low / high / max       |
+  | global | `kmodel`        | false          | low / high / max       |
+
+  更关键的是**同一个模型换个区域就翻转**：`dfmodel` 在 cn 是 false、在 global
+  是 true；`qmodel` / `qmodel_latest` / `auto` 反过来。这说明 `is_reasoning` 是
+  上游侧的配置漂移，不是模型能力。
+
+  现在以 `thinking_config` 为准（新增 `supportsThinkingOf()` /
+  `canDisableThinkingOf()` 两个纯函数，规则只写在一处）：
+
+  - **支持思考** = `is_reasoning` 为真，**或** `thinking_config.enabled.efforts`
+    声明了档位。方向的偏置是刻意的：只把 false 补成 true，绝不把 true 降成 false
+    ——实测 5 条改变、24 条不动、**0 条反向回退**。`efforts` 缺失的条目
+    （`auto`、`efficient`、`qmodel` 等）保持 `is_reasoning` 原值，不会被误开。
+  - **可关闭思考** = `thinking_config.disabled` 存在，**或**它本来是推理模型。
+    旧写法是 `canDisable || is_reasoning === false`，它把**每个**非推理模型都标成
+    可关闭思考 —— 卡片上是一堆打不开的勾选。改成上面这条之后，global 的
+    `qmodel` / `qmodel_latest` / `kmodel`（`disabled` 有、`efforts` 没有）也拿到了
+    off 档；它们是「能思考但没声明档位」的模型，以前被当成「不会思考」。
+  - **回显只认保存值**：`src/web-status.ts` 的 `offModelKeys` 不再把非推理模型
+    强制并入（旧判据 `offKeysRaw.includes(key) || !m.supportsThinking`）。这正是
+    「取消勾选又变回来」那条症状 —— 保存是成功的，是回显层覆盖掉了。回显层不该
+    持有第二份能力判据。
+
+  新增 4 条回归测试（`tests/catalog.spec.ts` 3 条、`tests/web-status.spec.ts` 1 条），
+  用的都是实测的原始条目形状。已确认：**撤掉修复时这 4 条全红，装回后全绿**，
+  不是「写了就绿」的摆设。
+
+  已知边界：上游若真的拒绝某个 off 档，用户勾选后的**那一次**请求会失败并在界面
+  上如实报出。这是刻意的取舍 —— 与 `src/off-thinking.ts` 的方向一致，宁可多提供
+  一个可撤回的选项，也不替用户永久藏起它。
+
 ## 1.5.1 (2026-10-19)
 
 > 版本号取 **patch**：只改设置页**首屏**的取数时机，卡片先出账号行、积分后补。

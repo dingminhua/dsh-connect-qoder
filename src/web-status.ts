@@ -877,7 +877,18 @@ export async function buildWebUsage(
   // 现场重读，数字与从前完全一致，只是不再挡住账号列表的出现。
   const usageEntry = fast ? deps.usage(region) : await freshUsageEntryOf(deps, region)
   const offKeysRaw = deps.offModelKeys(region)
-  const offModelKeys = catalog.filter(m => offKeysRaw.includes(m.key) || !m.supportsThinking).map(m => m.key)
+  // 回显**只**来自用户保存的选择，绝不按能力补并。
+  //
+  // 这里原先写作 `offKeysRaw.includes(key) || !m.supportsThinking`：一旦上游把某
+  // 模型报成非推理，它就被强制并入 `offModelKeys`，于是那一行「可关闭思考」无论
+  // 用户怎么取消勾选、保存后重开设置页又是勾上的 —— 保存其实成功了，是回显层
+  // 覆盖（issue #1 的第二个症状）。并入的理由也不成立：非推理模型根本没有 off
+  // 档可言（`qoderThinkingLevelMap` 对它们返回 undefined），把它画成勾选只是在
+  // 展示一个不存在的配置。
+  //
+  // 能力判定已经在数据源那一侧修好（`catalog.ts` 的 `supportsThinkingOf`），
+  // 回显层不该再持有第二份判据 —— 两份判据必然漂移。
+  const offModelKeys = catalog.filter(m => offKeysRaw.includes(m.key)).map(m => m.key)
 
   const credentialRejected = usageEntry?.error === 'credential-rejected'
   // 恢复建议必须建立在**实测**上：把「本区域还有其他账号，但刚才都没能通过

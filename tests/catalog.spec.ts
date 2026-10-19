@@ -12,6 +12,7 @@ import {
   applyContextBudgets,
 } from '../src/catalog.ts'
 import type { QoderUpstreamModel } from '../src/upstream.ts'
+import { qoderThinkingLevelMap } from '../src/adapter.ts'
 import { resolvePat, patFromEnv, QODER_PAT_ENV_VARS } from '../src/credentials.ts'
 
 function rawModel(overrides: Partial<Record<string, unknown>> = {}): QoderUpstreamModel {
@@ -59,6 +60,80 @@ describe('model parsing', () => {
 
   it('canDisableThinking is true when thinking_config.disabled exists', () => {
     expect(parseUpstreamModel(rawModel({ thinking_config: { disabled: true } })).canDisableThinking).toBe(true)
+  })
+
+  // -------------------------------------------------------------------------
+  // issue #1「不能调节推理等级」：`is_reasoning` 与 `thinking_config` 自相矛盾。
+  //
+  // 下面的条目形状**逐字取自实测的 `GET /algo/api/v2/model/list`**（2026-10-19，
+  // cn 与 global 两个区域），不是构造出来的极端情况。
+  // -------------------------------------------------------------------------
+
+  it('believes thinking_config over is_reasoning when the two disagree (issue #1)', () => {
+    // 实测 cn `dfmodel`（DeepSeek-Flash）：is_reasoning=false，却给了完整三档
+    // 与 disabled。旧写法 `supportsThinking: raw.is_reasoning` 让它在 DSH 里
+    // 连思考强度控件都不渲染 —— 这正是用户报的症状。
+    const reasoning = { disabled: { description: 'Disable thinking' }, enabled: { description: 'Enable thinking', is_default: true, efforts: { high: {}, max: {}, low: {} } } }
+    const info = parseUpstreamModel(rawModel({ display_name: 'DeepSeek-Flash', is_reasoning: false, thinking_config: reasoning }))
+    expect(info.supportsThinking).toBe(true)
+    expect(info.thinkingEfforts).toEqual(['low', 'high', 'max'])
+    // 声明了档位就一定支持强度选择 → 适配器才会产出档位表。
+    expect(qoderThinkingLevelMap(info)).toBeDefined()
+  })
+
+  it('covers every contradictory entry the two regions actually serve', () => {
+    // 实测 5 条自相矛盾条目（cn 2 条 + global 3 条），原生键序也照抄，用来钉住
+    // 「键序不可信」与「以 efforts 为准」两件事同时成立。
+    const cases: Array<{ key: string, efforts: Record<string, unknown> }> = [
+      { key: 'dfmodel', efforts: { high: {}, max: { is_default: true }, low: {} } },
+      { key: 'kmodel_latest', efforts: { high: {}, low: {}, max: {} } },
+      { key: 'performance', efforts: { xhigh: {}, high: {}, low: {}, max: {}, medium: {} } },
+      { key: 'kmodel', efforts: { high: {}, low: {}, max: {} } },
+    ]
+    for (const c of cases) {
+      const info = parseUpstreamModel(rawModel({
+        key: c.key,
+        is_reasoning: false,
+        thinking_config: { enabled: { efforts: c.efforts } },
+      }))
+      expect(info.supportsThinking, `${c.key} 必须被认作推理模型`).toBe(true)
+      expect(info.thinkingEfforts?.length, `${c.key} 的档位不能丢`).toBe(Object.keys(c.efforts).length)
+    }
+  })
+
+  it('never turns a declared reasoning model into a non-reasoning one', () => {
+    // 方向的偏置：修正只会把 false 补成 true。efforts 缺席的条目（auto、
+    // efficient、qmodel 等）必须保持 is_reasoning 原值，不能被误开。
+    for (const isReasoning of [true, false]) {
+      const info = parseUpstreamModel(rawModel({
+        is_reasoning: isReasoning,
+        thinking_config: { enabled: { is_default: true, efforts: undefined } },
+      }))
+      expect(info.supportsThinking).toBe(isReasoning)
+      expect(info.thinkingEfforts).toBeUndefined()
+    }
+    // 推理模型不会因为「没写 thinking_config」被降级。
+    expect(parseUpstreamModel(rawModel({ is_reasoning: true, thinking_config: undefined })).supportsThinking).toBe(true)
+  })
+
+  it('offers off only where the upstream actually describes it', () => {
+    // 旧写法 `canDisable || raw.is_reasoning === false` 把**每个**非推理模型都标成
+    // 可关闭思考 —— 卡片上就是一排打不开的勾选。现在只看上游是否真的描述了
+    // disabled（或它本来就推理）。
+    const bare = parseUpstreamModel(rawModel({ is_reasoning: false, thinking_config: undefined }))
+    expect(bare.supportsThinking).toBe(false)
+    expect(bare.canDisableThinking).toBe(false)
+
+    // 实测 global `qmodel` / `qmodel_latest` / `kmodel`：disabled 有、efforts 没有。
+    const disabledOnly = parseUpstreamModel(rawModel({
+      is_reasoning: false,
+      thinking_config: { disabled: { description: 'Disable thinking' }, enabled: { description: 'Enable thinking' } },
+    }))
+    expect(disabledOnly.thinkingEfforts).toBeUndefined()
+    expect(disabledOnly.canDisableThinking).toBe(true)
+
+    // 推理模型默认可以关闭（「不能关」是一句反事实断言，不采信）。
+    expect(parseUpstreamModel(rawModel({ is_reasoning: true })).canDisableThinking).toBe(true)
   })
 
   it('carries the thinking strengths, ordered weakest → strongest', () => {
