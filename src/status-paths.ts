@@ -144,6 +144,56 @@ export function withQoderRegion(path: string, region: QoderWebRegion): string {
 }
 
 /**
+ * Query parameter selecting HOW MUCH of the usage document a request wants.
+ *
+ * Absent means the full document — every caller written before this parameter
+ * existed keeps getting exactly what it used to, which is why the default is
+ * `full` rather than an opt-in flag.
+ */
+export const QODER_DETAIL_PARAM = 'detail'
+
+/**
+ * The one non-default detail level: a first-paint document built from LOCAL
+ * state only.
+ *
+ * The card's first paint used to wait for the full document, whose tail
+ * includes one live upstream read for the selected account's credits plus one
+ * per pool member. Each of those can stall for seconds, and the card rendered
+ * nothing about accounts until all of them came back — the complaint this
+ * exists to fix (同一族插件的 issue #77，见 dsh-connect-workbuddy)。
+ *
+ * A `fast` document answers from what the Host already knows: the stored
+ * credential (no token refresh), the cached credit reading, the pool's saved
+ * member list and the check-in state measured this process. It never performs
+ * an upstream read, so it cannot be held by a slow upstream.
+ */
+export const QODER_DETAIL_FAST = 'fast'
+
+/**
+ * Address one region's usage route asking for the first-paint document.
+ *
+ * Separate from {@link withQoderRegion} so that "this call only wants the
+ * cheap document" is visible at the call site.
+ */
+export function withQoderRegionFastDetail(path: string, region: QoderWebRegion): string {
+  return `${withQoderRegion(path, region)}&${QODER_DETAIL_PARAM}=${QODER_DETAIL_FAST}`
+}
+
+/**
+ * Does this request URL ask for the first-paint document?
+ *
+ * Only the exact value `fast` counts. Anything else — a typo, a future level
+ * this build does not know, an empty value — degrades to the FULL document.
+ * That direction is deliberate: a typo must cost a slow paint, never an
+ * emptier panel that looks like data loss.
+ */
+export function fastDetailOf(url: string): boolean {
+  const at = url.indexOf('?')
+  if (at === -1) return false
+  return new URLSearchParams(url.slice(at + 1)).get(QODER_DETAIL_PARAM) === QODER_DETAIL_FAST
+}
+
+/**
  * Read the region parameter off a status-route URL. Absent means the domestic
  * tab (`cn`); a present-but-unknown value returns undefined so the route can
  * answer 400 instead of guessing.

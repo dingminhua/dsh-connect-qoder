@@ -35,6 +35,7 @@ import {
   QODER_TRANSFER_PATH,
   QODER_USAGE_PATH,
   accountActionOf,
+  fastDetailOf,
   knownQoderRegionOfDomain,
   poolAccountIdOf,
   poolActionOf,
@@ -126,6 +127,24 @@ export interface QoderPoolDeps {
    * 写入宿主侧快照供请求路径的排名使用；非成员不读，显示「—」。
    */
   memberCredits?(region: QoderRegion, accountIds: readonly string[]): Promise<ReadonlyMap<string, QoderPoolCredits>>
+  /**
+   * The member credit readings the Host ALREADY has, synchronously — the
+   * first-paint source (issue #77 的 Qoder 版).
+   *
+   * `memberCredits` above is the honest-but-expensive version: one upstream
+   * usage read per member, awaited before the document returns. On a cold
+   * process (or against a slow/rate-limited upstream) that is exactly what made
+   * the settings page sit on a blank account list for tens of seconds. This dep
+   * answers the same shape from the last snapshot in memory and performs NO
+   * upstream read at all, so a first-paint document can never be held by it.
+   *
+   * `undefined` means "nothing measured yet" — the pool table then renders `—`
+   * for every balance, which is honest (never measured) rather than wrong.
+   *
+   * A Host built without this dep omits the pool block from a first-paint
+   * document instead of paying for `memberCredits`; see `buildWebUsage`.
+   */
+  cachedMemberCredits?(region: QoderRegion, accountIds: readonly string[]): ReadonlyMap<string, QoderPoolCredits> | undefined
   /** Resolve one account's PAT WITHOUT changing selection. */
   credentialFor(region: QoderRegion, accountId: string): Promise<{ pat: string, accountName: string } | undefined>
   /** Probe one model through one specific PAT. */
@@ -411,7 +430,10 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
     const region = regionOfStatusUrl(req.url ?? '')
     if (region === undefined) return json(res, 400, { error: 'unknown region' })
-    const usage = await buildWebUsage(deps, region)
+    // `&detail=fast` 只要首屏文档（只用本地已有状态）；缺席或任何别的值都是
+    // 完整文档 —— 拼错一个参数只会慢，不会得到一份更空的文档。
+    const detail: QoderStatusDetail = fastDetailOf(req.url ?? '') ? 'fast' : 'full'
+    const usage = await buildWebUsage(deps, region, { detail })
     return json(res, 200, usage)
   })
 
@@ -780,8 +802,23 @@ async function freshUsageEntryOf(deps: QoderWebRouteDeps, region: QoderRegion): 
   return deps.usage(region)
 }
 
+/**
+ * How much of the usage document a caller wants.
+ *
+ * `full` is the default and the only thing that existed before: it awaits a
+ * live upstream credit re-read for the selected account AND one live read per
+ * pool member. `fast` is the card's first-paint document — it answers from
+ * local state only, so no upstream stall can hold it (issue #77 的同族修复).
+ */
+export type QoderStatusDetail = 'full' | 'fast'
+
 /** Build one region's main usage document. */
-export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion): Promise<QoderWebUsage> {
+export async function buildWebUsage(
+  deps: QoderWebRouteDeps,
+  region: QoderRegion,
+  options: { detail?: QoderStatusDetail } = {},
+): Promise<QoderWebUsage> {
+  const fast = options.detail === 'fast'
   const sources = deps.credentialSources(region)
   const store = deps.store(region)
   const accounts = await store.accounts(sources)
@@ -801,7 +838,7 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     // 自然全为 false，无需靠整段缺席来暗示。
     const pool = deps.pool === undefined
       ? undefined
-      : await buildPoolView(deps, region, accounts, deps.catalogs[region].current(), undefined)
+      : await buildPoolView(deps, region, accounts, deps.catalogs[region].current(), undefined, fast)
     return {
       status: 'signed-out',
       accounts: accounts.map(webAccountOf(deps, region)),
@@ -834,7 +871,11 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
     }
   })
 
-  const usageEntry = await freshUsageEntryOf(deps, region)
+  // 首屏文档（`detail=fast`）**不触发任何上游重读**：`refreshUsage` 是一次
+  // 真实的上游调用，而它正是 issue #77 那类「页面等几十秒」的根源——卡片在拿到
+  // 整份文档之前什么都不画。首屏改用缓存里已有的读数；随后那份完整文档照常
+  // 现场重读，数字与从前完全一致，只是不再挡住账号列表的出现。
+  const usageEntry = fast ? deps.usage(region) : await freshUsageEntryOf(deps, region)
   const offKeysRaw = deps.offModelKeys(region)
   const offModelKeys = catalog.filter(m => offKeysRaw.includes(m.key) || !m.supportsThinking).map(m => m.key)
 
@@ -847,14 +888,17 @@ export async function buildWebUsage(deps: QoderWebRouteDeps, region: QoderRegion
   // 答过话的那个承诺给用户；dep 缺席（旧宿主）时退回原来的保守猜测。
   let recovery: QoderWebRecovery | undefined
   if (credentialRejected) {
-    recovery = deps.credentialRecovery === undefined
+    // 首屏同样不探测：`credentialRecovery` 会为每个其余账号打一次上游。用原来
+    // 那条保守猜测（没有实测就只说「可能需要重新登录」），完整文档随后照常
+    // 实测并给出真正的建议。
+    recovery = deps.credentialRecovery === undefined || fast
       ? { reloginRequired: accounts.length <= 1 }
       : await deps.credentialRecovery(region, serving.id)
   }
 
   let pool: QoderWebPool | undefined
   if (deps.pool !== undefined) {
-    pool = await buildPoolView(deps, region, accounts, catalog, serving.id)
+    pool = await buildPoolView(deps, region, accounts, catalog, serving.id, fast)
   }
 
   return {
@@ -897,7 +941,9 @@ async function buildPoolView(
   catalog: readonly QoderModelInfo[],
   /** The account actually billing traffic, from the region's resolved serving credential. */
   servingAccountId: string | undefined,
-): Promise<QoderWebPool> {
+  /** First-paint document: read only what the Host already measured (issue #77). */
+  fast = false,
+): Promise<QoderWebPool | undefined> {
   const pool = deps.pool!
   const prefs = pool.preferences(region)
   const probes = pool.poolProbes(region)
@@ -962,7 +1008,21 @@ async function buildPoolView(
     : servingAccountId
   // 成员积分：卡片路由付费拉取（workbuddy 同规），失败降级为「—」而不是
   // 让整个文档失败。非成员不读（从未测量过，显示「—」是诚实的）。
-  const memberCredits = await pool.memberCredits?.(region, prefs.memberAccountIds).catch(() => undefined)
+  //
+  // 首屏文档不走这条路：`memberCredits` 是**每成员一次上游 usage 读数**，
+  // 池里六个号就是六次串在文档尾巴上的真实请求，任何一次慢都会把整个账号
+  // 列表扣住（issue #77 的形态）。`cachedMemberCredits` 只答宿主内存里已有的
+  // 快照，取不到就是「—」。宿主没有这个 dep 时**宁可不给 pool 段**，也不在
+  // 首屏偷偷付这笔钱 —— 那等于把要修的问题原样保留。
+  let memberCredits: ReadonlyMap<string, QoderPoolCredits> | undefined
+  if (fast) {
+    // 宿主编译时没有本地快照来源 → 首屏干脆不给 pool 段（卡片随后由完整文档
+    // 补齐）。给了也是空的，而空表会让「添加 PAT」入口跟着消失。
+    if (pool.cachedMemberCredits === undefined) return undefined
+    memberCredits = pool.cachedMemberCredits(region, prefs.memberAccountIds)
+  } else {
+    memberCredits = await pool.memberCredits?.(region, prefs.memberAccountIds).catch(() => undefined)
+  }
   /**
    * 池开启时的**接管候选人**：`rankPool` 第一个可用的成员。
    *

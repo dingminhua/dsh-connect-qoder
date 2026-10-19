@@ -39,6 +39,7 @@ import {
   QODER_USAGE_PATH,
   toPersistedCatalogEntry,
   withQoderRegion,
+  withQoderRegionFastDetail,
 } from '../status-paths.ts'
 import type {
   QoderPersistedModel,
@@ -185,6 +186,19 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const mounted = useRef(true)
   /** Per-region in-flight usage requests, so one region never cancels another's. */
   const controllers = useRef<Partial<Record<QoderWebRegion, AbortController>>>({})
+  /**
+   * Per-region in-flight FIRST-PAINT requests (`detail=fast`), kept apart from
+   * `controllers` on purpose.
+   *
+   * `controllers` is a latest-wins cancellation chain for the FULL document:
+   * a newer read aborts the older one so a stale response can never overwrite
+   * a fresh one. The first-paint request has different semantics — it is
+   * worthless the moment a full document exists, and it must never cancel (or
+   * be cancelled by) the real read. Mixing them would mean the fast request
+   * aborts the full one or vice versa, i.e. exactly the bug this card already
+   * had once with a shared controller across regions.
+   */
+  const fastControllers = useRef<Partial<Record<QoderWebRegion, AbortController>>>({})
 
   const scope = props.settingsScope
 
@@ -229,6 +243,54 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     }
   }, [])
 
+  /**
+   * First paint: ask for the LOCAL-ONLY document so the account rows can appear
+   * immediately, then let the full read above upgrade the numbers.
+   *
+   * The full document's tail awaits a live upstream credit read (the serving
+   * account) plus one live read per pool member — six members means six
+   * network reads stacked in front of the account table. Any one of them being
+   * slow holds the whole page on a blank body; that is the exact complaint
+   * this fixes (workbuddy issue #77, 同一族).
+   *
+   * `detail=fast` answers from state the Host already has: the stored PAT (no
+   * token exchange), the cached credit reading, the saved member list and this
+   * process's check-in snapshot. It performs NO upstream read, so it cannot be
+   * held by one.
+   *
+   * Deliberate asymmetry with `refresh`: a fast answer NEVER replaces a region
+   * that already has a document. The full read stays authoritative — the fast
+   * one only fills a hole that would otherwise render as an empty page, and it
+   * carries no error state (a failed first paint is simply no paint yet; the
+   * full read will report the failure properly).
+   */
+  const refreshFast = useCallback(async (region: QoderWebRegion): Promise<void> => {
+    fastControllers.current[region]?.abort()
+    const controller = new AbortController()
+    fastControllers.current[region] = controller
+    try {
+      const response = await fetch(withQoderRegionFastDetail(QODER_USAGE_PATH, region), {
+        headers: { accept: 'application/json' },
+        credentials: 'same-origin',
+        signal: controller.signal,
+      })
+      if (!response.ok) return
+      const value = await response.json() as QoderWebUsage
+      if (!mounted.current || controller.signal.aborted) return
+      setUsages(prev => {
+        // A region that already answered in full must not be downgraded to a
+        // credit-less first paint — the numbers would flicker backwards.
+        if (prev[region] !== undefined) return prev
+        return { ...prev, [region]: value }
+      })
+    } catch {
+      // Swallowed on purpose: the first paint is an optimisation, never a
+      // failure path. `refresh` owns the error document.
+    } finally {
+      if (fastControllers.current[region] === controller) delete fastControllers.current[region]
+    }
+  }, [])
+
   useEffect(() => {
     mounted.current = true
     // **两个区域都要读，不是只读 `cn`。** 此前只 `refresh('cn')`，另一个区域要
@@ -236,6 +298,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     // （连账号池带「添加 PAT」一起没有），要等一分钟才自己长出来
     // （用户实拍：「国际版还是缺少账号池这些功能」）。
     // 两个 tab 的状态圆点也依赖这个：没读过的区域只能画成「未知」。
+    //
+    // 首屏先要那份**本地文档**（快、不打上游），完整文档随后照常补齐数字。
+    // 顺序刻意是先 fast 后 full：两者互不取消，谁先回来都能落地；fast 只补
+    // 空洞，不会把完整文档盖回去。
+    for (const region of QODER_REGIONS) void refreshFast(region)
     for (const region of QODER_REGIONS) void refresh(region)
     if (typeof window !== 'undefined') {
       const timer = window.setInterval(() => {
@@ -249,14 +316,19 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
   // 切 tab 时若那个区域**还没读过**，立刻补读一次。否则首次打开设置页、国际版
   // 又恰好排在轮询窗口之后，用户要盯着空白等一分钟才看到内容。
+  // 同样先要本地文档：切过去的一瞬间就该看到账号行，而不是又一段空白。
   useEffect(() => {
-    if (usages[activeRegion] === undefined) void refresh(activeRegion)
+    if (usages[activeRegion] === undefined) {
+      void refreshFast(activeRegion)
+      void refresh(activeRegion)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeRegion])
 
   /** Cancel every region's in-flight usage read (unmount only). */
   const abortAllRegions = (): void => {
     for (const controller of Object.values(controllers.current)) controller?.abort()
+    for (const controller of Object.values(fastControllers.current)) controller?.abort()
   }
 
   // Re-fetch the ACTIVE region whenever a settings write might have changed the
@@ -525,6 +597,13 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                   表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
                   不随区域有没有字节池而消失。 */}
               {renderCreditsSwitch()}
+              {/* 还没拿到任何文档的那一瞬：说「正在加载」，而不是渲染一片空白。
+                  空白与「这个区域没有账号」在屏幕上长得一模一样，用户无法分辨
+                  （issue #77 同族：workbuddy 那边此时甚至渲染成了「未登录」）。
+                  首个文档一落地这条就消失，账号行在它的位置上出现。 */}
+              {usage === undefined
+                ? <p className="dsm-qoder-usage-text" role="status">{t('row.accountsLoading')}</p>
+                : null}
               {renderPool()}
               {renderModels()}
             </>

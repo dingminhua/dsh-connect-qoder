@@ -42,6 +42,9 @@ export const en = {
   'row.accountSelectAuto': 'Auto — settings, then env, then vault',
   'row.accountSelectAria': 'Choose which account serves this region',
   'row.accountsScanning': 'Re-reading…',
+  // 首次加载的一瞬。此前这段时间渲染的是「未登录 / 请填写 PAT」的引导，
+  // 而实际上账号正在飞回来的路上——用户看到的第一屏是错的（issue #77 同族）。
+  'row.accountsLoading': 'Loading your accounts…',
   'row.accountSourceSettings': 'settings PAT',
   'row.accountSourceEnv': 'environment PAT',
   'row.accountSourceVault': 'vault',
@@ -385,6 +388,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.accountSelectAuto': '自动 —— 设置 → 环境变量 → 保险库',
   'row.accountSelectAria': '选择哪个账号服务本区域',
   'row.accountsScanning': '正在读取…',
+  'row.accountsLoading': '正在加载账号…',
   'row.accountSourceSettings': '设置 PAT',
   'row.accountSourceEnv': '环境变量 PAT',
   'row.accountSourceVault': '保险库',

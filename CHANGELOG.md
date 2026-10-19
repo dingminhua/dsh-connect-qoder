@@ -2,6 +2,69 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.5.1 (2026-10-19)
+
+> 版本号取 **patch**：只改设置页**首屏**的取数时机，卡片先出账号行、积分后补。
+> 请求形状（新增的 `detail=fast` 是可选参数，不带即原样）、配置键、CLI、peer 宿主
+> 范围全都不动，向后兼容。
+
+### Fixed
+
+- **打开设置页要等几十秒才出现账号（同族插件 issue #77 的 Qoder 版）。** 症状是
+  点进设置页后正文一片空白：标签栏在，账号行、模型列表、连「添加 PAT / 导入导出」
+  的入口都不见，等半分钟到一分钟才突然全部出现。原来错在两处叠加：
+
+  1. 服务端把**一次实时上游读**焊死在 `/usage` 的正中间。`buildWebUsage` 里
+     `freshUsageEntryOf()` 先 `await deps.refreshUsage(region)`（真实的上游积分
+     读，`USAGE_FETCH_TIMEOUT_MS = 8_000`），再读缓存 —— 每一次打开页面都至少
+     等一次上游往返。
+  2. 更糟的是账号池那段：`buildPoolView()` 里
+     `await pool.memberCredits(region, prefs.memberAccountIds)` 对**每个成员各打
+     一次上游**（`poolMemberCredits`），而这批 `fetchUsage` 连
+     `withHardTimeout` 都没套，只有 `.catch`。成员越多、上游越慢，卡得越久；国际
+     区还要先拉起 UMID 组件（`COMPONENT_TIMEOUT_MS = 25_000`）算设备指纹。
+     两者串起来就是用户看到的一分钟。
+
+  1.4.6/1.4 时代显得快，是因为那时候文档尾部的按账号读取还没长出来；1.5.0 之后
+  账号池成为默认形态，痛点才暴露。**不是某次提交引入的回归，而是「可见 UI 被一个
+  无上界的 await 挡住」这个结构性问题**。
+
+  现在的形状是**两段式**：客户端先请求 `...?region=cn&detail=fast`，服务端只用
+  **本地状态**拼一份能画行的文档（`store.resolve` 是本地查找、跳过
+  `refreshUsage`、跳过 `memberCredits`、跳过 `credentialRecovery` 的逐号探测、
+  签到状态本来就读的是同步快照），于是**账号行、池表格、添加入口在第一帧就到位**；
+  随后客户端再打一次不带 `detail` 的完整请求把积分、签到、可用性补上去。实测同一
+  台机器、同一进程：完整文档首次 ~390 ms（冷缓存时还要再叠上游往返），首屏文档
+  ~67–80 ms，且连打两次 `creditsAtMs` 完全不动 —— 证明它**一次上游都没打**。
+
+  三处刻意设计：
+
+  - 首屏文档**必须仍然带 `pool` 块**。`renderPool()` 在 `pool === undefined` 时返回
+    一个空 `<span />`，也就是说「省掉池块」等于「账号区整块消失」，会把添加账号的
+    唯一入口一起藏掉 —— 为了快而让用户找不到入口，不是修好，是换了个坏法。
+  - 迟到的首屏**不许覆盖**已经在屏幕上的完整文档：`refreshFast` 只在
+    `usages[region] === undefined` 时落地，否则整份丢弃。反过来就会出现「积分闪一下
+    又变回 —」。
+  - 没测过的积分就显示 `—`，不用 0 或旧数糊弄。`cachedMemberCredits` 只认
+    `POOL_CREDITS_SNAPSHOT_MS`（10 分钟）以内、且请求 id 集完全一致的快照，过期
+    一律当没测过。
+
+  另外补了一条**加载态文案**：`usages[activeRegion] === undefined` 时说「正在加载
+  账号…」，而不是让空白正文冒充「这个区域没有账号」。空白是一种断言，在数据还在
+  路上时它是一句假话。
+
+  安全阀：`detail` 只认**精确的** `fast`，其它任何值（拼错、大写、空串）都退回完整
+  文档 —— 拼错的参数最多是多等一会儿，绝不能变成「面板更空」。
+
+  刻意没做：没有缩短 `USAGE_FETCH_TIMEOUT_MS`（积分本身仍需一次真实读取，改小只会
+  更容易读到旧数）；没有给 `poolMemberCredits` 补超时（那是完整文档的正确行为，只是
+  不该挡首屏）；没有动 `refreshUsageCoalesced` 的并发合流。
+
+  测试：`tests/issue77-fast-first-paint.spec.ts`（路由层：首屏文档**不调用**
+  `refreshUsage` / `memberCredits` / `credentialRecovery`，且未知 `detail` 值退回
+  完整文档）、`tests/issue77-card-first-paint.spec.tsx`（渲染层：完整文档还挂在路上
+  时账号行已经可见；什么都没回来时显示加载态；迟到的首屏不覆盖完整文档）。
+
 ## 1.5.0 (2026-10-18)
 
 > 版本号取 **minor**：账号池新增「手动指定发号优先级」（新配置键 `orderAccountIds`，

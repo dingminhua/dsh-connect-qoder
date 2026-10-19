@@ -933,6 +933,31 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     return map
   }
 
+  /**
+   * 首屏用的成员积分：只答**已经量过**的那份快照，一次上游都不打。
+   *
+   * `poolMemberCredits` 是诚实但昂贵的版本——每个成员一次真实 usage 读数，串在
+   * usage 文档的尾巴上 await。冷进程（或上游慢/被限流）时它能把设置页的账号
+   * 列表扣住几十秒，这正是同族插件 issue #77 报的症状。
+   *
+   * 快照新鲜度仍按 `POOL_CREDITS_SNAPSHOT_MS` 判：过期的读数拿来当「现在」是
+   * 另一种谎，宁可让那一列显示「—」（没量过），完整文档随后立刻补上真数字。
+   * 返回 `undefined` 表示这一区还什么都没量过。
+   */
+  function cachedMemberCredits(region: QoderRegion, accountIds: readonly string[]): ReadonlyMap<string, QoderPoolCredits> | undefined {
+    const snapshot = poolCreditsSnapshot[region]
+    if (snapshot === undefined) return undefined
+    if (Date.now() - (poolCreditsSnapshotAt[region] ?? 0) > POOL_CREDITS_SNAPSHOT_MS) return undefined
+    // 快照是多问出来的那批 id 的答案；只挑这次要的那几个，避免把已退出成员
+    // 的旧读数算进去。
+    const picked = new Map<string, QoderPoolCredits>()
+    for (const accountId of accountIds) {
+      const reading = snapshot.get(accountId)
+      if (reading !== undefined) picked.set(accountId, reading)
+    }
+    return picked.size === 0 ? undefined : picked
+  }
+
   /** A probe client for one region backed by chatStream. */
   function buildProbeClient(region: QoderRegion): QoderProbeClient {
     return {
@@ -1438,6 +1463,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       poolProbes: region => stacks[region].poolRuntime,
       batchProgress: region => poolBatches[region],
       memberCredits: (region, accountIds) => poolMemberCredits(region, accountIds),
+      cachedMemberCredits: (region, accountIds) => cachedMemberCredits(region, accountIds),
       credentialFor: (region, accountId) => stacks[region].store.credentialFor(accountId, sourcesOf(region)),
       probeOne: (region, credit, modelId) => probeThrough(region, credit, modelId),
       test: (region, modelId) => poolFor(region).test(region, modelId),

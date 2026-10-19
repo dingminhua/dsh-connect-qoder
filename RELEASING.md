@@ -59,7 +59,8 @@ grep -F "dsh-codex-connect" README.md README.en.md   # 唯一的 Apache-2.0 参�
 
 ```bash
 # 所有 dsh-* peer 必须是同一条范围，且上界带 -0（DSH 至今只发预发布）
-grep -c '">=0.1.7-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0"' package.json
+# ⚠️ 1.5.1 起范围多了 >=0.2.1-rc.1 一支，下面这条断言必须跟着改，否则它恒为 0、恒假失败
+grep -c '">=0.1.7-rc.1 <0.2.0-0 || >=0.2.0-rc.1 <0.3.0-0 || >=0.2.1-rc.1 <0.3.0-0"' package.json
 
 # 宿主线是否已经前进？有 0.3.x 的 tag 就说明该复核上界了
 git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
