@@ -5,6 +5,7 @@ import {
   modelDisplayName,
   initialEnabledKeys,
   deriveCatalog,
+  withoutRouters,
   QoderCatalog,
   QODER_FALLBACK_MODELS,
   pickDefaultContextWindow,
@@ -207,6 +208,62 @@ describe('selection derivation', () => {
     ]
     expect(deriveCatalog(models, new Set()).map(m => m.key))
       .toEqual(models.map(m => m.key))
+  })
+
+  it('deriveCatalog falls back to the whole roster when the selection matches nothing', () => {
+    // 真实场景，不是假设：`auto` 路由器不再进名册之后，某个**只勾过 `auto`**
+    // 的人，他的 enabledModelKeys 与目录交集为空。若这里老实返回空数组，
+    // DSH 的选择器会一个模型都没有，且**没有任何报错**（issue #32 的故障形态：
+    // 模型静默消失，用户不知道发生了什么）。退回整份目录，至少每个模型都还能
+    // 被看见、被重新勾选。
+    const models = [
+      fallbackModelInfo(QODER_FALLBACK_MODELS[0]!),
+      fallbackModelInfo(QODER_FALLBACK_MODELS[1]!),
+    ]
+    expect(deriveCatalog(models, new Set(['auto'])).map(m => m.key))
+      .toEqual(models.map(m => m.key))
+    expect(deriveCatalog(models, new Set(['已下架的模型'])).map(m => m.key))
+      .toEqual(models.map(m => m.key))
+  })
+
+  it('withoutRouters drops the saved `auto` row, which is what every old profile carries', () => {
+    // 实测（本机真实存档 profiles/desktop/cordis.patch.yml）：两个区域的
+    // lastCatalog 都是 **`auto` 打头**，displayName `Auto`、`isDefault: true`、
+    // 没有思考档位。它是旧版本写下的快照，读点不过滤的话，升级后卡片里那一行
+    // 会一直在，直到用户手动刷新一次。
+    const models = [
+      { ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key: 'auto', displayName: 'Auto', isDefault: true },
+      fallbackModelInfo(QODER_FALLBACK_MODELS[1]!),
+    ]
+    expect(withoutRouters(models).map(m => m.key)).toEqual([models[1]!.key])
+  })
+
+  it('withoutRouters leaves real models alone and never mutates its input', () => {
+    // 过滤必须只命中路由器：「叫 auto 的都丢」这种名字启发式迟早会误伤真模型，
+    // 所以判据是显式表。同时不得改写入参——目录是共享的只读数据。
+    const models = [
+      fallbackModelInfo(QODER_FALLBACK_MODELS[0]!),
+      fallbackModelInfo(QODER_FALLBACK_MODELS[1]!),
+      fallbackModelInfo(QODER_FALLBACK_MODELS[2]!),
+    ]
+    const before = models.map(m => m.key)
+    const out = withoutRouters(models)
+    expect(out.map(m => m.key)).toEqual(before)
+    expect(out).not.toBe(models)
+    expect(models.map(m => m.key)).toEqual(before)
+  })
+
+  it('initialEnabledKeys never seeds the router, even when it claims isDefault', () => {
+    // `auto` 曾经**就是**默认项（isDefault: true）。它的名字若还出现在某种旧
+    // 目录里，「初始勾选」这条路径会把它重新勾上，然后借 deriveCatalog 变成
+    // DSH 里唯一的模型。所以这里必须再排除一次，而不是指望目录已经干净。
+    const models = [
+      { ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key: 'auto', displayName: 'Auto', isDefault: true },
+      { ...fallbackModelInfo(QODER_FALLBACK_MODELS[1]!), isDefault: false, isFree: true },
+    ]
+    const keys = initialEnabledKeys(models)
+    expect(keys.has('auto')).toBe(false)
+    expect(keys.has(models[1]!.key)).toBe(true)
   })
 
   it('display names always carry the multiplier, so the DSH picker shows it', () => {

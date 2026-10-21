@@ -553,6 +553,15 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
       let hasToolCalls = false
       let inputTokens = 0
       let outputTokens = 0
+      /**
+       * 缓存命中数（issue #4）。与上面两个**计数方式不同**：
+       *
+       * `inputTokens` / `outputTokens` 是 `> 0` 才覆盖的（流里多帧会重复报，
+       * 只认非零值）；缓存命中数则允许本身就是 0（上游明确报「缓存一个都没
+       * 命中」是很正常的一件事）。所以用 `undefined` 当「还没拿到」，一旦上游
+       * 报过就记下来（含 0），不再被后面的帧覆盖成别的数。
+       */
+      let cachedTokens: number | undefined
       try {
         await upstream.chatStream(serving.pat, key, messages, {
           ...(tools === undefined ? {} : { tools }),
@@ -587,6 +596,9 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
             }
             if (delta.inputTokens > 0) inputTokens = delta.inputTokens
             if (delta.outputTokens > 0) outputTokens = delta.outputTokens
+            // `!== undefined`（而不是 `> 0`）：上游报「0 个命中」是有效答案，
+            // 而「这一帧没报」才是 undefined。两者在宿主那里含义不同。
+            if (delta.cachedTokens !== undefined) cachedTokens = delta.cachedTokens
             if (delta.toolCalls !== undefined) hasToolCalls = true
             writeDeltaChunk(res, requestId, created, model, delta)
           },
@@ -597,7 +609,19 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         const done = makeChunk(requestId, created, model)
         done.choices[0]!.finish_reason = hasToolCalls ? 'tool_calls' : 'stop'
         if (inputTokens > 0 || outputTokens > 0) {
-          done.usage = { prompt_tokens: inputTokens, completion_tokens: outputTokens, total_tokens: inputTokens + outputTokens }
+          done.usage = {
+            prompt_tokens: inputTokens,
+            completion_tokens: outputTokens,
+            total_tokens: inputTokens + outputTokens,
+            // 缓存命中数透传给宿主（issue #4）。宿主 `parseChunkUsage` 读的正是
+            // `prompt_tokens_details.cached_tokens`，缺了它就按 0 显示 ——
+            // 于是 GUI 的「缓存命中」恒为 0%，而那个 0% 是不可信的读数。
+            //
+            // **不要把 `cachedTokens` 加进 `prompt_tokens` / `total_tokens`**：
+            // 实测上游 `cached_tokens` 是 `prompt_tokens` 的子集（2032 / 2038），
+            // 相加会把缓存前缀算两遍。宿主自己会做减法，两边各按「子集」理解。
+            ...cachedTokens === undefined ? {} : { prompt_tokens_details: { cached_tokens: cachedTokens } },
+          }
         }
         res.write(`data: ${JSON.stringify(done)}\n\n`)
         res.write('data: [DONE]\n\n')

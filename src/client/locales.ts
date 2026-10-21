@@ -32,6 +32,30 @@ export const en = {
   'row.tabSwitchAria': 'Offer the {region} provider to DSH',
   'row.tabOffNotice': 'This provider is switched off: none of its models are offered to DSH. Your PAT, accounts, credits, and model settings are kept — check the box above the tab to bring it back.',
 
+  // ---- Card sections (accounts / models / diagnostics) ----
+  // The card carries two unrelated jobs — running an account (who serves, how much
+  // is left, which pool member) and editing the catalog (which models, what context
+  // budget, which reasoning tier). They do not even commit the same way (an account
+  // change lands on the click, a catalog change is a draft until saved), so one
+  // column put the save button screens away from what it saves.
+  'row.panelAccounts': 'Accounts',
+  'row.panelModels': 'Models',
+  'row.panelDiag': 'Diagnostics',
+  'row.panelAria': 'Card sections',
+  'row.diagHint': 'What this card actually read, so a report can quote it. Nothing here changes a setting.',
+  'row.diagRegion': 'Region',
+  'row.diagDomain': 'Upstream domain',
+  'row.diagAccount': 'Serving account',
+  'row.diagSource': 'Credential source',
+  'row.diagCreditsAt': 'Credits read at',
+  'row.diagCatalog': 'Models in the catalog',
+  'row.diagEnabled': 'Enabled models',
+  'row.diagPool': 'Account pool',
+  'row.diagPoolOn': '{count} account(s)',
+  'row.diagPoolOff': 'off',
+  'row.diagFailures': 'Last failure',
+  'row.diagNoFailures': 'Nothing reported.',
+
   // ---- PAT / account list ----
   'row.patLabel': 'PAT (Personal Access Token)',
   'row.patPlaceholder': 'pt-… paste here; empty reads the environment variable',
@@ -380,6 +404,29 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.tabSwitchHint': '取消勾选即关闭该供应商：它的模型不再出现在 DSH 模型选择器里；PAT、账号、积分与模型设置都会保留，重新勾选即恢复。',
   'row.tabSwitchAria': '是否向 DSH 提供{region}供应商',
   'row.tabOffNotice': '该供应商已关闭：它的模型不会提供给 DSH。PAT、账号、积分与模型设置均已保留——勾选上方复选框即可恢复。',
+
+  // ---- 卡片分栏（账号 / 模型 / 诊断） ----
+  // 卡片上并着两件互不相干的事：运维账号（谁在服务、剩多少、池里哪几个）与编辑
+  // 目录（勾哪些模型、上下文预算、思考档位）。它们连提交语义都不同——账号改动
+  // 点一下即生效，目录改动是草稿、要点保存——所以排成一列时，保存按钮离它保存
+  // 的东西隔着好几屏。
+  'row.panelAccounts': '账号',
+  'row.panelModels': '模型',
+  'row.panelDiag': '诊断',
+  'row.panelAria': '卡片分区',
+  'row.diagHint': '这张卡片实际读到了什么，方便整段贴进问题反馈。这里没有任何会改动设置的控件。',
+  'row.diagRegion': '区域',
+  'row.diagDomain': '上游域名',
+  'row.diagAccount': '当前服务账号',
+  'row.diagSource': '凭据来源',
+  'row.diagCreditsAt': '积分读取于',
+  'row.diagCatalog': '目录中的模型',
+  'row.diagEnabled': '已启用的模型',
+  'row.diagPool': '账号池',
+  'row.diagPoolOn': '{count} 个账号',
+  'row.diagPoolOff': '关闭',
+  'row.diagFailures': '最近一次失败',
+  'row.diagNoFailures': '没有报错。',
 
   // ---- PAT / 账号列表 ----
   'row.patLabel': 'PAT（Personal Access Token）',

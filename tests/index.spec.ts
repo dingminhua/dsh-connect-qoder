@@ -171,6 +171,70 @@ describe('Qoder provider registration', () => {
     expect(models.map(m => m.name)).not.toContain('STALE')
   })
 
+  it('旧存档里的 `auto` 路由器不再出现在 DSH 的模型列表里', async () => {
+    // 本机真实存档（profiles/desktop/cordis.patch.yml）两个区域的 lastCatalog
+    // 都是 **`auto` 打头**：displayName `Auto`、`isDefault: true`、没有思考档位。
+    // 那是旧版本写下的快照。若只在「刷新」时过滤，升级后这一行会一直在，直到
+    // 用户手动点一次刷新——所以读点（configuredModels）也必须过滤。
+    //
+    // 它不该作为一个模型出现：`auto` 是该区默认路由，网关在请求时才决定把它
+    // 解析成哪一个，价格与窗口都由别人临时决定，插件无法如实描述。
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    const row = (key: string, displayName: string, extra: Record<string, unknown> = {}) => ({
+      key, displayName, priceFactor: 0.5,
+      contextWindow: 200_000, maxOutputTokens: 32_768,
+      supportsImages: false, supportsThinking: false, canDisableThinking: false,
+      isDefault: false, isFree: false, isNew: false,
+      ...extra,
+    })
+    await mountQoder(ctx, {
+      regions: {
+        cn: {
+          enabledModelKeys: ['auto', 'qfmodel'],
+          lastCatalog: [
+            row('auto', 'Auto', { isDefault: true }),
+            row('qfmodel', 'Qwen3.8-Flash', { isFree: true }),
+          ],
+        },
+      },
+    })
+    const models = await ctx.llm.listModels('qoder')
+    expect(models.map(m => m.id)).not.toContain('auto')
+    expect(models.map(m => m.id)).toContain('qfmodel')
+  })
+
+  it('只勾过 `auto` 的人不会得到空的模型列表（issue #32 的故障形态）', async () => {
+    // 这是上面那条改动的**直接后果**，也是它最容易踩的坑：`auto` 被去掉之后，
+    // 一个只勾过它的人的 enabledModelKeys 与目录交集为空。若 deriveCatalog 老实
+    // 返回空数组，DSH 的选择器会一个模型都没有，且**没有任何报错**——用户只看到
+    // 模型凭空消失。所以勾了却没命中时退回整份目录（workbuddy 同一条守卫）。
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await mountQoder(ctx, {
+      regions: {
+        cn: {
+          enabledModelKeys: ['auto'],
+          lastCatalog: [
+            {
+              key: 'auto', displayName: 'Auto', priceFactor: 0.5,
+              contextWindow: 200_000, maxOutputTokens: 32_768,
+              supportsImages: false, supportsThinking: true, canDisableThinking: true,
+              isDefault: true, isFree: false, isNew: false,
+            },
+          ],
+        },
+      },
+    })
+    const models = await ctx.llm.listModels('qoder')
+    expect(models.length).toBeGreaterThan(0)
+    expect(models.map(m => m.id)).not.toContain('auto')
+  })
+
   /**
    * 「思考强度有时候有、有时候没有」（用户实拍）。
    *
@@ -366,6 +430,100 @@ describe('Qoder provider registration', () => {
         await readCardModels(usage)
       }
       expect(modelsCalls).toBe(settled)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  /**
+   * `auto` 路由器在**卡片真的读到的那条路**上也不该出现。
+   *
+   * 上面两条（纯函数 `withoutRouters`、`ctx.llm.listModels`）分别钉住读点与
+   * 适配器路径，但用户看的是卡片 —— 它走 `/usage` → `displayModels`，另一条
+   * 代码路径（实时目录 `fullCatalog` 优先）。本项目吃过一次亏：只测纯函数时
+   * 全绿，生产路径上的修复却是死代码。所以这里走**真实路由**。
+   */
+  it('卡片读到的模型列表里没有 `auto`（走真实 /usage 路由）', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        // 形状与本机实测一致：`auto` 打头（is_default: true、无 thinking_config），
+        // 后面跟一个真模型。
+        return new Response(JSON.stringify({
+          chat: [
+            { key: 'auto', display_name: 'Auto', is_default: true, price_factor: 0.5 },
+            {
+              key: 'qmodel_38max', display_name: 'Qwen3.8-Max',
+              price_factor: 0.2, is_vl: true, is_reasoning: true,
+              thinking_config: { enabled: { efforts: { low: {}, medium: {}, xhigh: {} } } },
+            },
+          ],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 10, origin: 10, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+
+    const routes: CapturedRoute[] = []
+    try {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(MemorySettings)
+      ctx.provide('webServer', {
+        register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+      } as never)
+      // 存档里也带 `auto`：既有实时目录这一侧，也有旧快照这一侧，两条路都要干净。
+      await mountQoder(ctx, {
+        regions: {
+          cn: {
+            pat: 'pt-auto',
+            enabledModelKeys: ['auto', 'qmodel_38max'],
+            lastCatalog: [
+              {
+                key: 'auto', displayName: 'Auto', priceFactor: 0.5,
+                contextWindow: 200_000, maxOutputTokens: 32_768,
+                supportsImages: false, supportsThinking: false, canDisableThinking: false,
+                isDefault: true, isFree: false, isNew: false,
+              },
+              {
+                key: 'qmodel_38max', displayName: 'Qwen3.8-Max', priceFactor: 0.2,
+                contextWindow: 400_000, maxOutputTokens: 32_768,
+                supportsImages: true, supportsThinking: true, canDisableThinking: true,
+                isDefault: false, isFree: false, isNew: false,
+              },
+            ],
+          },
+          global: { pat: '' },
+        },
+      })
+      await waitFor(() => routes.some(r => r.path.includes('/usage')))
+      const usage = routes.find(r => r.path.includes('/usage'))!
+
+      // 实时目录落地之前：读到的是旧快照 —— `auto` 已由 withoutRouters 去掉。
+      const first = await readCardModels(usage)
+      expect(first.map(m => m.key)).not.toContain('auto')
+      expect(first.map(m => m.key)).toContain('qmodel_38max')
+
+      // 实时目录落地之后：同样没有 `auto`（写点 fetchModels 已过滤）。
+      let models = first
+      for (let i = 0; i < 40; i++) {
+        await new Promise(resolve => setTimeout(resolve, 50))
+        models = await readCardModels(usage)
+      }
+      expect(models.map(m => m.key)).not.toContain('auto')
+      expect(models.map(m => m.key)).toContain('qmodel_38max')
     } finally {
       globalThis.fetch = realFetch
     }

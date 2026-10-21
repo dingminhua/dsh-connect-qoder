@@ -3,10 +3,12 @@ import { classifyPiAiError, hostRendersOwnCopy, verifyFixtureAgainstInstalledHos
 import { createQoderShim, hostFailureMessage, hostMessageText, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
 import { failoverNoticeText } from '../src/failover-notice.ts'
 import { QoderUpstreamError, type QoderUpstreamClient, type UpstreamErrorKind } from '../src/upstream.ts'
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 
 const shims: QoderShim[] = []
 
-type Delta = { role: string; content: string; reasoningContent: string; toolCalls: unknown[] | undefined; inputTokens: number; outputTokens: number }
+type Delta = { role: string; content: string; reasoningContent: string; toolCalls: unknown[] | undefined; inputTokens: number; outputTokens: number; cachedTokens?: number | undefined }
 
 interface ChatCall {
   credential: string
@@ -170,8 +172,88 @@ describe('Qoder shim chat translation', () => {
     expect(chunks[1]!.choices?.[0]?.finish_reason).toBe('stop')
     expect(chunks[1]!.usage?.prompt_tokens).toBe(5)
     expect(chunks[1]!.usage?.completion_tokens).toBe(2)
+    // 上游没报缓存命中时，**不写** `prompt_tokens_details`（不是写 0）：
+    // 「没报」与「命中 0 个」在宿主那里含义不同（issue #4）。
+    expect(chunks[1]!.usage?.prompt_tokens_details).toBeUndefined()
     // [DONE]
     expect(lines.at(-1)).toBe('data: [DONE]')
+  })
+
+  /**
+   * 缓存命中数要一路透传到宿主读的那一帧（issue #4）。
+   *
+   * 断言的落点是**最终 `done` 帧的 `usage.prompt_tokens_details.cached_tokens`**
+   * ——宿主 `parseChunkUsage` 只读这一处。这里刻意检查「原样、不相加」：
+   * 上游实测 `cached_tokens` 是 `prompt_tokens` 的子集（2032 / 2038），宿主自己
+   * 会做 `input = prompt_tokens - cacheRead`，我们若在这之前加过一次就会重复计数。
+   */
+  it('forwards cached_tokens to the host without folding it into prompt_tokens', async () => {
+    const upstream = {
+      chatStream: async (_c: string, _m: string, _msgs: unknown[], options: { onDelta: (d: Delta) => void }) => {
+        options.onDelta({ ...delta('Hello'), inputTokens: 2038, outputTokens: 38, cachedTokens: 2032 })
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({ upstream })
+    const text = await (await chat(shim, {})).text()
+    const chunks = parseSse(text) as Array<{ usage?: Record<string, unknown> }>
+    const usage = chunks.at(-1)!.usage as {
+      prompt_tokens: number
+      completion_tokens: number
+      total_tokens: number
+      prompt_tokens_details?: { cached_tokens?: number }
+    }
+    expect(usage.prompt_tokens_details?.cached_tokens).toBe(2032)
+    // **关键的「别双重计数」**：prompt_tokens 与 total_tokens 仍按上游给的原样，
+    // 缓存命中数没有加进任何一个。
+    expect(usage.prompt_tokens).toBe(2038)
+    expect(usage.total_tokens).toBe(2038 + 38)
+  })
+
+  /**
+   * 端到端的最后一步：**把这一帧真的交给宿主的解析器**，看它读成什么。
+   *
+   * 前面那条只证明「我们写进了帧里」。可 issue #4 的症状是「宿主显示 0%」，
+   * 而写对位置与宿主读对位置是两件事 —— 只断言前者，等于假设宿主一定会读。
+   * 所以这里把宿主 `parseChunkUsage` 的原文（从 app.asar 提取，见
+   * `tests/host-usage-parsing.spec.ts`）拿来执行一遍。
+   *
+   * 这是本仓库付过一次学费的教训：手抄宿主实现做断言，两份一起漂移，测试
+   * 全绿而线上照坏。
+   */
+  it('the frame it writes is read back by the HOST parser as a non-zero cache read', async () => {
+    const fixture = JSON.parse(readFileSync(
+      fileURLToPath(new URL('./fixtures/host-usage-parsing.json', import.meta.url)), 'utf8',
+    )) as { calculateCost: string, parseChunkUsage: string }
+    const hostParse = new Function(
+      `${fixture.calculateCost}\n${fixture.parseChunkUsage}\nreturn parseChunkUsage;`,
+    )() as (u: Record<string, unknown>, m: unknown) => { input: number, cacheRead: number }
+
+    const upstream = {
+      chatStream: async (_c: string, _m: string, _msgs: unknown[], options: { onDelta: (d: Delta) => void }) => {
+        options.onDelta({ ...delta('Hello'), inputTokens: 2038, outputTokens: 38, cachedTokens: 2032 })
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({ upstream })
+    const text = await (await chat(shim, {})).text()
+    const chunks = parseSse(text) as Array<{ usage?: Record<string, unknown> }>
+    const raw = chunks.at(-1)!.usage!
+    const parsed = hostParse(raw, { cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } })
+    expect(parsed.cacheRead).toBe(2032)
+    expect(parsed.input).toBe(2038 - 2032)
+  })
+
+  it('forwards a reported zero, because "no hits" is a real answer', async () => {
+    // 冷启动那一轮上游报的就是 `cached_tokens: 0`（实测）。它必须透传成 0，
+    // 而不是被「假值」判断吞掉、变成「上游没报」。
+    const upstream = {
+      chatStream: async (_c: string, _m: string, _msgs: unknown[], options: { onDelta: (d: Delta) => void }) => {
+        options.onDelta({ ...delta('Hello'), cachedTokens: 0 })
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({ upstream })
+    const text = await (await chat(shim, {})).text()
+    const chunks = parseSse(text) as Array<{ usage?: { prompt_tokens_details?: { cached_tokens?: number } } }>
+    expect(chunks.at(-1)!.usage?.prompt_tokens_details?.cached_tokens).toBe(0)
   })
 
   it('answers pre-first-byte failures with a NON-200 JSON error, not an SSE frame', async () => {

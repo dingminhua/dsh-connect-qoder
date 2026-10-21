@@ -383,6 +383,22 @@ export const QODER_CONSOLE_DOMAIN: Readonly<Record<QoderWebRegion, string>> = {
   global: 'qoder.com',
 }
 
+/**
+ * 该区域请求实际打到的**网关主机名**（不含协议），只用于诊断展示。
+ *
+ * 为什么要有这一行：卡片的「诊断」栏要如实回答「这次请求打到哪个域名」，而这句话
+ * 必须与 `QODER_REGIONS[region].gateway` **同一个事实**。此前卡片只有
+ * {@link QODER_CONSOLE_DOMAIN}（用户浏览器里申请 PAT 的控制台），两者在区域之间
+ * 恰好是相反的形状（控制台是 `qoder.com`，网关却是 `api1.qoder.sh`）—— 拿控制台
+ * 域名去回答诊断问题会给出一个**看起来对、实际不是请求目标**的答案。所以这张表
+ * 放在这里，并由 `upstream.ts` 的 `QODER_REGIONS` **直接消费**（见那里的
+ * `gateway` 字段），不手抄第二遍：两处域名漂移过一次就很难被发现。
+ */
+export const QODER_UPSTREAM_DOMAIN: Readonly<Record<QoderWebRegion, string>> = {
+  cn: 'gateway.qoder.com.cn',
+  global: 'api1.qoder.sh',
+}
+
 // ---------------------------------------------------------------------------
 // 探针体量（见 host 侧 `probe.ts`；这里不重复声明，避免两处菜单漂移）
 // ---------------------------------------------------------------------------

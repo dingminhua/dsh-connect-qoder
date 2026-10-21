@@ -65,7 +65,9 @@
     "check": "pnpm run typecheck && pnpm run test && pnpm run build",
     "probe:cosy": "node scripts/probe-cosy.mjs",
     "probe:vault": "node scripts/dump-vault.mjs",
-    "fixture:pi-ai-modern": "npm install --prefix tests/fixtures/pi-ai-modern --no-audit --no-fund"
+    "probe:cache": "node scripts/probe-cache-usage.mjs",
+    "fixture:pi-ai-modern": "npm install --prefix tests/fixtures/pi-ai-modern --no-audit --no-fund",
+    "preview:client": "vitest run --config scripts/vitest.preview.config.ts"
   },
   "dsh": {
     "bundle": {

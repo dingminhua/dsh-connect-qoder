@@ -9,6 +9,7 @@
 
 import type { QoderUpstreamModel } from './upstream.ts'
 import { parseQoderPromotion, type QoderPromotion } from './promo.ts'
+import { isRouterModelId } from './native-modality.ts'
 
 // ---------------------------------------------------------------------------
 // 静态 fallback 目录（网关不可达时保底，来自 qoder2api models.py + 官方目录）
@@ -110,8 +111,10 @@ const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
  * 两个要点：
  * - **键序不可信**：上游给的顺序是 `xhigh, low, medium`，直接显示会让用户
  *   以为 xhigh 是最弱档。按语义序表排。
- * - **不是每个模型都有档位**：`auto`、`qmodel_latest` 等 `efforts` 缺失，
+ * - **不是每个模型都有档位**：`qmodel_latest`、`mmodel` 等 `efforts` 缺失，
  *   此时返回空对象（字段缺席），卡片据此不渲染这一项——而不是渲染一个空标签。
+ *   （这一条也是 `auto` 曾经最难解释的地方：它是唯一天生没有档位、却常被当作
+ *   默认模型勾上的条目；现在它按路由器被整个丢掉了。）
  */
 export function thinkingOf(config: Record<string, unknown> | undefined): {
   thinkingEfforts?: string[]
@@ -168,6 +171,11 @@ export function thinkingOf(config: Record<string, unknown> | undefined): {
  * 方向的偏置是刻意的：只把 false 补成 true，**绝不**把 true 降成 false（实测
  * 29 条目录中 5 条改变，24 条不动，0 条反向回退）。`efforts` 缺失的条目
  * （`auto`、`efficient`、`qmodel` 等）保持 `is_reasoning` 原值，不会被误开。
+ *
+ * 上面表与下面这段是**实测记录**，保留了观测当时的原名（含 `auto`）。其中 `auto`
+ * 现在已按路由器被整个丢掉（见 `ROUTER_MODEL_IDS`），到不了这个函数；但记录不改：
+ * 它证明的是「`is_reasoning` 与 `thinking_config` 会互相矛盾」这件事，抹掉它反而
+ * 让这张表看起来比当时的证据更干净。
  */
 export function supportsThinkingOf(raw: QoderUpstreamModel): boolean {
   if (raw.is_reasoning) return true
@@ -291,6 +299,12 @@ export function modelDisplayName(info: QoderModelInfo): string {
  * 目录交出去，否则新用户的选择器会是空的。这与 workbuddy 的
  * `enabled.size === 0 ? catalog : catalog.filter(...)` 逐字同义。
  *
+ * **勾了、但一条都没命中时也退回整份目录**（workbuddy 同一条守卫）。这不是
+ * 「宽容」，是修一个具体的坏形状：`auto` 路由器不再进名册之后，某个只勾过
+ * `auto` 的人，他的 `enabledModelKeys` 与目录交集为空——运行时目录于是变成空的，
+ * DSH 的选择器一个模型都没有，而且**没有任何报错**（issue #32 的故障形态：模型
+ * 静默消失）。退回整份目录至少让每个模型还能被看见、被重新勾选。
+ *
  * 卡片自己的模型列表走的是另一条路（`catalog.current()`，始终是完整目录），
  * 所以「未勾选的也要看得见、才勾得上」不受影响。
  */
@@ -298,12 +312,38 @@ export function deriveCatalog(
   models: QoderModelInfo[],
   enabledKeys: ReadonlySet<string>,
 ): QoderModelInfo[] {
-  return enabledKeys.size === 0 ? models : models.filter(model => enabledKeys.has(model.key))
+  const selected = enabledKeys.size === 0 ? models : models.filter(model => enabledKeys.has(model.key))
+  return selected.length === 0 ? models : selected
 }
 
-/** 初始勾选集合：目录中的默认模型 + 免费模型；其余不勾。 */
+/**
+ * 把上游的**路由器**行从目录里去掉。
+ *
+ * `auto` 不是模型，是该区的默认路由（网关在请求时才决定解析成哪一个）。它
+ * 无法被如实标价、也没法说清上下文与档位，所以不该作为一个可勾选的模型出现。
+ *
+ * 为什么在两个地方都要过滤（这里是**读**点，`upstream.fetchModels` 是**写**点）：
+ * 静态兜底、实时拉取都经 `fetchModels`，但 `lastCatalog` 是**用户档案里的旧
+ * 快照**——上一版把它存进去的人，升级后每一次读（卡片的列表、运行时目录、注册
+ * 给 provider 的目录）都还会看到那一行，直到他下次刷新为止。在读点过滤而不是
+ * 迁移存档是刻意的：存档保持「上次刷新写下的原样」，加载时不悄悄改写用户数据，
+ * 而这一行在新代码跑起来的那一刻就消失，不必等下一次刷新。
+ */
+export function withoutRouters(models: readonly QoderModelInfo[]): QoderModelInfo[] {
+  return models.filter(model => !isRouterModelId(model.key))
+}
+
+/**
+ * 初始勾选集合：目录中的默认模型 + 免费模型；其余不勾。
+ *
+ * `auto` 在这里**必须**再排除一次，尽管它已经不在目录里：曾经的默认项就是它
+ * （`isDefault: true`），所以「初始勾选」这条路上，一个恰好只剩路由器行的旧
+ * 目录会把它重新勾上，然后借下一行的 `deriveCatalog` 复活成 DSH 里唯一的模型。
+ */
 export function initialEnabledKeys(models: QoderModelInfo[]): Set<string> {
-  return new Set(models.filter(m => m.isDefault || m.isFree).map(m => m.key))
+  return new Set(
+    models.filter(m => !isRouterModelId(m.key) && (m.isDefault || m.isFree)).map(m => m.key),
+  )
 }
 
 /**

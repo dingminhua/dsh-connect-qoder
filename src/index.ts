@@ -30,7 +30,7 @@ import { failoverNoticeText } from './failover-notice.ts'
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
+import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
 import { readPromotion, type QoderPromotion } from './promo.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
@@ -529,7 +529,10 @@ function configuredModels(
     const parsed = saved
       .map(item => modelFromStored((item ?? {}) as Record<string, unknown>))
       .filter((m): m is QoderModelInfo => m !== undefined)
-    if (parsed.length > 0) return parsed
+    // 旧存档里的 `auto` 路由器在读点去掉（写点已由 `fetchModels` 拦下）。
+    // 刻意不迁移存档本身：存档保持上次刷新写下的原样，加载时不悄悄改写用户数据。
+    const models = withoutRouters(parsed)
+    if (models.length > 0) return models
   }
   return live.length > 0 ? live : QODER_FALLBACK_MODELS.map(fallbackModelInfo)
 }

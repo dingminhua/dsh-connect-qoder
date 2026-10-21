@@ -13,6 +13,7 @@ import {
   QODER_REGIONS,
 } from '../src/upstream.ts'
 import { cosyDecode } from '../src/cosy.ts'
+import { QODER_CONSOLE_DOMAIN, QODER_UPSTREAM_DOMAIN } from '../src/status-paths.ts'
 
 describe('region endpoints', () => {
   it('CN chat / models / jobToken share the gateway host', () => {
@@ -26,6 +27,79 @@ describe('region endpoints', () => {
     const global = QODER_REGIONS.global
     expect(global.gateway).toBe('https://api1.qoder.sh')
     expect(global.openapi).toBe('https://openapi.qoder.sh')
+  })
+
+  it('网关主机名与卡片「诊断」栏读的是同一处事实', () => {
+    // 诊断栏要回答「这次请求打到哪个域名」，它读 `QODER_UPSTREAM_DOMAIN`。
+    // 若两者各存一份域名，漂移过一次就会让面板写着 A、请求打着 B——而两边都
+    // 看起来完全正常。这里钉住它们逐字相等。
+    expect(QODER_REGIONS.cn.gateway).toBe(`https://${QODER_UPSTREAM_DOMAIN.cn}`)
+    expect(QODER_REGIONS.global.gateway).toBe(`https://${QODER_UPSTREAM_DOMAIN.global}`)
+    // 网关域名与控制台域名**不是**同一个（国际版尤其明显：控制台 qoder.com，
+    // 网关 api1.qoder.sh），所以诊断栏不能用控制台域名顶替。
+    expect(QODER_UPSTREAM_DOMAIN.global).not.toBe(QODER_CONSOLE_DOMAIN.global)
+    expect(QODER_UPSTREAM_DOMAIN.cn).not.toBe(QODER_CONSOLE_DOMAIN.cn)
+  })
+})
+
+describe('fetchModels 丢掉上游的 `auto` 路由器', () => {
+  /**
+   * 实测（本机真实存档）：上游名册的第一条就是 `auto` —— displayName `Auto`、
+   * `is_default: true`、没有任何思考档位。它是该区的**默认路由**，网关在请求时
+   * 才决定把它解析成哪一个模型，所以价格、窗口与行为都由别人临时决定，插件无法
+   * 如实描述。把它当成一个可勾选的模型列出来，用户勾的是一个「未知会变成谁」的
+   * 条目。
+   *
+   * 参考 dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）：
+   * 那边用显式表 `ROUTER_MODEL_IDS` 而非名字启发式，本仓库照做。
+   */
+  function rosterStub(chat: unknown[]): typeof fetch {
+    return (async (url: string | URL) => {
+      const u = String(url)
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'n', expireTime: Date.now() + 1e6,
+          securityOauthToken: 'jt-T', refreshToken: 'jrt-x', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify({ chat }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      })
+    }) as unknown as typeof fetch
+  }
+
+  it('名册里的 auto 不出现，真模型一个不少', async () => {
+    const client = new QoderUpstreamClient('cn', {
+      fetch: rosterStub([
+        { key: 'auto', display_name: 'Auto', is_default: true, is_free: false, is_vl: false },
+        { key: 'qfmodel', display_name: 'Qwen3.8-Flash', is_free: true, is_vl: true },
+        { key: 'dfmodel', display_name: 'DeepSeek-Flash', is_vl: true },
+      ]),
+    })
+    const models = await client.fetchModels('pt-x')
+    expect(models.map(m => m.key)).toEqual(['qfmodel', 'dfmodel'])
+  })
+
+  it('名册只有 auto 时得到空数组，而不是抛错', async () => {
+    // 「上游改了路由器」不该被放大成「这个区域坏了」。调用方（`QoderCatalog.set`
+    // 拒绝空数组、`configuredModels` 有兜底）本来就能处理空结果。
+    const client = new QoderUpstreamClient('cn', {
+      fetch: rosterStub([{ key: 'auto', display_name: 'Auto', is_default: true }]),
+    })
+    await expect(client.fetchModels('pt-x')).resolves.toEqual([])
+  })
+
+  it('只认显式表，不按名字模糊匹配', async () => {
+    // `auto` 之外还有真模型名字里带 auto（`autopilot`）——把它们一起丢掉就是
+    // 名字启发式的代价。判据是显式 id 表。
+    const client = new QoderUpstreamClient('cn', {
+      fetch: rosterStub([
+        { key: 'autopilot', display_name: 'Autopilot', is_vl: false },
+        { key: 'auto', display_name: 'Auto', is_default: true },
+      ]),
+    })
+    const models = await client.fetchModels('pt-x')
+    expect(models.map(m => m.key)).toEqual(['autopilot'])
   })
 })
 
@@ -96,6 +170,112 @@ describe('parseStreamDelta', () => {
     const delta = parseStreamDelta(frame)
     expect(delta?.inputTokens).toBe(12)
     expect(delta?.outputTokens).toBe(3)
+  })
+
+  /**
+   * 缓存命中数（issue #4）。
+   *
+   * 下面这个 `usage` 块是**真实抓包的原文**（2026-10-22，cn 区 `qfmodel`，两轮
+   * 带同一段长前缀的请求），不是构造出来的例子：
+   *
+   * ```
+   * { billable: false, completion_tokens: 38,
+   *   completion_tokens_details: { reasoning_tokens: 35 }, credits: 0.006901532,
+   *   original_credits: 0.006901532, prompt_tokens: 2038,
+   *   prompt_tokens_details: { cacheable_tokens: 0, cached_tokens: 2032 },
+   *   total_tokens: 2076 }
+   * ```
+   *
+   * 它同时证明三件事：上游**确实**下发 `cached_tokens`（所以这是本插件的透传
+   * 缺陷，不是上游没给）；它就在 `prompt_tokens_details` 里（宿主读的那一处）；
+   * 而且它是 `prompt_tokens` 的**子集**（2032 < 2038），不能相加。
+   */
+  it('extracts prompt_tokens_details.cached_tokens from a real captured frame', () => {
+    const frame = JSON.stringify({
+      body: JSON.stringify({
+        choices: [{ index: 0, delta: {} }],
+        usage: {
+          billable: false,
+          completion_tokens: 38,
+          completion_tokens_details: { reasoning_tokens: 35 },
+          credits: 0.006901532,
+          original_credits: 0.006901532,
+          prompt_tokens: 2038,
+          prompt_tokens_details: { cacheable_tokens: 0, cached_tokens: 2032 },
+          total_tokens: 2076,
+        },
+      }),
+      statusCodeValue: 200,
+    })
+    const delta = parseStreamDelta(frame)
+    expect(delta?.cachedTokens).toBe(2032)
+    // **子集，不是增量**：inputTokens 必须仍是原始的 prompt_tokens。
+    // 写 `prompt_tokens + cached_tokens` 会把命中前缀算两遍，宿主那边也会再减一次。
+    expect(delta?.inputTokens).toBe(2038)
+  })
+
+  it('reads the two other spellings providers use for the same quantity', () => {
+    // 同一个量的三种写法（宿主 parseChunkUsage 里列过同一张表）：OpenAI 的
+    // `prompt_tokens_details.cached_tokens`、DeepSeek 的
+    // `prompt_cache_hit_tokens`、以及平铺的 `cached_tokens`。
+    const frameOf = (usage: Record<string, unknown>): string => JSON.stringify({
+      body: JSON.stringify({ choices: [{ index: 0, delta: {} }], usage }),
+      statusCodeValue: 200,
+    })
+    expect(parseStreamDelta(frameOf({ prompt_tokens: 100, prompt_cache_hit_tokens: 64 }))?.cachedTokens).toBe(64)
+    expect(parseStreamDelta(frameOf({ prompt_tokens: 100, cached_tokens: 32 }))?.cachedTokens).toBe(32)
+    // 两个都在时取第一个（标准位置优先），**不相加**——它们是同一个量。
+    expect(parseStreamDelta(frameOf({
+      prompt_tokens: 100,
+      prompt_tokens_details: { cached_tokens: 64 },
+      prompt_cache_hit_tokens: 64,
+    }))?.cachedTokens).toBe(64)
+  })
+
+  it('leaves cachedTokens undefined when upstream did not report it', () => {
+    // 「上游没报」与「命中 0 个」必须能分开：前者是 undefined，后者是 0。
+    // 折成 0 就等于用一个默认值假装上游报了数——issue #4 的症状正是「那个 0%
+    // 不可信」，用一个假 0 去修它只是把病留下。
+    const frame = JSON.stringify({
+      body: JSON.stringify({
+        choices: [{ index: 0, delta: {} }],
+        usage: { prompt_tokens: 12, completion_tokens: 3 },
+      }),
+      statusCodeValue: 200,
+    })
+    const delta = parseStreamDelta(frame)
+    expect(delta?.cachedTokens).toBeUndefined()
+    expect('cachedTokens' in (delta ?? {})).toBe(false)
+  })
+
+  it('accepts a reported zero, which is a real answer', () => {
+    // 上游明确报 `cached_tokens: 0` = 「这次一个都没命中」（冷启动那一轮就是
+    // 这个形状）。它是有效答案，必须原样透传，不能因为「假值」被吞掉。
+    const frame = JSON.stringify({
+      body: JSON.stringify({
+        choices: [{ index: 0, delta: {} }],
+        usage: { prompt_tokens: 12, completion_tokens: 3, prompt_tokens_details: { cached_tokens: 0 } },
+      }),
+      statusCodeValue: 200,
+    })
+    const delta = parseStreamDelta(frame)
+    expect(delta?.cachedTokens).toBe(0)
+    expect('cachedTokens' in (delta ?? {})).toBe(true)
+  })
+
+  it('ignores nonsense in the cached field instead of reporting it', () => {
+    // 上游的字段类型偶尔会漂（字符串、负数、NaN）。这些都不是「命中数」，
+    // 当没报处理 —— 宁可显示「上游未提供」，也不显示一个编出来的数字。
+    const frameOf = (usage: Record<string, unknown>): string => JSON.stringify({
+      body: JSON.stringify({ choices: [{ index: 0, delta: {} }], usage }),
+      statusCodeValue: 200,
+    })
+    expect(parseStreamDelta(frameOf({ prompt_tokens: 10, prompt_tokens_details: { cached_tokens: '64' } }))?.cachedTokens)
+      .toBeUndefined()
+    expect(parseStreamDelta(frameOf({ prompt_tokens: 10, prompt_tokens_details: { cached_tokens: -1 } }))?.cachedTokens)
+      .toBeUndefined()
+    expect(parseStreamDelta(frameOf({ prompt_tokens: 10, prompt_tokens_details: { cached_tokens: Number.NaN } }))?.cachedTokens)
+      .toBeUndefined()
   })
 
   it('throws on envelope-level errors', () => {

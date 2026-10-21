@@ -43,6 +43,8 @@ import {
 } from './cosy.ts'
 import { createChatBodyTemplate, buildQoderMessages, extractLatestUserPrompt, deepClone, applyModelKey, type QoderChatTemplate } from './messages.ts'
 import { readDeviceRisk } from './device-risk.ts'
+import { QODER_UPSTREAM_DOMAIN } from './status-paths.ts'
+import { isRouterModelId } from './native-modality.ts'
 
 // ---------------------------------------------------------------------------
 // 区域
@@ -140,7 +142,10 @@ const JOB_TOKEN_PATH = '/algo/api/v3/user/jobToken?Encode=1'
 
 export const QODER_REGIONS: Readonly<Record<QoderRegion, QoderRegionConfig>> = {
   cn: {
-    gateway: 'https://gateway.qoder.com.cn',
+    // 主机名只有一处事实（`status-paths.ts` 的 `QODER_UPSTREAM_DOMAIN`），卡片
+    // 的「诊断」栏读的也是它——这样「面板上写的域名」与「请求真正打到的域名」
+    // 不可能各说一套。
+    gateway: `https://${QODER_UPSTREAM_DOMAIN.cn}`,
     openapi: 'https://openapi.qoder.com.cn',
     chatPath: CHAT_PATH,
     modelsPath: MODELS_PATH,
@@ -149,7 +154,7 @@ export const QODER_REGIONS: Readonly<Record<QoderRegion, QoderRegionConfig>> = {
     requiresDeviceRisk: false,
   },
   global: {
-    gateway: 'https://api1.qoder.sh',
+    gateway: `https://${QODER_UPSTREAM_DOMAIN.global}`,
     openapi: 'https://openapi.qoder.sh',
     chatPath: CHAT_PATH,
     modelsPath: '/algo/api/v2/model/list?Encode=1',
@@ -238,6 +243,26 @@ export interface QoderChatDelta {
   toolCalls: unknown[] | undefined
   inputTokens: number
   outputTokens: number
+  /**
+   * 命中的缓存 token 数（issue #4）：上游 `prompt_tokens_details.cached_tokens`。
+   *
+   * **它是 `inputTokens` 的子集，不是额外增量。** 实测（2026-10-22，cn，
+   * `qfmodel`）两轮真实请求的原始 usage 块：
+   *
+   * ```
+   * prompt_tokens: 2038, prompt_tokens_details: { cacheable_tokens: 0, cached_tokens: 2032 }
+   * prompt_tokens: 2057, prompt_tokens_details: { cacheable_tokens: 0, cached_tokens: 2051 }
+   * ```
+   *
+   * 所以**绝不能**写 `inputTokens = prompt_tokens + cached_tokens`——那是把命中
+   * 的前缀算两遍。宿主 `parseChunkUsage` 正是按「子集」理解它的：
+   * `input = max(0, prompt_tokens - cacheRead - cacheWrite)`，它要的就是原始的
+   * `prompt_tokens` 与 `cached_tokens` 两个数，各自原样交过去即可。
+   *
+   * `undefined` = 上游这一帧没报（或没给这个字段）。它与「命中 0」是两件事，
+   * 别在抽取层把前者写成后者。
+   */
+  cachedTokens?: number
 }
 
 // ---------------------------------------------------------------------------
@@ -516,6 +541,17 @@ export class QoderUpstreamClient {
         }
       })
       .filter((m): m is QoderUpstreamModel => m !== undefined)
+      // **上游的 `auto` 路由器不是模型，不进名册。**
+      //
+      // 它是该区的默认路由：网关在请求时才决定把它解析成哪一个模型，所以价格、
+      // 上下文与行为都由别人临时决定，插件无法如实描述。真实目录里它正是唯一
+      // 没声明思考档位、却带着 `is_default: true` 的那一行。
+      //
+      // 过滤放在这里（解析层，唯一的写点）而不是各个读点：`discoverModels`、
+      // `refreshRegionCatalog`、CLI 的 `status` 全都经过这一个函数，漏一处就会
+      // 出现「刷新后没了、重启后又回来」这种最难查的不一致。旧存档里的那一行
+      // 另由 `catalog.ts` 的 `withoutRouters` 在读点兜住。
+      .filter(model => !isRouterModelId(model.key))
   }
 
   /**
@@ -1015,6 +1051,12 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
 
   const usageIn = readTokens(inner.usage, 'prompt_tokens')
   const usageOut = readTokens(inner.usage, 'completion_tokens')
+  // 缓存命中数（issue #4）。取不到时是 `undefined` 而不是 0：上游这一帧没报
+  // 与「命中 0 个」是两件事，抽取层不该替上游下结论。
+  const usageCached = readCachedTokens(inner.usage)
+  const tokens = usageCached === undefined
+    ? { inputTokens: usageIn, outputTokens: usageOut }
+    : { inputTokens: usageIn, outputTokens: usageOut, cachedTokens: usageCached }
 
   const choices = Array.isArray(inner.choices) ? inner.choices : []
   for (const ch of choices as Array<Record<string, unknown>>) {
@@ -1025,11 +1067,11 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
     const reasoning = typeof delta.reasoning_content === 'string' ? delta.reasoning_content : ''
     const toolCalls = Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0 ? delta.tool_calls : undefined
     if (role !== '' || content !== '' || reasoning !== '' || toolCalls !== undefined) {
-      return { role, content, reasoningContent: reasoning, toolCalls, inputTokens: usageIn, outputTokens: usageOut }
+      return { role, content, reasoningContent: reasoning, toolCalls, ...tokens }
     }
   }
   if (usageIn > 0 || usageOut > 0) {
-    return { role: '', content: '', reasoningContent: '', toolCalls: undefined, inputTokens: usageIn, outputTokens: usageOut }
+    return { role: '', content: '', reasoningContent: '', toolCalls: undefined, ...tokens }
   }
   return undefined
 }
@@ -1038,6 +1080,45 @@ function readTokens(usage: unknown, key: string): number {
   if (!usage || typeof usage !== 'object') return 0
   const v = (usage as Record<string, unknown>)[key]
   return typeof v === 'number' ? v : 0
+}
+
+/**
+ * 读缓存命中的输入 token 数（issue #4）。
+ *
+ * 为什么这里值得一个专门的函数、而不是顺手写进 `readTokens`：**它有三个可能的
+ * 位置**，而各家的写法不统一（宿主 `parseChunkUsage` 里列过同一张表）：
+ *
+ *   1. `prompt_tokens_details.cached_tokens` —— OpenAI / OpenRouter，也是实测
+ *      上 Qoder 网关正在用的那个（见 `QoderChatDelta.cachedTokens` 的真实样本）。
+ *   2. `prompt_cache_hit_tokens` —— DeepSeek 系，顶层的另一个拼法。
+ *   3. `cached_tokens` —— Kimi 文档里放顶层。
+ *
+ * 取**第一个存在**的那个，不做相加：它们是同一个量的三种写法，不是三个分量。
+ *
+ * 返回 `undefined` 表示「上游没报」。**不要**把它折成 0：那会让「这一帧没有
+ * usage」与「这次一个都没命中」变成同一个数字，而宿主的百分比正是拿它算的
+ * ——issue #4 的整个症状就是「0% 不可信」，用一个默认 0 去修它等于把病保留下来。
+ *
+ * 另一条**不可踩的坑**：`cached_tokens` 是 `prompt_tokens` 的**子集**（实测
+ * 2032 / 2038），所以绝不能加进 `prompt_tokens`。宿主侧自己会做
+ * `input = prompt_tokens - cacheRead`，两边各按「子集」理解才对得上。
+ */
+function readCachedTokens(usage: unknown): number | undefined {
+  if (!usage || typeof usage !== 'object') return undefined
+  const record = usage as Record<string, unknown>
+  const details = record['prompt_tokens_details']
+  const fromDetails = details !== null && typeof details === 'object' && !Array.isArray(details)
+    ? readCount((details as Record<string, unknown>)['cached_tokens'])
+    : undefined
+  if (fromDetails !== undefined) return fromDetails
+  const fromHit = readCount(record['prompt_cache_hit_tokens'])
+  if (fromHit !== undefined) return fromHit
+  return readCount(record['cached_tokens'])
+}
+
+/** 有限、非负的数字；其它一律 `undefined`（`NaN` / 负数 / 字符串都不算数）。 */
+function readCount(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined
 }
 
 /** 解析用量响应（兼容 qoderUsage 内层与平铺两种形状）。 */

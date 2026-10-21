@@ -1,0 +1,15 @@
+{
+  "_comment": [
+    "宿主 pi-ai 的 OpenAI-completions usage 解析器：**逐字提取的原文**，不是手抄副本。",
+    "用途见 tests/host-usage-parsing.spec.ts —— 它证明本插件写出的 done.usage 帧",
+    "确实被宿主读成非零的 cacheRead（issue #4 的「缓存命中恒 0%」）。",
+    "宿主升级后若这段文本变了，重新提取即可；若它改了字段位置，那条用例会立刻转红。"
+  ],
+  "source": {
+    "app": "DeepSeek Harness.app/Contents/Resources/app.asar",
+    "module": "dsh/node_modules/@earendil-works/pi-ai/dist/api/openai-completions.js",
+    "extractedAt": "2026-10-22"
+  },
+  "parseChunkUsage": "function parseChunkUsage(rawUsage, model) {\n    const promptTokens = rawUsage.prompt_tokens || 0;\n    const cacheReadTokens = rawUsage.prompt_tokens_details?.cached_tokens ?? rawUsage.prompt_cache_hit_tokens ?? rawUsage.cached_tokens ?? 0;\n    const cacheWriteTokens = rawUsage.prompt_tokens_details?.cache_write_tokens || 0;\n    // Follow documented OpenAI/OpenRouter semantics: cached_tokens is cache-read\n    // tokens (hits). Providers disagree on placement: OpenAI/OpenRouter use\n    // prompt_tokens_details.cached_tokens, DeepSeek uses prompt_cache_hit_tokens,\n    // and Kimi documents top-level usage.cached_tokens on the final usage chunk.\n    // OpenAI does not document or emit cache_write_tokens, but\n    // OpenRouter-compatible providers can include it as a separate write count.\n    // OpenRouter's own provider/tests affirm the separate mapping:\n    // https://github.com/OpenRouterTeam/ai-sdk-provider/pull/409\n    // Do not subtract writes from cached_tokens, otherwise spec-compliant\n    // providers are under-reported. DS4 mirrors this contract too:\n    // https://github.com/antirez/ds4/pull/29\n    const input = Math.max(0, promptTokens - cacheReadTokens - cacheWriteTokens);\n    // OpenAI completion_tokens already includes reasoning_tokens.\n    const outputTokens = rawUsage.completion_tokens || 0;\n    const usage = {\n        input,\n        output: outputTokens,\n        cacheRead: cacheReadTokens,\n        cacheWrite: cacheWriteTokens,\n        reasoning: rawUsage.completion_tokens_details?.reasoning_tokens || 0,\n        totalTokens: input + outputTokens + cacheReadTokens + cacheWriteTokens,\n        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },\n    };\n    calculateCost(model, usage);\n    return usage;\n}",
+  "calculateCost": "function calculateCost() {}"
+}

@@ -13,10 +13,37 @@
 import { describe, expect, it } from 'vitest'
 import {
   NATIVE_MODALITY_BY_MODEL_ID,
+  ROUTER_MODEL_IDS,
   imageDefaultFor,
+  isRouterModelId,
   modalityKeyOf,
   nativeModalityOf,
 } from '../src/native-modality.ts'
+
+describe('isRouterModelId', () => {
+  it('recognises the upstream `auto` router', () => {
+    expect(isRouterModelId('auto')).toBe(true)
+    expect(nativeModalityOf('auto')).toBe('router')
+  })
+
+  it('is an explicit table, not a name heuristic', () => {
+    // 路由是上游的概念、没有声明字段。按名字猜（「叫 auto 的都算路由」）迟早
+    // 会误伤一个真的叫这个名字的模型——所以判据只有这张表。要往里加 id，先
+    // 拿到与 `auto` 同等强度的证据（它是该区默认路由、被网关解析成别的模型、
+    // 是名册里唯一无法标价的那一行）。
+    expect(ROUTER_MODEL_IDS.has('auto')).toBe(true)
+    expect(isRouterModelId('autopilot')).toBe(false)
+    expect(isRouterModelId('qmodel_38max')).toBe(false)
+    expect(isRouterModelId('')).toBe(false)
+  })
+
+  it('normalises case and whitespace like every other lookup in this module', () => {
+    // `nativeModalityOf` 一直走 normalizeModelId；这里若不走，`AUTO` 就会在
+    // 图片开关的判定里得到 unknown、却在目录过滤里逃过一劫。
+    expect(isRouterModelId('AUTO')).toBe(true)
+    expect(isRouterModelId(' auto ')).toBe(true)
+  })
+})
 
 describe('nativeModalityOf', () => {
   it('treats `auto` as a router, not a model', () => {

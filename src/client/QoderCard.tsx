@@ -36,6 +36,7 @@ import {
   QODER_MODELS_REFRESH_PATH,
   QODER_PROBE_PATH,
   QODER_REGIONS,
+  QODER_UPSTREAM_DOMAIN,
   QODER_USAGE_PATH,
   toPersistedCatalogEntry,
   withQoderRegion,
@@ -62,7 +63,7 @@ import { AccountPool } from './AccountPool.tsx'
 import { AddAccount } from './AddAccount.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
 import { inlineProbeReason } from './probe-reason.ts'
-import { probeResultView } from './probe-label.ts'
+import { probeResultView, formatProbeMoment } from './probe-label.ts'
 import { QODER_PAT_ENV_VARS } from '../credentials.ts'
 import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
@@ -159,6 +160,23 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   // Re-fetch the region's usage on the 60 s cadence, plus on demand.
   const [open, setOpen] = useState(view === 'page')
   const [activeRegion, setActiveRegion] = useState<QoderWebRegion>(() => 'cn')
+  /**
+   * 卡片正文里的**分栏**：账号 / 模型 / 诊断。
+   *
+   * 为什么要分：正文原来是一列长页，把两件互不相干的事混排在一起——运维账号
+   * （谁在服务、剩多少积分、签到与切换）和编辑目录（勾模型、上下文预算、思考
+   * 强度）。它们连**提交语义**都不同：账号改动点一下即生效，目录改动是草稿、
+   * 必须点「保存」，于是保存按钮常常离它要保存的东西隔着几屏。
+   *
+   * 参考 dingminhua/dsh-connect-workbuddy 的同名分栏（MIT）：那里也是
+   * 「账号 / 模型 / 诊断」三段，tab 条与区域那两格**刻意不是同一种形状**
+   * ——区域是二选一的作用域（每格还带自己的开关），这里是**同一份文档的分栏**。
+   *
+   * 非活动栏用 `hidden` 留在页面里（不是卸载）：切回来不重新拉取、不丢未保存的
+   * 目录草稿、账号池的日志不重建；`hidden` 同时把它移出无障碍树，正是
+   * `role="tabpanel"` 想要的效果——而 `display:none` 走 CSS 类会被后面的规则覆盖。
+   */
+  const [panel, setPanel] = useState<'accounts' | 'models' | 'diag'>('accounts')
   // 积分那两行的无障碍关联（复选框 aria-describedby → 它自己那行说明）。
   // 用 useId 而不是手写 id：同一页可能挂两张同样的卡片，写死的 id 会重复。
   const creditsLabelId = useId()
@@ -590,24 +608,82 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
           {regionOn && usage?.status !== 'error' ? (
             <>
-              {/* 顺序对齐 workbuddy：账号行 → 账号池管理 → 模型列表。
-                  账号池是「谁在服务、花多少」的决定区，排在模型列表之前；
-                  原先排在模型列表之后，用户要先翻过整张模型表才够到它。
-                  error 分支不渲染这些空壳——与 workbuddy 同规，只留错误行。 */}
-              {/* 积分显示那两行在账号池**之上**（用户实拍要求「这段内容移动到账号池
-                  上面」）。它管的是读数显不显示、立即生效，既不属于「谁在服务」那张
-                  表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
-                  不随区域有没有字节池而消失。 */}
-              {renderCreditsSwitch()}
-              {/* 还没拿到任何文档的那一瞬：说「正在加载」，而不是渲染一片空白。
-                  空白与「这个区域没有账号」在屏幕上长得一模一样，用户无法分辨
-                  （issue #77 同族：workbuddy 那边此时甚至渲染成了「未登录」）。
-                  首个文档一落地这条就消失，账号行在它的位置上出现。 */}
-              {usage === undefined
-                ? <p className="dsm-qoder-usage-text" role="status">{t('row.accountsLoading')}</p>
-                : null}
-              {renderPool()}
-              {renderModels()}
+              {/*
+                * 正文的**三个分栏**（账号 / 模型 / 诊断）。上方那两格是**作用域**
+                * （整块面板在说哪个供应商），这里则是**同一份文档的分栏** ——
+                * 所以形状刻意不同：作用域是带开关的方块，分栏是文档 tab 条。
+                *
+                * 判据写在 `hidden` 上而不是 CSS 类：非活动栏仍挂载，切回来不重新
+                * 拉取、不丢未保存的目录草稿、账号池日志不重建；同时它退出无障碍树，
+                * 这正是 role="tabpanel" 要的语义。`display:none` 走类名会被后面的
+                * 规则覆盖，`hidden` 不会。
+                */}
+              <div className="dsm-qoder-panels" role="tablist" aria-label={t('row.panelAria')}>
+                {(['accounts', 'models', 'diag'] as const).map(id => (
+                  <button
+                    key={id}
+                    type="button"
+                    role="tab"
+                    id={`dsm-qoder-tab-${id}`}
+                    aria-controls={`dsm-qoder-panel-${id}`}
+                    aria-selected={panel === id}
+                    className={`dsm-qoder-panel-tab${panel === id ? ' dsm-qoder-panel-tab-active' : ''}`}
+                    onClick={() => { setPanel(id) }}
+                  >
+                    {t(id === 'accounts' ? 'row.panelAccounts' : id === 'models' ? 'row.panelModels' : 'row.panelDiag')}
+                  </button>
+                ))}
+              </div>
+
+              {/* 账号栏：账号池、积分显示的两行偏好，以及关于凭据的每一条说明。
+                  默认落在这里——用户打开设置最常是来看「谁在服务、还剩多少」。 */}
+              <div
+                className="dsm-qoder-panel"
+                role="tabpanel"
+                id="dsm-qoder-panel-accounts"
+                aria-labelledby="dsm-qoder-tab-accounts"
+                hidden={panel !== 'accounts'}
+              >
+                {/* 积分显示那两行在账号池**之上**（用户实拍要求「这段内容移动到账号池
+                    上面」）。它管的是读数显不显示、立即生效，既不属于「谁在服务」那张
+                    表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
+                    不随区域有没有字节池而消失。 */}
+                {renderCreditsSwitch()}
+                {/* 还没拿到任何文档的那一瞬：说「正在加载」，而不是渲染一片空白。
+                    空白与「这个区域没有账号」在屏幕上长得一模一样，用户无法分辨
+                    （issue #77 同族：workbuddy 那边此时甚至渲染成了「未登录」）。
+                    首个文档一落地这条就消失，账号行在它的位置上出现。 */}
+                {usage === undefined
+                  ? <p className="dsm-qoder-usage-text" role="status">{t('row.accountsLoading')}</p>
+                  : null}
+                {renderPool()}
+              </div>
+
+              {/* 模型栏：勾选、上下文预算、思考强度与逐模型测试。全是要点「保存」
+                  的草稿，与账号那边的即时生效刻意分开——保存按钮因此就在它保存的
+                  东西下面，而不是隔着三屏。 */}
+              <div
+                className="dsm-qoder-panel"
+                role="tabpanel"
+                id="dsm-qoder-panel-models"
+                aria-labelledby="dsm-qoder-tab-models"
+                hidden={panel !== 'models'}
+              >
+                {renderModels()}
+              </div>
+
+              {/* 诊断栏：这张卡片**实际读到了什么**。存在的唯一理由是被整段贴进
+                  问题反馈，所以这里**没有任何会改设置的控件**——能改设置的诊断栏，
+                  只是一个名字更差的设置栏。 */}
+              <div
+                className="dsm-qoder-panel"
+                role="tabpanel"
+                id="dsm-qoder-panel-diag"
+                aria-labelledby="dsm-qoder-tab-diag"
+                hidden={panel !== 'diag'}
+              >
+                {renderDiag()}
+              </div>
             </>
           ) : null}
         </div>
@@ -816,9 +892,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                     <span>{t('row.modelContext', { context: formatCapacity(model.contextWindow) })}</span>
                     <span>{t('row.modelOutput', { output: formatCapacity(model.maxTokens) })}</span>
                     {/* 思考强度：一项**设置**（选好保存后每个请求自动带上），所以
-                        是可选的控件而不是只读文字。没有档位的模型（auto、
-                        kmodel_latest 等）不渲染——空控件会让人以为该模型支持思考
-                        却没有强度可选。 */}
+                        是可选的控件而不是只读文字。上游没声明档位的模型（实测
+                        `qmodel`、`mmodel` 等）不渲染——空控件会让人以为该模型
+                        支持思考却没有强度可选。
+                        （`auto` 也属于这一类，但它已经不在目录里了：它是路由而
+                        不是模型，见 `native-modality.ts` 的 `ROUTER_MODEL_IDS`。） */}
                     {renderEffortPicker(model)}
                     {model.isFree === true ? <span className="dsm-qoder-model-meta-tag">{t('row.modelFree')}</span> : null}
                   </div>
@@ -940,6 +1018,95 @@ export function QoderCard(props: QoderCardProps): ReactElement {
           </span>
         </label>
       </div>
+    )
+  }
+
+  /**
+   * 诊断栏：这张卡片**实际读到了什么**。
+   *
+   * 它是一个两列的事实表，不是散文。每一行都是卡片真的读到的值，所以一次问题
+   * 反馈可以**整段引用**，而不是把界面复述一遍。
+   *
+   * 这里**没有任何会改设置的控件**，这是刻意的：能改设置的诊断栏，只是一个名字
+   * 更差的设置栏。也正因为如此，它读的是**已保存**的值（`enabledModelKeys`，而不是
+   * 草稿 `draft`）——一份诊断若把「你还没点保存的改动」当成事实报出去，它给出的
+   * 就是错的答案。
+   *
+   * 上游域名读的是 `QODER_UPSTREAM_DOMAIN`，与 `upstream.ts` 里真正发请求的那个
+   * 主机名**同一处事实**；不用 `QODER_CONSOLE_DOMAIN`（那是用户浏览器里申请 PAT
+   * 的控制台，国际版恰好是另一个域名，拿它回答这个问题会给出看似对的错答案）。
+   */
+  function renderDiag(): ReactElement {
+    const failures: string[] = []
+    if (signIn?.credentialRejected === true) failures.push(t('row.credentialRejectedTitle'))
+    if (signIn?.refreshError !== undefined) failures.push(signIn.refreshError)
+    if (signIn?.creditsError !== undefined) failures.push(signIn.creditsError)
+    if (usage?.status === 'error') failures.push(usage.message)
+
+    const pool = usage?.status === 'error' ? undefined : usage?.pool
+    // 账号名与账号 id 不是一回事：诊断栏报的是**名字**（人有用的那个），
+    // 而 id 只出现在「未知」这种确实没有名字的时候才对读者有意义。
+    const serving = signIn === undefined
+      ? '—'
+      : signIn.accountName === ''
+        ? t('row.accountUnnamed')
+        : signIn.accountName
+
+    const rows: Array<{ label: string, value: string, mono?: boolean }> = [
+      { label: t('row.diagRegion'), value: activeRegion === 'cn' ? t('row.tabCn') : t('row.tabGlobal') },
+      { label: t('row.diagDomain'), value: QODER_UPSTREAM_DOMAIN[activeRegion], mono: true },
+      { label: t('row.diagAccount'), value: serving },
+      ...(signIn?.source === undefined
+        ? []
+        : [{
+            label: t('row.diagSource'),
+            value: signIn.source === 'settings'
+              ? t('row.accountSourceSettings')
+              : signIn.source === 'env'
+                ? t('row.accountSourceEnv')
+                : t('row.accountSourceVault'),
+          }]),
+      ...(signIn?.creditsAtMs === undefined
+        ? []
+        : [{ label: t('row.diagCreditsAt'), value: formatProbeMoment(signIn.creditsAtMs), mono: true }]),
+      ...(signIn === undefined
+        ? []
+        : [
+            { label: t('row.diagCatalog'), value: formatNumber(signIn.models.length) },
+            { label: t('row.diagEnabled'), value: formatNumber(signIn.enabledModelKeys.length) },
+          ]),
+      ...(pool === undefined
+        ? []
+        : [{
+            label: t('row.diagPool'),
+            value: pool.enabled
+              ? t('row.diagPoolOn', { count: pool.accounts.length })
+              : t('row.diagPoolOff'),
+          }]),
+    ]
+
+    return (
+      <section aria-label={t('row.panelDiag')}>
+        <div className="dsm-qoder-diag">
+          {rows.map(row => (
+            <div key={row.label} className="dsm-qoder-diag-row">
+              <span className="dsm-qoder-diag-label">{row.label}</span>
+              <span className={`dsm-qoder-diag-value${row.mono === true ? ' dsm-qoder-diag-mono' : ''}`}>
+                {row.value}
+              </span>
+            </div>
+          ))}
+          <div className="dsm-qoder-diag-row">
+            <span className="dsm-qoder-diag-label">{t('row.diagFailures')}</span>
+            {failures.length === 0
+              ? <span className="dsm-qoder-diag-value">{t('row.diagNoFailures')}</span>
+              : <span className="dsm-qoder-diag-value dsm-qoder-diag-bad dsm-qoder-diag-mono">
+                  {failures.join(' · ')}
+                </span>}
+          </div>
+        </div>
+        <p className="dsm-qoder-diag-hint">{t('row.diagHint')}</p>
+      </section>
     )
   }
 

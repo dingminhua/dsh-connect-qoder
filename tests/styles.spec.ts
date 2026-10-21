@@ -130,6 +130,65 @@ describe('QODER_CARD_CSS', () => {
     // 就删掉——那会制造一处与同族插件不一致的差异。
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-num')).toBeDefined()
   })
+
+  it('分栏 tab 条与区域方块是两套形状，不共用规则', () => {
+    // 区域那两格是**作用域**（二选一、各带开关、整格描边）；分栏是**同一份文档
+    // 的分栏**，形状必须是宿主设置窗口里那种下划线 tab。两者共用一条规则，就会
+    // 让「四选一」的读法重新出现。
+    const panelTab = ruleOf(QODER_CARD_CSS, 'dsm-qoder-panel-tab')
+    expect(panelTab).toBeDefined()
+    expect(panelTab).toContain('border-bottom:2px solid transparent')
+    expect(panelTab).not.toContain('border-radius')
+
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-panel-tab-active'))
+      .toContain('border-bottom-color:var(--dsw-alias-brand-primary')
+
+    // 选中态挂在按钮自己身上（这是文档 tab 条，不是「一格一个卡片」）。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-tab-cell')).toContain('border-radius')
+    expect(panelTab).not.toBe(ruleOf(QODER_CARD_CSS, 'dsm-qoder-tab-cell'))
+  })
+
+  it('诊断栏是两列事实表：label 不换行、value 右对齐且可断长串', () => {
+    const row = ruleOf(QODER_CARD_CSS, 'dsm-qoder-diag-row')
+    // 行与行之间只有内部那条 1px 分隔线，表本身只描一圈边。
+    expect(row).toContain('justify-content:space-between')
+    expect(row).toContain('align-items:baseline')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-diag-label')).toContain('flex:none')
+    const value = ruleOf(QODER_CARD_CSS, 'dsm-qoder-diag-value') ?? ''
+    expect(value).toContain('text-align:right')
+    // 上游报错原文常常是一个没有空格的长串（URL、JSON），必须能断。
+    expect(value).toContain('overflow-wrap:anywhere')
+  })
+
+  it('分栏里当第一块的模型区不画自己的上分隔线（否则与 tab 条两道线只隔 12px）', () => {
+    // 模型区带 border-top——那是一列长页里的段落分隔线。进了分栏之后，tab 条自己
+    // 已经有 border-bottom，两道线挨在一起像渲染出错。
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-panel > .dsm-qoder-models:first-child{border-top:0')
+    // **账号池不动**：账号栏的第一块永远是积分偏好那两行，账号池总是第二块，它要
+    // 靠那条线把「谁在服务」与上方的偏好分开（用户实拍要求过那段间距）。给它写一条
+    // `:first-child` 覆盖是空转——它永远不是第一块，却会让下一个人以为那里已被处理。
+    expect(QODER_CARD_CSS).not.toContain('.dsm-qoder-panel > .dsm-qoder-pool:first-child')
+    // 而账号池自己的规则（分隔线 + 内边距）必须还在。
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool')).toContain('padding:12px 0 4px')
+    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool')).toContain('border-top:1px solid')
+  })
+
+  it('模型列表不给自己加高度上限，也不自己滚动 —— 全部模型都要露出来', () => {
+    // 用户要求：「模型的页面，所有模型要全部呈现，不用滚动条」。
+    //
+    // 这条规则在本仓库里从来没有 `max-height`（同族 workbuddy 曾经有
+    // `max-height:520px; overflow-y:auto`：20 多条目录只露七八行，剩下的藏在一条
+    // 需要先发现、再去拖的**第二条**滚动条后面 —— 而外面那层面板本来就会滚）。
+    // 所以这里钉的是「别长回来」：一旦有人顺手加一条统一高度的规则，这里立刻转红。
+    const rule = ruleOf(QODER_CARD_CSS, 'dsm-qoder-model-list') ?? ''
+    expect(rule, '.dsm-qoder-model-list 规则应当存在').toContain('display:flex')
+    expect(rule, '模型列表不得给自己设高度上限').not.toContain('max-height')
+    expect(rule, '模型列表不得自己滚动（外层页面已经会滚）').not.toContain('overflow-y')
+    // `overflow:hidden` 必须**留着**，它是有作用的而不是残留：圆角由这个带边框的
+    // 盒子画，不裁剪的话首行与末行会用方角盖住圆角。只断言「没有上限」会让它在
+    // 日后被当成冗余清掉。
+    expect(rule, '圆角裁剪必须保留').toContain('overflow:hidden')
+  })
 })
 
 describe('QODER_CARD_CSS template literal', () => {

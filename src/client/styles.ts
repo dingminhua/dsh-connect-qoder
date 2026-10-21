@@ -126,6 +126,49 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-account-confirm-text{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-tab-off-notice{color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px;margin:0 0 4px;padding:8px 10px;background:var(--dsw-alias-bg-layer-3,#2a2c33);border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:8px}
 /*
+ * 分栏 tab 条（账号 / 模型 / 诊断）。
+ *
+ * 刻意**不是**上面那两格方块。那两格是区域作用域：二选一，每格还带自己的开关。
+ * 这里则是同一份文档的分栏，形状就是宿主自己的设置窗口里那种下划线 tab——
+ * 两排方块连在一起会被读成「四选一」。
+ *
+ * 真正起作用的是每个分栏上的 hidden 属性：非活动栏仍然挂载，所以切回来不重新
+ * 拉取、不丢未保存的目录草稿、账号池日志不重建；隐藏同时把它移出无障碍树，这正是
+ * role="tabpanel" 要的语义（用 CSS 类做 display:none 会被后面的规则覆盖，hidden 不会）。
+ */
+.dsm-qoder-panels{display:flex;align-items:stretch;gap:2px;margin:12px 0 0;border-bottom:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24))}
+.dsm-qoder-panel-tab{appearance:none;font:inherit;cursor:pointer;border:0;background:transparent;padding:7px 11px;margin-bottom:-1px;border-bottom:2px solid transparent;color:var(--dsw-alias-label-tertiary,#999);font-size:13px;font-weight:600;line-height:20px;white-space:nowrap;transition:color .15s,border-color .15s}
+.dsm-qoder-panel-tab:hover:not(.dsm-qoder-panel-tab-active){color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-qoder-panel-tab:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+.dsm-qoder-panel-tab-active{color:var(--dsw-alias-label-primary,#e6e6e6);border-bottom-color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-qoder-panel{margin-top:12px}
+/*
+ * 分栏里的第一块不再画自己的上分隔线。
+ *
+ * 模型区带 border-top + padding-top——那是一列长页里的段落分隔线，作用是
+ * 「告诉读者上一段结束了」。可模型区现在是模型栏里唯一的内容，而 tab 条自己
+ * 已经有一条 border-bottom：两条线只隔 12px，读起来像渲染出错。段落边界由
+ * tab 条表达，第一块就不必再说一遍。
+ *
+ * 只针对模型区：账号栏的第一块永远是积分偏好那两行（renderCreditsSwitch
+ * 无条件渲染），账号池因此总是**第二块**——它要靠自己那条 border-top 把「谁在
+ * 服务」与上方的偏好分开（用户实拍要求过那里的间距），所以不动它。
+ */
+.dsm-qoder-panel > .dsm-qoder-models:first-child{border-top:0;padding-top:0}
+/*
+ * 诊断栏：两列的事实表，不是散文。每一行都是卡片**真的读到的**一个值，所以一份
+ * 问题反馈可以整段引用它，而不是把界面复述一遍。这里没有控件是刻意的——能改设置
+ * 的诊断栏，只是一个名字更差的设置栏。
+ */
+.dsm-qoder-diag{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#232529)}
+.dsm-qoder-diag-row{display:flex;align-items:baseline;justify-content:space-between;gap:16px;padding:8px 12px}
+.dsm-qoder-diag-row+.dsm-qoder-diag-row{border-top:1px solid var(--dsw-alias-border-l1,rgba(127,127,127,.24))}
+.dsm-qoder-diag-label{flex:none;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+.dsm-qoder-diag-value{min-width:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:12px;line-height:18px;text-align:right;overflow-wrap:anywhere}
+.dsm-qoder-diag-mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.dsm-qoder-diag-bad{color:var(--dsw-alias-label-caution,#e8b34b)}
+.dsm-qoder-diag-hint{margin:10px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+/*
  * 那段说明行（「每个 tab 是一个独立供应商…」）。
  *
  * 它此前**只有** padding-left，上下间距全靠外层容器的 gap 与账号池的 padding——
@@ -161,6 +204,19 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-models-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
 .dsm-qoder-models-dirty{margin-left:8px;padding:1px 6px;border-radius:6px;background:var(--dsw-alias-state-warn-primary,#f59e0b);color:#1b1d22;font-size:11px;font-weight:600;line-height:16px;vertical-align:1px;white-space:nowrap}
 .dsm-qoder-models-summary{margin:2px 0 0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+/* 模型列表：**每一条都排出来，不设高度上限、不自己滚动。**
+ *
+ * 用户要求：「模型的页面，所有模型要全部呈现，不用滚动条」。这条规则因此**没有**
+ * max-height、也没有 overflow-y：盒子高度永远等于内容高度，20 多条目录就是 20 多
+ * 行，靠**外层页面**滚动去看它们。同族的 workbuddy 曾经有 max-height:520px +
+ * overflow-y:auto，结果是 20 多条只露七八行、其余藏在一条要先发现再拖动、并且叠在
+ * 面板滚动条之上的**第二条**滚动条后面 —— 而一个「让人看见并勾选模型」的列表，
+ * 恰恰不该是这个形状。
+ *
+ * overflow:hidden 必须留着，而且是有作用的而不是残留：圆角由这个带边框的盒子画，
+ * 不裁剪的话首行与末行会把直角盖到圆角上。现在盒子高度等于内容高度，它不会再裁掉
+ * 任何东西。tests/styles.spec.ts 与 scripts/model-list-layout.preview.tsx 分别从
+ * 「规则文本」和「真实 Chrome 布局」两侧钉住这件事。 */
 .dsm-qoder-model-list{display:flex;flex-direction:column;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;overflow:hidden}
 .dsm-qoder-model{display:grid;grid-template-columns:minmax(0,1fr);gap:7px;padding:10px 12px;background:var(--dsw-alias-bg-layer-2,#232529);transition:opacity .16s}
 .dsm-qoder-model-disabled{opacity:.55}

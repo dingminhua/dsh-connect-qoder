@@ -47,15 +47,35 @@ export const NATIVE_MODALITY_BY_MODEL_ID: Readonly<Record<string, 'text' | 'mult
   'qwen3.6-flash': 'multimodal',
 }
 
-/** `auto` 是一个「挑模型的入口」，不是模型本身。 */
-const ROUTER_MODEL_ID = 'auto'
+/**
+ * 上游的**路由器**（router），不是模型。
+ *
+ * `auto` 是一个「挑模型的入口」：网关在**请求时**才决定把它解析成哪一个模型。
+ * 所以它的上下文窗口、思考档位与计费对象都由别人临时决定，插件无法如实描述
+ * ——本仓库保存下来的真实目录里，`auto` 正是**唯一没有思考档位**、却带着
+ * `isDefault: true` 的那一行。把它列成一个可勾选的模型，用户勾的是一个「未知
+ * 会变成谁」的条目。
+ *
+ * **用显式表而不是名字启发式**：路由是上游的概念，没有声明字段可查；按名字
+ * 猜（比如「叫 auto 的都丢」）迟早会误伤一个真的叫这个名字的模型。要往这里
+ * 加 id，先拿到与 `auto` 同等强度的证据。
+ *
+ * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）的
+ * `ROUTER_MODEL_IDS` / `isRouterModelId`——那边同样用显式表而非启发式。
+ */
+export const ROUTER_MODEL_IDS: ReadonlySet<string> = new Set(['auto'])
+
+/** 这个 id 是不是上游路由器（而不是模型）。 */
+export function isRouterModelId(modelId: string): boolean {
+  return ROUTER_MODEL_IDS.has(normalizeModelId(modelId))
+}
 
 /**
  * 某个 model id 的原生模态。只做精确匹配：新模型绝不会从它的同族、
  * 显示名或平台的图片标记里继承结论。
  */
 export function nativeModalityOf(modelId: string): QoderNativeModality {
-  if (modelId === ROUTER_MODEL_ID) return 'router'
+  if (isRouterModelId(modelId)) return 'router'
   return NATIVE_MODALITY_BY_MODEL_ID[normalizeModelId(modelId)] ?? 'unknown'
 }
 
