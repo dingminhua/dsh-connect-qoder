@@ -129,7 +129,9 @@ npm publish
 
 **作用域包**：`package.json` 的 `name` 是 `@dmh2002/dsh-connect-qoder`，且带 `publishConfig.access: "public"`——**没有这一项，`npm publish` 会按 restricted 报价并可能失败**。发布名与插件在 DSH 内的标识是两件事：`cordis.patch.yml` 的 entry `id`、设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与 CLI 程序名**故意保持不带作用域**（改名会孤儿化老配置）。
 
-**打包内容**：`package.json` 的 `files` 字段限定只发布 `lib/`、`icons/`、`docs/assets/`、`docs/PAT.md`、`docs/DESIGN.md`、`screenshots.json`、`cordis.patch.yml`、README 双语、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`。`tests/`、`scripts/`、`docs/audit/` 与 `node_modules/` 不会进入发布包——`npm pack --dry-run` 的输出里若出现它们（或任何 `pt-` 样式的字符串），先修再发。
+**打包内容**：`package.json` 的 `files` 字段限定只发布 `lib/`、`icons/`、`docs/assets/`、`docs/PAT.md`、`docs/DESIGN.md`、`docs/PROMO_BADGE.md`、`docs/DSH-0.2.1-RC1-FOLLOWUP.md`、`screenshots.json`、`cordis.patch.yml`、README 双语、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`。`tests/`、`scripts/`、`docs/audit/` 与 `node_modules/` 不会进入发布包——`npm pack --dry-run` 的输出里若出现它们（或任何 `pt-` 样式的字符串），先修再发。
+
+> **README 里相对链接到的 `docs/` 文件必须在这份清单里**：README 在 npm 页面上是正文，相对链接指向包内路径，清单漏一项就是一个 404（`docs/PROMO_BADGE.md` 首次加进来时就漏过一次）。改 `files` 时对照 README 双语里的 `](docs/…)` 全量核一遍。
 
 > **改包名时必须同时核对的三处身份**（0.3.0 在这上面栽过两次，都是**静默**的）：
 > 1. `tsdown.config.ts` 的 `PLUGIN_ID` —— 客户端 bundle 在 `window.__ModuleLoader__` 声明的模块 id **必须等于包名**，否则花名册配不上行、永不 invalidate，第二次执行抛 `duplicate factory registration`（插件「启用失败」）。
