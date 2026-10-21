@@ -2,6 +2,23 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.6.1 (2026-10-21)
+
+> 版本号取 **patch**：只补文档与截图，代码零改动。功能、配置键、落盘格式、请求形状、
+> CLI 与 peer 宿主范围全都不动。
+
+### Docs
+
+- **活动徽标补上真机截图。** `docs/assets/dsh-connect-qoder-promo-badge.png`：窗口内
+  （22:2x，Asia/Shanghai）用宿主 `/usage` 的真实目录喂卡片组件渲染，两枚徽标与
+  `Qwen3.8-Max (0.20x)` / `Qwen3.7-Plus (0.10x)` 同排可见。README 双语各挂一条，
+  `screenshots.json` 同步登记。
+- **`docs/PROMO_BADGE.md` 补 §5.1 窗口内真机复核。** 记录两件事：一是上游 `active`
+  确实按当前时刻算、窗口内会翻 `true`（16:2x 是 `false`）；二是窗口真开时徽标真的
+  画出来了。同时更正 §7「不判断账号资格」一条：这批账号在窗口内 `active` 为真。
+- 探针脚本在 §5 的示例输出旁补了一句：真实时钟与时钟平移是两种复核，前者证明
+  「条件成立时会画」，后者只证明「判定随时刻变」。
+
 ## 1.6.0 (2026-10-21)
 
 > 版本号取 **minor**：新增一项用户可见的界面能力（模型行的活动优惠徽标），落盘
