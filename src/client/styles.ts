@@ -175,6 +175,15 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-model-copy{display:flex;align-items:baseline;gap:8px;min-width:0}
 .dsm-qoder-model-name{display:inline-flex;align-items:baseline;gap:7px;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;font-weight:500;line-height:19px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dsm-qoder-model-name-rate{color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:400;line-height:16px;flex:none}
+/*
+ * 上游的活动优惠徽标（「错峰 4 折」/「Off-Peak 60% off」）。
+ *
+ * 文案与颜色都**不是**插件选的：文案是上游 promotion.badge 的原话，颜色则
+ * 只有一种——Qoder 的活动字段里没有颜色（对比 workbuddy 的促销给了
+ * badge.color），所以这里统一用品牌色系，靠 color-mix 调出淡底+同色描边。
+ * flex:none 是关键：模型名会省略号截断，徽标必须不被压缩。
+ */
+.dsm-qoder-model-promo{flex:none;display:inline-flex;align-items:center;padding:0 7px;border-radius:999px;font-size:10px;line-height:16px;font-weight:600;white-space:nowrap;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(255,255,255,.08);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#5686fe) 16%,transparent);border:1px solid transparent;border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,#5686fe) 40%,transparent)}
 .dsm-qoder-model-desc{margin:0;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-qoder-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
 .dsm-qoder-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}

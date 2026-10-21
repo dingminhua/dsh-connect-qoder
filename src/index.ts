@@ -32,6 +32,7 @@ import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
+import { readPromotion, type QoderPromotion } from './promo.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
 import { imageDefaultFor } from './native-modality.ts'
 import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
@@ -177,6 +178,19 @@ const modelConfig = z.object({
   thinkingEfforts: z.array(z.string()).required(false),
   defaultThinkingEffort: z.string().required(false),
   contextTiers: z.array(z.number()).required(false),
+  /**
+   * 上游的活动优惠规则（`promotion`），原样往返。
+   *
+   * 用 `z.any()` 而不是嵌套 schema，理由只有两条：**不写第二套解析**（上游 snake_case
+   * → `QoderPromotion` 的映射只在 `parseQoderPromotion` 里有一份），以及**不让 schema
+   * 去「理解」上游文档**——上游字段随活动类型变化，逐个声明等于把上游的形状抄进配置层，
+   * 抄漏的那次就会像 `thinkingEfforts` 那样把数据抹掉。
+   *
+   * 注意它**不等于**「未来新增的键会被保住」：读回时走 `readPromotion` 的白名单重建，
+   * 插件不认识的键在那里就丢了（这是有意的——卡片只消费自己声明过的字段）。所以这个
+   * 字段的契约是「本插件已知的字段原样往返」，不是「上游文档原样存档」。
+   */
+  promotion: z.any<QoderPromotion>().required(false),
 })
 
 const poolConfig = z.object({
@@ -475,6 +489,9 @@ function poolPreferencesOf(config: { regions?: Record<string, unknown> | null },
 /** 把保存的目录条目解析为模型信息（历史兼容）。 */
 function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefined {
   if (typeof raw.key !== 'string' || typeof raw.displayName !== 'string') return undefined
+  // 活动规则：落盘形状就是解析后的 camelCase，读回只做校验。校验不过时当作
+  // 「这条目录条目没有活动」——这比带着一份读不懂的规则去判定要好。
+  const promotion = readPromotion(raw.promotion)
   return {
     key: raw.key,
     displayName: raw.displayName,
@@ -495,6 +512,8 @@ function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefin
     ...typeof raw.defaultThinkingEffort === 'string' && raw.defaultThinkingEffort !== ''
       ? { defaultThinkingEffort: raw.defaultThinkingEffort }
       : {},
+    // 活动规则：落盘形状就是解析后的 camelCase，读回只做校验（见上）。
+    ...promotion === undefined ? {} : { promotion },
   }
 }
 
