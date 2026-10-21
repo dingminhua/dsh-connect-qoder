@@ -2,6 +2,185 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.7.0 (2026-10-22)
+
+> 版本号取 **minor**：新增一项用户可见的界面能力（正文分栏 + 只读诊断栏），并让
+> `auto` 路由器不再作为模型出现。配置键、落盘格式、请求形状、HTTP 路由、CLI 与
+> peer 宿主范围全都不动；旧配置读回行为不变（存档不迁移），不需要迁移。
+>
+> 另修一处**可观测性缺陷**（issue #4）：缓存命中数此前在 usage 归一路径上被丢掉，
+> 于是宿主 GUI 的「缓存命中」恒显 0%。修它只是把已有的上游数字透传过去，不改扣费。
+
+### Fixed
+
+- **缓存命中数不再丢失，GUI 的「缓存命中」不再是恒 0%（issue #4）。** 症状是
+  「DSH 轮次统计的缓存命中永远显示 0%，而同一条会话 prompt 有几万 token、多轮
+  前缀高度重复」——那个 0% 是**不可信的读数**，不是缓存没生效的证据。
+
+  **先定死了成因，再动手。** issue 里明确留了一个未知项：上游到底给不给
+  `cached_tokens`？两种答案的处置完全相反（是我们丢了 vs. 上游没给）。新增
+  `pnpm run probe:cache`（`scripts/probe-cache-usage.mjs`）抓真实原始帧，**不做任何
+  字段抽取**——第一版探针犯了两个错，两次都得出「上游一个 usage 块都没有」的假阴性：
+  一是把 fetch 钩子装在客户端**构造之后**（`QoderUpstreamClient` 在构造函数里就把
+  `globalThis.fetch` 捕获成 `this.fetchImpl`），二是用 `onDelta` 当观测点（那一层
+  已经过 `readTokens` 抽取，等于用同一个可疑实现验证它自己）。修好后实测（cn，
+  `qfmodel`，两轮同前缀）：
+
+  ```json
+  { "prompt_tokens": 2038, "prompt_tokens_details": { "cacheable_tokens": 0, "cached_tokens": 2032 } }
+  ```
+
+  结论：**上游确实下发**，是我们把它丢了 → 成因 A，透传缺陷。
+
+  - **解析层**（`upstream.ts`）：`parseStreamDelta` 新增 `readCachedTokens`，认三种
+    写法（`prompt_tokens_details.cached_tokens`、`prompt_cache_hit_tokens`、平铺的
+    `cached_tokens`），**取第一个存在的、不相加**——它们是同一个量的三种拼法，不是
+    三个分量。取不到时是 `undefined` 而非 `0`：「上游没报」和「命中 0 个」是两件事，
+    用默认 0 去修一个「0% 不可信」的 bug 等于把病留下。
+  - **合成层**（`shim.ts`）：`done.usage` 补上
+    `prompt_tokens_details.cached_tokens`（宿主 `parseChunkUsage` 只读这一处）。
+    计数规则与 `inputTokens` **不同**：后者是 `> 0` 才覆盖，前者只要上游报过就记下来
+    （含 0），因为「上游明确报 0 命中」是冷启动那一轮的正常答案。
+  - **⚠ 绝不双重计数**：实测 `cached_tokens` 是 `prompt_tokens` 的**子集**
+    （2032 / 2038）。所以**不动** `prompt_tokens` 与 `total_tokens`——宿主自己会做
+    `input = prompt_tokens - cacheRead - cacheWrite`，两边各按「子集」理解才对得上。
+    issue 里那句「必须确认它是总数还是额外项」正是指这里；`tests/host-usage-parsing`
+    专门留了一条反例用例，把「相加」这个写法钉成失败。
+  - **端到端实测**（真实上游 → 真实 shim → 真实帧）：加长前缀到 2975 token 后，
+    第 2 轮 `cached_tokens: 2950`，第 1 轮 `0` —— 命中数与冷启动都如实透传。修复前
+    这两处都是「没有这个字段」。
+
+### Added
+
+- **设置卡片正文按「账号 / 模型 / 诊断」分栏。** 参考同族
+  `dingminhua/dsh-connect-workbuddy` 的同名分栏（MIT，Copyright (c) 2026 LaoDing）。
+
+  卡片原来是一列长页，把两件互不相干的事混排在一起：运维账号（谁在服务、剩多少
+  积分、池里哪几个、签到与切换）与编辑目录（勾模型、上下文预算、思考强度）。它们
+  连**提交语义**都不同——账号改动点一下即生效，目录改动是草稿、必须点「保存」——
+  于是保存按钮常常离它要保存的东西隔着几屏。
+
+  - 顶部新增分栏 tablist（账号 / 模型 / 诊断），三者共享上方那两格**区域作用域**。
+    形状刻意与区域那两格不同：区域是二选一、每格带自己的开关（方块），分栏是同一份
+    文档的分栏（下划线 tab）——两排方块连在一起会被读成「四选一」。
+  - **非活动栏用 `hidden` 留在页面里**：切栏不重新拉取、不丢未保存的目录草稿、账号池
+    的签到与测试日志不重建；`hidden` 同时把它移出无障碍树，正是 `role="tabpanel"`
+    要的语义（而 `display:none` 走 CSS 类会被后面的规则覆盖）。
+  - 新增只读**诊断栏**：区域、上游域名、当前服务账号、凭据来源、积分读取时刻、
+    目录模型数、已启用数、账号池开关，以及上游最近一次错误的**原文**（原样引用，
+    不翻译、不概括）。这一栏没有任何会改设置的控件——能改设置的「诊断」栏，只是一
+    个名字更差的设置栏。它读的是**已保存**的值，不读草稿：把没点保存的改动当事实
+    报出去，给出的就是错的答案。
+  - 分栏里的第一块不再画自己的上分隔线（模型区与账号池原本各有 `border-top`，那是
+    一列长页里的段落分隔线；tab 条自己已经有 `border-bottom`，两道线只隔 12px 时
+    像渲染出错）。
+
+### Changed
+
+- **上游域名只有一处事实。** 新增 `QODER_UPSTREAM_DOMAIN`（`status-paths.ts`），并由
+  `upstream.ts` 的 `QODER_REGIONS.<region>.gateway` **直接消费**——诊断栏读的就是它。
+  此前域名只在 `QODER_REGIONS` 里手写一份，面板要显示「请求打到哪」就得再抄一遍，
+  抄错或漂移时面板写着 A、请求打着 B，而两边看起来都完全正常。注意它与
+  `QODER_CONSOLE_DOMAIN` **不是**同一组域名（国际版控制台是 `qoder.com`，网关是
+  `api1.qoder.sh`），拿控制台域名回答诊断问题会给出一个看似对的错答案。
+- **模型栏把所有模型一次全部排出来，列表不再自己滚动。** 用户要求：「模型的页面，
+  所有模型要全部呈现，不用滚动条」。
+
+  这条规则此前在本仓库里就**没有** `max-height`（同族 workbuddy 曾有
+  `max-height:520px` + `overflow-y:auto`，20 多条目录只露七八行、其余藏在一条要先
+  发现再拖动、并且叠在面板滚动条之上的**第二条**滚动条后面）。因此本次不是改行为，
+  而是**把这条约束钉死并留下证据**：一旦有人日后顺手加一条统一高度的规则，两处守卫
+  会立刻转红。`overflow:hidden` 保留，它是有作用的而不是残留——圆角由这个带边框的
+  盒子画，不裁剪的话首行与末行会把直角盖到圆角上。
+- **上游的 `auto` 路由器不再作为模型出现在列表里。** 用户要求：「模型列表要取消 auto
+  的选项」。
+
+  它**不是模型**：`auto` 是该区的默认**路由**，网关在**请求时**才决定把它解析成哪个
+  模型，所以它的价格、上下文窗口与行为都由别人临时决定，插件无法如实描述。本机真实
+  存档里它正是两个区域各自的**第一条**、也是唯一带 `is_default: true` 却没有任何思考
+  档位的那一行——一个「倍率未知、会变成谁不定」的可勾选条目。
+
+  - **用显式表而不是名字启发式**：新增 `ROUTER_MODEL_IDS` / `isRouterModelId`
+    （`native-modality.ts`），与既有的 `nativeModalityOf(...) === 'router'` 共用同一个
+    来源。路由是上游的概念、没有声明字段，按名字猜（「叫 auto 的都丢」）迟早会误伤
+    一个真的叫这个名字的模型。
+  - **两个点都过滤**：写点 `fetchModels`（唯一解析入口，`discoverModels` /
+    `refreshRegionCatalog` / CLI `status` 全走它）与读点
+    `configuredModels`（`catalog.ts` 的 `withoutRouters`，兜住旧存档）。只改写点的话，
+    **旧配置里存着 `auto` 的人，每次读都还会看到那一行**，直到他手动刷新一次。
+  - **存档本身不迁移**：读点过滤是刻意的——存档保持上次刷新写下的原样，加载时不悄悄
+    改写用户数据，而这一行在新代码跑起来的那一刻就消失。
+  - **顺带补上一处原本会踩空的守卫**：`auto` 被去掉后，一个**只勾过 `auto`** 的人，
+    他的 `enabledModelKeys` 与目录交集为空。`deriveCatalog` 原先会老实返回空数组，
+    于是 DSH 的选择器一个模型都没有、且**没有任何报错**（issue #32 的故障形态：模型
+    静默消失）。现在「勾了但一条都没命中」退回整份目录（workbuddy 同一条守卫），
+    `initialEnabledKeys` 也不再勾选路由器。
+
+### Tests
+
+- `tests/card-panels.spec.tsx`（10 条）：默认落在账号栏；点模型/诊断可切换；诊断栏
+  只读（`input` / `select` / `button` / `a[href]` 一个都没有）、报名字不报 id、失败
+  原文照引；非活动栏仍挂载（勾选一个模型的草稿，切走再切回仍在，`row.modelsDirty`
+  仍挂着）；诊断读已保存值而非草稿；恰好一个 `aria-selected` 且 tab/panel 互指；
+  切栏**不发任何额外请求**；**告警不落在任何一栏里**——刷新失败时停在三栏中的哪一栏
+  都看得见（把它顺手塞进账号栏，是分栏最容易犯的错）。
+- `tests/styles.spec.ts` 补 4 条：分栏 tab 条与区域方块不共用规则、诊断表的两列
+  几何（label 不换行 / value 右对齐且 `overflow-wrap:anywhere`）、分栏第一块不画
+  上分隔线；以及**模型列表不得设 `max-height`、不得 `overflow-y`，同时必须保留
+  `overflow:hidden`**——只断言「没有上限」会让人以后把裁剪也顺手删掉，而那正是
+  圆角依赖的东西。
+- `tests/upstream.spec.ts` 补 1 条：`QODER_REGIONS.*.gateway` 与
+  `QODER_UPSTREAM_DOMAIN` 逐字相等，且≠控制台域名。
+- `tests/upstream.spec.ts` 补 3 条 `fetchModels` 用例：名册里的 `auto` 不出现而真模型
+  一个不少；**名册只有 `auto` 时得到空数组而不是抛错**（「上游改了路由器」不该被放大成
+  「这个区域坏了」）；**只认显式表**（`autopilot` 这种名字带 auto 的真模型不受牵连）。
+- `tests/catalog.spec.ts` 补 4 条：`withoutRouters` 去掉旧存档里的 `auto`；它不动真模型
+  且不修改入参；`initialEnabledKeys` 不勾路由器（它曾就是 `isDefault`）；**勾了却没命中
+  时退回整份目录**——这条是 `auto` 消失后的直接后果，漏了就是 issue #32 那种「模型
+  静默消失」。
+- `tests/native-modality.spec.ts` 补 3 条 `isRouterModelId`：认出 `auto`；是显式表而非
+  名字启发式；与模块内其它查找一样做大小写/空白归一。
+- `tests/index.spec.ts` 补 2 条**端到端**（走真实 `listModels`，不是纯函数）：旧存档
+  里的 `auto` 不再出现在 DSH 的模型列表里；**只勾过 `auto` 的人不会得到空列表**。
+  这两条在真实挂载路径上跑——早期本项目吃过「只测纯函数，生产路径上是死代码」的亏。
+- 新增 `scripts/model-list-layout.preview.tsx`：jsdom 做不了布局、量不出滚动条，所以
+  把**真实 `QoderCard`** 渲染出的 DOM（25 个模型，远超真实目录）交给本机 Chrome 实测，
+  一次性钉住四件事——25 行一条不少；列表 `scrollHeight == clientHeight`（不滚）；从
+  列表到卡片外沿每一层既无 `max-height` 也无自滚动；**卡片内任何元素都不自己滚动**
+  （只看列表的祖先会漏掉兄弟节点，而「换某个内层在滚」在用户体感上是同一件事）。
+  祖先链刻意截断在 `.dsm-plugin-card`：再外是模拟宿主的页面外壳，那层滚动是**页面**
+  滚动，把它算进来会让断言变成「页面不许滚」，与本次要求不是同一个问题。
+- 新增 `pnpm run preview:client`（`scripts/panels.preview.tsx`（分栏截图）+
+  `scripts/model-list-layout.preview.tsx`（布局实测）+
+  `scripts/vitest.preview.config.ts`）：把**真实组件**挂进 jsdom，切到每一栏、把
+  DOM 序列化成静态页交给本机 Chrome 截图或测量。它**不在** `pnpm test` 里（要写 PNG、
+  要拉本机浏览器），后缀 `.preview.tsx` 也让它落在主 `vitest.config.ts` 的 `include`
+  （`tests/**`）之外。这个脚本原本叫 `preview:panels`，现在装的不止分栏截图，名字
+  跟着改。
+- **缓存命中（issue #4）**：
+  - `tests/upstream.spec.ts` 补 5 条：真实抓包原文里抽出 `cached_tokens`（并断言
+    `inputTokens` 仍是原始 `prompt_tokens`，即**子集不是增量**）；三种拼法都认且
+    不相加；上游没报时字段**缺席**（`undefined`，不是 0）；上游明确报 0 时原样接受；
+    字符串/负数/NaN 当没报处理。
+  - `tests/shim.spec.ts` 补 3 条：`done.usage` 透传 `prompt_tokens_details.cached_tokens`
+    且不折进 `prompt_tokens`/`total_tokens`；报 0 也透传；**最后一条把这一帧真的交给
+    宿主的 `parseChunkUsage`**，断言它读成非零 `cacheRead`。
+  - 新增 `tests/host-usage-parsing.spec.ts`（5 条）+ `tests/fixtures/host-usage-parsing.json`：
+    从 `app.asar` **逐字提取**宿主的 `parseChunkUsage` 并执行它（与既有的
+    `host-piai-classifier.json` 同规）。为什么必须执行宿主原文：issue #4 的症状是
+    「宿主显示 0%」，而显示 0% 有两种成因——我们没写、或写对了位置但宿主读别处。
+    只断言「我们写了」挡不住后者。本仓库付过一次学费：手抄宿主实现做断言，两份一起
+    漂移，测试全绿而线上照坏。其中一条是**反例守卫**：把 `cached_tokens` 加进
+    `prompt_tokens` 会被宿主再减一次，断言那种写法算出来的 `input` 是错的。
+  - 新增 `pnpm run probe:cache`（`scripts/probe-cache-usage.mjs`）：只读、用免费模型、
+    两轮同前缀，**原样打印**每个 usage 块并给出「上游给不给」的结论。它存在的理由
+    就是 issue 里那个未知项——先定死成因再动手，别凭推断选修法。
+- 变异测试（逐个验证守卫真的会红）：拿掉 shim 的透传 → shim 3 条红；拿掉
+  `fetchModels` 的 router 过滤 → upstream 3 条红；拿掉读点 `withoutRouters` →
+  index 2 条红；`deriveCatalog` 不回退 → catalog 1 条红；把 `cachedTokens` 加进
+  `inputTokens`（issue 警告的重复计数）→ upstream 1 条红；模型列表加回
+  `max-height:520px` → styles 与 Chrome 布局实测各 1 条红。
+
 ## 1.6.1 (2026-10-21)
 
 > 版本号取 **patch**：只补文档与截图，代码零改动。功能、配置键、落盘格式、请求形状、
