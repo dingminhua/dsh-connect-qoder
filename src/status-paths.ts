@@ -18,6 +18,10 @@
  * @module dsh-connect-qoder/status-paths
  */
 
+// 纯类型导入（构建时擦除）：本模块是 node-free 桥梁，不能把 Host 侧的实现模块
+// 拖进来——但 `promo.ts` 本身就无依赖，只借它的形状，不借它的代码。
+import type { QoderPromotion } from './promo.ts'
+
 // ---------------------------------------------------------------------------
 // 路由常量
 // ---------------------------------------------------------------------------
@@ -541,6 +545,15 @@ export interface QoderWebModel {
   isNew?: boolean
   /** Context tiers offered by the gateway (`context_config`), ascending. */
   contextTiers?: readonly number[]
+  /**
+   * The upstream's promotion rule for this model (`model/list` → `promotion`).
+   *
+   * Carried as the parsed rule (`src/promo.ts`), not the upstream snake_case
+   * payload, so the card, the persisted catalog and the Host all speak one
+   * shape. Whether it is *live* is NOT decided here: the card asks
+   * `promoLiveAt` against the clock on every render.
+   */
+  promotion?: QoderPromotion
 }
 
 /**
@@ -569,6 +582,7 @@ export interface QoderPersistedModel {
   thinkingEfforts?: readonly string[]
   defaultThinkingEffort?: string
   contextTiers?: readonly number[]
+  promotion?: QoderPromotion
 }
 
 /**

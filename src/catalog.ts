@@ -8,6 +8,7 @@
  */
 
 import type { QoderUpstreamModel } from './upstream.ts'
+import { parseQoderPromotion, type QoderPromotion } from './promo.ts'
 
 // ---------------------------------------------------------------------------
 // 静态 fallback 目录（网关不可达时保底，来自 qoder2api models.py + 官方目录）
@@ -70,6 +71,18 @@ export interface QoderModelInfo {
    * 不存在时无档位可选，卡片不渲染预算选择器。
    */
   contextTiers?: number[]
+  /**
+   * 上游的活动优惠规则（`model/list` 每行的 `promotion`）。
+   *
+   * 这里存的是**解析后**的规则（`src/promo.ts` 的 `QoderPromotion`），不是上游的
+   * snake_case 原文：落盘、投影、卡片三处只认一种形状，读回时用 `readPromotion`
+   * 校验，不会出现两套解析各自漂移。
+   *
+   * 缺席 = 上游没给活动（或给的活动没有可显示的文案）。**不要**从
+   * `price_factor` 反推活动——倍率是基础价，活动是另一层，混起来会画出上游没
+   * 说的折扣。
+   */
+  promotion?: QoderPromotion
 }
 
 /** 默认上下文预算（模型未声明任何档位时）。 */
@@ -182,6 +195,7 @@ export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
   const contextWindow = pickDefaultContextWindow(raw) ?? raw.max_input_tokens ?? QODER_DEFAULT_CONTEXT
   const reasoning = thinkingOf(raw.thinking_config)
   const supportsThinking = supportsThinkingOf(raw)
+  const promotion = parseQoderPromotion(raw.raw['promotion'])
   return {
     key: raw.key,
     displayName: raw.display_name,
@@ -199,6 +213,7 @@ export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
     isFree: raw.is_free === true,
     isNew: false,
     ...tiersField(contextTiersOf(raw)),
+    ...promotion === undefined ? {} : { promotion },
   }
 }
 

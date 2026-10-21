@@ -32,6 +32,7 @@ import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
+import { readPromotion, type QoderPromotion } from './promo.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
 import { imageDefaultFor } from './native-modality.ts'
 import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
@@ -177,6 +178,14 @@ const modelConfig = z.object({
   thinkingEfforts: z.array(z.string()).required(false),
   defaultThinkingEffort: z.string().required(false),
   contextTiers: z.array(z.number()).required(false),
+  /**
+   * 上游的活动优惠规则（`promotion`），原样往返。
+   *
+   * 用 `z.any()` 而不是嵌套 schema：这是**上游文档的形状**，字段随活动类型
+   * 变化（今天只有错峰折扣），逐字段声明会让未来新增的键在每次保存时被抹掉
+   * ——正是本仓库 `thinkingEfforts` 那次事故的同一种失败方式。
+   */
+  promotion: z.any<QoderPromotion>().required(false),
 })
 
 const poolConfig = z.object({
@@ -475,6 +484,9 @@ function poolPreferencesOf(config: { regions?: Record<string, unknown> | null },
 /** 把保存的目录条目解析为模型信息（历史兼容）。 */
 function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefined {
   if (typeof raw.key !== 'string' || typeof raw.displayName !== 'string') return undefined
+  // 活动规则：落盘形状就是解析后的 camelCase，读回只做校验。校验不过时当作
+  // 「这条目录条目没有活动」——这比带着一份读不懂的规则去判定要好。
+  const promotion = readPromotion(raw.promotion)
   return {
     key: raw.key,
     displayName: raw.displayName,
@@ -495,6 +507,8 @@ function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefin
     ...typeof raw.defaultThinkingEffort === 'string' && raw.defaultThinkingEffort !== ''
       ? { defaultThinkingEffort: raw.defaultThinkingEffort }
       : {},
+    // 活动规则：落盘形状就是解析后的 camelCase，读回只做校验（见上）。
+    ...promotion === undefined ? {} : { promotion },
   }
 }
 

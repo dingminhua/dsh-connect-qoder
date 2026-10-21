@@ -374,6 +374,9 @@ function webModelOf(m: QoderModelInfo): QoderWebModel {
     ...(m.isFree === true ? { isFree: true } : {}),
     ...(m.isNew === true ? { isNew: true } : {}),
     ...(m.contextTiers === undefined ? {} : { contextTiers: m.contextTiers }),
+    // 活动规则原样交给卡片：判「此刻成不成立」是渲染时刻的事（窗口按上游时区
+    // 算），这里一旦挑定就会在窗口结束后继续挂着。
+    ...(m.promotion === undefined ? {} : { promotion: m.promotion }),
   }
 }
 

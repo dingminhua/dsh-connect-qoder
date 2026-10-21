@@ -35,6 +35,7 @@ import { describe, expect, it } from 'vitest'
 import { Config } from '../src/index.ts'
 import { QODER_FALLBACK_MODELS, fallbackModelInfo } from '../src/catalog.ts'
 import { toPersistedCatalogEntry, type QoderWebModel } from '../src/status-paths.ts'
+import { parseQoderPromotion, readPromotion } from '../src/promo.ts'
 import { buildModelsPayload, type QoderDraft } from '../src/client/QoderCard.tsx'
 
 /**
@@ -255,5 +256,32 @@ describe('保存的目录条目：客户端输出与读取端判据必须对齐'
       expect('thinkingEfforts' in entry).toBe(false)
       expect(typeof entry['maxOutputTokens']).toBe('number')
     }
+  })
+
+  it('活动规则随条目往返，读回的形状与写下去的一致', () => {
+    // 徽标是「每次打开卡片按当刻重判」的，所以规则本身必须活着穿过保存——
+    // 一旦保存把它们抹掉，徽标要等到下一次目录刷新才会回来。
+    const parsed = parseQoderPromotion({
+      active: true,
+      badge: { zh: '错峰 4 折', en: 'Off-Peak 60% off' },
+      timezone: 'Asia/Shanghai',
+      window_start: '22:00',
+      window_end: '08:00',
+    })
+    expect(parsed).toBeDefined()
+    const payload = buildModelsPayload(draftOf(), [cardRow({ promotion: parsed })])
+    expect(payload.lastCatalog[0]!.promotion).toEqual(parsed)
+
+    const slot = parseRegionSlot({ lastCatalog: payload.lastCatalog as never })
+    const model = modelsOf(slot)[0]!
+    // 读取端按落盘形状解析，字段名与写下去的一致（不做第二次 snake_case 解析）。
+    expect(readPromotion(model['promotion'])).toEqual(parsed)
+    // 且判定依据都还在：没有窗口就没有「此刻是否在窗口内」可言。
+    expect((model['promotion'] as { window?: { start: string } }).window?.start).toBe('22:00')
+  })
+
+  it('没有活动的行不带这个键（缺席不等于空对象）', () => {
+    const entry = toPersistedCatalogEntry(cardRow()) as unknown as Record<string, unknown>
+    expect('promotion' in entry).toBe(false)
   })
 })
