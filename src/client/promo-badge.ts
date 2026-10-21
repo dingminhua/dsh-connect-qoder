@@ -15,16 +15,32 @@
  * @module dsh-connect-qoder/client/promo-badge
  */
 
+import type { Translate } from './locales.ts'
 import type { QoderPromotion } from '../promo.ts'
 
 /**
  * 界面语言，由浏览器报告。
  *
- * 卡片本来就用浏览器 locale 格式化日期与数字，上游文案读同一个信号才一致。
- * `navigator` 防御性读取：这个模块会被运行在纯 Node 环境的单测导入。
+ * 只在拿不到宿主语言时当兜底（见 `hostLanguage`）。`navigator` 防御性读取：这个
+ * 模块会被运行在纯 Node 环境的单测导入。
  */
 export function uiLanguage(): string {
   return typeof navigator === 'undefined' ? '' : navigator.language
+}
+
+/**
+ * 卡片按哪一种语言选上游文案。
+ *
+ * **宿主的界面语言优先**：DSH 允许在设置里切换界面语言，而浏览器语言不会跟着变，
+ * 只看 `navigator.language` 会出现「中文界面配英文胶囊」。宿主绑定好的 `t` 是唯一
+ * 我们能读到的语言信号（它按当前语言解析），所以用一条只给机器读的字典项
+ * （`promo.locale`）把语言名问出来；读不到（未绑定 / 单测里的直通 `t`）才退回浏览器。
+ */
+export function hostLanguage(t: Translate | undefined): string {
+  const marker = t?.('promo.locale')
+  // `t` 在缺键时通常回显键名本身，那不算「知道语言」。
+  if (marker === undefined || marker === '' || marker === 'promo.locale') return uiLanguage()
+  return marker
 }
 
 /** 该语言是否属于英语。 */

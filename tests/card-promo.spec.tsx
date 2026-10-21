@@ -6,8 +6,8 @@
  *
  * 1. **徽标在名字外面**：`.dsm-qoder-model-name` 是省略号截断的，把胶囊塞进去
  *    会被一起裁掉。断言它在 `.dsm-qoder-model-copy` 里、但**不在**名字 span 里。
- * 2. **画不画由渲染时刻决定**：同一个模型行，喂「上游说生效 + 此刻在窗口内」就
- *    画，喂「上游说没生效」或「此刻在窗口外」就不画。判定函数本身在
+ * 2. **画不画由渲染时刻决定**：同一个模型行，喂「此刻在窗口内」就画（哪怕快照里
+ *    的 `active` 是 false），喂「此刻在窗口外」就不画。判定函数本身在
  *    `tests/promo.spec.ts` 里测过，这里测的是卡片确实调用了它、且用的是上游的
  *    文案而不是插件自己编的。
  *
@@ -141,6 +141,26 @@ describe('模型行活动徽标', () => {
     await view.unmount()
   })
 
+  it('宿主界面语言优先于浏览器语言（中文界面配英文浏览器也用 zh 文案）', async () => {
+    setUiLanguage('en-US')
+    // 宿主把 t 绑定到哪份字典，就说明界面是哪一种语言。
+    const hostT: any = (key: string): string => key === 'promo.locale' ? 'zh-CN' : key
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/plugins/dsh-connect-qoder/usage')) {
+        return { ok: true, status: 200, json: async () => usageDoc({ ...modelOf({ promotion: rule() }), region: 'cn' }) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => { root.render(React.createElement(QoderCard, { t: hostT, view: 'page' })) })
+    expect(container.querySelector('.dsm-qoder-model-promo')!.textContent).toBe('错峰 4 折')
+    await act(async () => { root.unmount() })
+    container.remove()
+  })
+
   it('徽标在名字外面（名字是省略号截断的）', async () => {
     const view = await renderWith(modelOf({ promotion: rule() }))
     const copy = view.container.querySelector('.dsm-qoder-model-copy')
@@ -165,8 +185,15 @@ describe('模型行活动徽标', () => {
     await view.unmount()
   })
 
-  it('上游说没生效：不画（哪怕此刻在窗口内）', async () => {
+  it('窗口内就画，不看快照里的 active（目录是启动时取的，active 是过去时）', async () => {
     const view = await renderWith(modelOf({ promotion: rule({ active: false }) }))
+    expect(view.container.querySelector('.dsm-qoder-model-promo')!.textContent).toBe('错峰 4 折')
+    await view.unmount()
+  })
+
+  it('没有窗口声明时退回 active：false 不画', async () => {
+    const standing = rule({ active: false, window_start: undefined, window_end: undefined })
+    const view = await renderWith(modelOf({ promotion: standing }))
     expect(view.container.querySelector('.dsm-qoder-model-promo')).toBeNull()
     await view.unmount()
   })
@@ -175,6 +202,18 @@ describe('模型行活动徽标', () => {
     const away = windowAwayFromNow('Asia/Shanghai')
     const view = await renderWith(modelOf({ promotion: rule(away) }))
     expect(view.container.querySelector('.dsm-qoder-model-promo')).toBeNull()
+    await view.unmount()
+  })
+
+  it('点胶囊不会顺手取消勾选整个模型（整行是 label）', async () => {
+    const view = await renderWith(modelOf({ promotion: rule() }))
+    const checkbox = view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')!
+    expect(checkbox.checked).toBe(true)
+    const badge = view.container.querySelector('.dsm-qoder-model-promo')!
+    await act(async () => {
+      badge.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
+    })
+    expect(checkbox.checked).toBe(true)
     await view.unmount()
   })
 

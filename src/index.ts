@@ -181,9 +181,14 @@ const modelConfig = z.object({
   /**
    * 上游的活动优惠规则（`promotion`），原样往返。
    *
-   * 用 `z.any()` 而不是嵌套 schema：这是**上游文档的形状**，字段随活动类型
-   * 变化（今天只有错峰折扣），逐字段声明会让未来新增的键在每次保存时被抹掉
-   * ——正是本仓库 `thinkingEfforts` 那次事故的同一种失败方式。
+   * 用 `z.any()` 而不是嵌套 schema，理由只有两条：**不写第二套解析**（上游 snake_case
+   * → `QoderPromotion` 的映射只在 `parseQoderPromotion` 里有一份），以及**不让 schema
+   * 去「理解」上游文档**——上游字段随活动类型变化，逐个声明等于把上游的形状抄进配置层，
+   * 抄漏的那次就会像 `thinkingEfforts` 那样把数据抹掉。
+   *
+   * 注意它**不等于**「未来新增的键会被保住」：读回时走 `readPromotion` 的白名单重建，
+   * 插件不认识的键在那里就丢了（这是有意的——卡片只消费自己声明过的字段）。所以这个
+   * 字段的契约是「本插件已知的字段原样往返」，不是「上游文档原样存档」。
    */
   promotion: z.any<QoderPromotion>().required(false),
 })

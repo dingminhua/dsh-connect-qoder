@@ -71,10 +71,11 @@ describe('解析上游 promotion', () => {
       link: { zh: 'https://docs.qoder.cn/product-overview/qwen-3-7-series-model-staggering-discount' },
       timeZone: 'Asia/Shanghai',
       window: { start: '22:00', end: '08:00', startMinute: 1320, endMinute: 480 },
-      discountFactor: 0.4,
-      beforePriceFactor: 0.5,
-      ruleId: 'idle_time_model_credit_discount',
     })
+    // 上游的 discount_factor / before_promotion_price_factor / rule_id 刻意不保留：
+    // 插件不从数字反推文案，也没有界面消费它们，留下只会随目录一起落盘。
+    expect(Object.keys(parsed)).not.toContain('discountFactor')
+    expect(Object.keys(parsed)).not.toContain('ruleId')
   })
 
   it('非对象一律丢弃', () => {
@@ -102,15 +103,21 @@ describe('解析上游 promotion', () => {
     expect(rule({ active: 'true' }).badge.zh).toBe('错峰 4 折')
   })
 
-  it('读不懂的窗口当作没有窗口，而不是当作全天', () => {
+  it('读不懂的窗口标成 windowUnreadable，而不是当作没有窗口', () => {
     const parsed = rule({ window_start: '25:00', window_end: '08:00' })
     expect(parsed.window).toBeUndefined()
+    expect(parsed.windowUnreadable).toBe(true)
     expect(parsed.badge.zh).toBe('错峰 4 折')
   })
 
+  it('只给了窗口一端也算「声明了但读不懂」', () => {
+    expect(rule({ window_end: undefined }).windowUnreadable).toBe(true)
+    expect(rule({ window_start: undefined }).windowUnreadable).toBe(true)
+  })
+
   it('空白字符串不算声明', () => {
-    expect(rule({ timezone: '  ', rule_id: '' }).timeZone).toBeUndefined()
-    expect(rule({ rule_id: '' }).ruleId).toBeUndefined()
+    expect(rule({ timezone: '  ' }).timeZone).toBeUndefined()
+    expect(rule({ window_start: '  ', window_end: '  ' }).windowUnreadable).toBeUndefined()
   })
 })
 
@@ -126,6 +133,12 @@ describe('clockMinute', () => {
     for (const value of ['24:00', '22:60', '22', '22:0', '', '22:00:00', 'abc']) {
       expect(clockMinute(value), value).toBeUndefined()
     }
+  })
+
+  it('终点额外接受 24:00（映射成当天结束）', () => {
+    expect(clockMinute('24:00', 'end')).toBe(1440)
+    expect(clockMinute('24:01', 'end')).toBeUndefined()
+    expect(parsePromoWindow('22:00', '24:00')).toEqual({ start: '22:00', end: '24:00', startMinute: 1320, endMinute: 1440 })
   })
 
   it('两端都读得懂才算有窗口', () => {
@@ -201,8 +214,8 @@ describe('窗口判定（按上游时区）', () => {
 
   it('同一个瞬间，上海在窗口内、洛杉矶在窗口外', () => {
     const promo = active()
-    expect(zonedClock(NIGHT, 'Asia/Shanghai')).toEqual({ isoWeekday: 3, minutes: 23 * 60 })
-    expect(zonedClock(NIGHT_IN_LA, 'America/Los_Angeles')).toEqual({ isoWeekday: 3, minutes: 8 * 60 })
+    expect(zonedClock(NIGHT, 'Asia/Shanghai')).toEqual({ minutes: 23 * 60 })
+    expect(zonedClock(NIGHT_IN_LA, 'America/Los_Angeles')).toEqual({ minutes: 8 * 60 })
     expect(promoWithinWindow(promo, NIGHT)).toBe(true)
     expect(promoWithinWindow({ ...promo, timeZone: 'America/Los_Angeles' }, NIGHT_IN_LA)).toBe(false)
   })
@@ -215,25 +228,33 @@ describe('窗口判定（按上游时区）', () => {
     expect(QODER_PROMO_DEFAULT_TIME_ZONE).not.toBe('')
   })
 
-  it('读不懂的时区不静默退回本地时间（只是无法用它收紧判定）', () => {
-    // 宁可退回上游的 active（这里已被 promoLiveAt 当作必要的门之一），
-    // 也不要用浏览器时区去改一个跨零点窗口的含义。
+  it('读不懂的时区一律不画（judge 不了就不说）', () => {
+    // 退回浏览器时区会让一个跨零点窗口在别的时区错位几小时，比不画更糟。
     expect(zonedClock(NIGHT, 'Mars/Olympus')).toBeUndefined()
-    expect(promoWithinWindow({ ...active(), timeZone: 'Mars/Olympus' }, NOON)).toBe(true)
+    expect(promoWithinWindow({ ...active(), timeZone: 'Mars/Olympus' }, NOON)).toBe(false)
+    expect(promoWithinWindow({ ...active(), timeZone: 'Mars/Olympus' }, NIGHT)).toBe(false)
+  })
+
+  it('声明了窗口但读不懂 → 不画，也不退回 active', () => {
+    const unreadable = rule({ window_start: '25:00', window_end: '08:00', active: true })
+    expect(unreadable.windowUnreadable).toBe(true)
+    expect(promoLiveAt(unreadable, NIGHT)).toBe(false)
   })
 })
 
-describe('promoLiveAt：两道门都要过', () => {
-  it('上游说没生效 → 不画（哪怕此刻在窗口内）', () => {
-    expect(promoLiveAt(rule({ active: false }), NIGHT)).toBe(false)
+describe('promoLiveAt：有窗口看窗口，没窗口才看 active', () => {
+  it('窗口内就画——不看快照里的 active（它是取目录那一刻的过去时）', () => {
+    expect(promoLiveAt(rule({ active: false }), NIGHT)).toBe(true)
   })
 
-  it('上游说生效但此刻不在窗口内 → 不画', () => {
+  it('窗口外不画（哪怕快照里的 active 还是 true）', () => {
     expect(promoLiveAt(rule({ active: true }), NOON)).toBe(false)
   })
 
-  it('两道门都过 → 画', () => {
-    expect(promoLiveAt(rule({ active: true }), NIGHT)).toBe(true)
+  it('没有窗口声明时只信 active', () => {
+    const standing = rule({ window_start: undefined, window_end: undefined })
+    expect(promoLiveAt({ ...standing, active: true }, NOON)).toBe(true)
+    expect(promoLiveAt({ ...standing, active: false }, NOON)).toBe(false)
   })
 
   it('没有规则 → 不画', () => {

@@ -69,7 +69,7 @@ import { QODER_PLUGIN_ICON } from './icon.ts'
 import { QODER_CARD_CSS } from './styles.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
 import { promoLiveAt } from '../promo.ts'
-import { promoBadgeLabel, promoBadgeTooltip, uiLanguage } from './promo-badge.ts'
+import { promoBadgeLabel, promoBadgeTooltip, hostLanguage } from './promo-badge.ts'
 import type { Translate } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -699,16 +699,16 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
   function renderModels(): ReactElement {
     const modelList = signIn?.models ?? []
-  /**
-   * 活动徽标的判定时钟：**一次渲染一个时刻**。
-   *
-   * 不在解析目录时挑定徽标——上游的活动是墙钟窗口（22:00–08:00 Asia/Shanghai），
-   * 写死一枚会让夜里读到的「错峰 4 折」在第二天早上继续挂着。卡片打开期间本来
-   * 就会随轮询重渲染，这里只要每次用「现在的时刻」重判即可，不需要额外定时器。
-   * 同一帧里所有行共用一个 `Date`，避免同一份数据被两个时刻判出两种结果。
-   */
-  const promoNow = new Date()
-  const promoLanguage = uiLanguage()
+    /**
+     * 活动徽标的判定时钟：**一次渲染一个时刻**。
+     *
+     * 不在解析目录时挑定徽标——上游的活动是墙钟窗口（22:00–08:00 Asia/Shanghai），
+     * 写死一枚会让夜里读到的「错峰 4 折」在第二天早上继续挂着。卡片打开期间本来
+     * 就会随轮询重渲染，这里只要每次用「现在的时刻」重判即可，不需要额外定时器。
+     * 同一帧里所有行共用一个 `Date`，避免同一份数据被两个时刻判出两种结果。
+     */
+    const promoNow = new Date()
+    const promoLanguage = hostLanguage(t)
     return (
       <section className="dsm-qoder-models" aria-label={t('row.modelsTitle')}>
         {/* 头部结构对齐 workbuddy：标题行（h3 + dirty 徽章）在上、计数摘要在下，
@@ -753,7 +753,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                       </span>
                       {/* 活动徽标放在**名字外面**（同一行、名字之后）：模型名是
                           省略号截断的，塞进去会被一起裁掉。文案是上游自己的话，
-                          只在「上游说生效 且 此刻落在它的窗口内」时画一枚。 */}
+                          只在「此刻落在上游的窗口内」（没有窗口时才看 active）时画一枚。 */}
                       {(() => {
                         const promo = model.promotion
                         if (!promoLiveAt(promo, promoNow)) return null
@@ -763,6 +763,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                           <span
                             className="dsm-qoder-model-promo"
                             title={promoBadgeTooltip(promo, promoLanguage)}
+                            // 整行是包着复选框的 `<label>`，点胶囊会顺手把模型取消勾选。
+                            // 胶囊只是提示，不该携带那个副作用。
+                            onClick={(event) => { event.preventDefault(); event.stopPropagation() }}
                           >
                             {label}
                           </span>

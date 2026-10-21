@@ -362,6 +362,9 @@ export const en = {
   // 第二行的「当前选用」提示：能用的号本来就是绿点，哪一个是它靠这行字说。
   'composer.currentPick': 'In use',
   'composer.panelTitle': 'Qoder credits',
+  // 机器读的一条：卡片用它问「宿主现在按哪种语言渲染」，好去上游的中英文案里挑
+  // 对的那一条（见 `promo-badge.ts` 的 `hostLanguage`）。人不会看到它。
+  'promo.locale': 'en',
 } as const
 
 export type QoderSettingsKey = keyof typeof en
@@ -701,6 +704,8 @@ export const zh: Record<QoderSettingsKey, string> = {
   // 第二行的「当前选用」提示：能用的号本来就是绿点，哪一个是它靠这行字说。
   'composer.currentPick': '当前选用',
   'composer.panelTitle': 'Qoder 积分',
+  // 机器读的一条，见 en 侧同名的注释。
+  'promo.locale': 'zh-CN',
 }
 
 /** Localized copy lookup, with optional interpolation. */
