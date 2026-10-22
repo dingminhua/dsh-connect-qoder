@@ -177,5 +177,15 @@ dsh-connect-qoder doctor      # PAT 是否就位、指纹派生、账号数（�
   两侧都装了时各自优先自己那个 —— 设备身份与区域绑定，用错一侧会被风控拒绝。
   组件不存在时签到**如实报错**（「未找到 Qoder 设备风控组件」），而不是把
   「取不到设备身份」伪装成「今天没有活动」。也可用 `QODER_UMID_PATH` 显式指定。
+
+  Windows 上按两层找：
+
+  1. `%LOCALAPPDATA%\Programs\Qoder[ CN]\resources\umid\runtime-info.exe` —— **默认**安装位置；
+  2. **卸载登记表**（`HKCU\…\Uninstall` → `HKLM\…\Uninstall` → `HKLM\…\WOW6432Node\…`）里
+     `DisplayName` 为 `Qoder` / `Qoder CN` 的项，从 `UninstallString`（或 `DisplayIcon`）
+     反推安装目录 —— 安装器允许改目录：装在别的盘（实测 `D:\…\Programs\Qoder`）时第一层
+     整族落空，只有第二层还知道它在哪儿。
+
+  `QODER_UMID_PATH` 的优先级在两层之上，且**不是唯一来源**：路径失效时会继续往下找。
   读取结果按 50 分钟在进程内缓存（参考实现同量级），避免每次签到都 fork 进程。
 - 企业版账号不支持该活动（仅个人用户）。
