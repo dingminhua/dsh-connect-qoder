@@ -2,6 +2,57 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.7.1 (2026-10-22)
+
+> 版本号取 **patch**：修一处 Windows 上的组件探测缺陷（PR #5）。对外 API、配置键、落盘
+> 格式、请求形状、CLI 与 peer 宿主范围全都不动 —— `findDeviceRiskComponent()` 仍是同步、
+> 不起进程的函数，`readDeviceRisk()` 签名与 50 分钟缓存语义不变。
+
+### Fixed
+
+- **Windows 上装在非默认目录的 Qoder 也能被找到了（国际版签到不再报「未找到 Qoder 设备
+  风控组件」，PR #5，感谢 @Crsuh2er0）。** 候选表原先只展开 `%LOCALAPPDATA%\Programs\<App>`，
+  而安装器允许改目录 —— 实测一台机器把 Qoder 装在 `D:\Users\<user>\AppData\Local\Programs\Qoder`
+  而 `%LOCALAPPDATA%` 指向 C 盘，于是整族候选落空，国际版签到与积分读数一起只剩「未找到 Qoder
+  设备风控组件」那一条路。国内版不受影响（`requiresDeviceRisk: false`）。报错本身是诚实的，
+  缺的是**最后一层兜底**：系统里明明记着它装在哪儿。
+
+  - **两层探测，因为两层代价不同类**：第一层 `findDeviceRiskComponent()` 语义不变（几次
+    `existsSync`，不起任何进程）；只有它落空、且确实在 Windows 上时，`resolveDeviceRiskComponent()`
+    才起 `reg.exe` 查**卸载登记表**（`HKCU` → `HKLM` → `WOW6432Node`，命中即停 —— Qoder 是
+    per-user 安装，登记项落在 HKCU，所以它排第一，省掉后面两次查询）。`readDeviceRisk()` 改走
+    完整探测；非 Windows 不查注册表（macOS 的安装位置固定在 `/Applications`，第一层已覆盖完）。
+  - **解析与查询分开，解析是纯函数**：`parseWindowsUninstallDirs()` 按 `DisplayName` 判区域
+    （`^Qoder\s*CN\b` 必须排在 `^Qoder\b` 前面 —— 顺序即优先级：`Qoder CN 0.4.9` 两条都满足，
+    而设备身份与区域绑定，把国内版认成国际版会被风控拒绝）；`windowsInstallDirOf()` 从
+    `UninstallString` 的**引号段**反推目录（卸载器名字 `Uninstall Qoder.exe` 自带空格，按空白切
+    会切在名字中间），没有 `UninstallString` 时退回 `DisplayIcon`。只认绝对路径：相对路径会让
+    `existsSync` 在当前工作目录里瞎撞，把「没找到」伪装成「找到了」。拆开的理由是 CI runner 上
+    没装 Qoder、查不出东西，但真实输出能固化成用例 —— 这个 bug 的本质在解析侧漏了一种安装位置，
+    不在查询侧拿不到数据。
+  - `reg query` **没有匹配项时以 1 退出**，与「查不动」一样静默跳过；「找不到组件」那条统一、
+    可操作的报错仍由 `readDeviceRisk` 给出 —— 在这里抛只会把「不知道装在哪」和「读不出来」混成
+    同一句话。`reg.exe` 走 `%SystemRoot%\System32\` 的绝对路径（宿主是 Electron GUI 进程，不靠
+    被裁剪过的 PATH），spawn 带 `windowsHide`（家族教训：GUI 宿主 spawn 控制台子程序会闪黑窗），
+    超时 10s、短于组件本身的 25s。`/f Qoder` 是子串匹配，可能捞进第三方产品，但候选必须过
+    `existsSync(<dir>\resources\umid\runtime-info.exe)` —— 误判落在「白跑一次 existsSync」，
+    不会落在「取错区域的设备身份」。
+  - 测试：`tests/device-risk.spec.ts` 新增 11 条（实测 `reg query` 输出固化为 fixture、区域判定、
+    引号优先、`DisplayIcon` 回退、去重、非绝对路径与空输出不产出候选、快速路径命中时注入的探测器
+    一次都不该被叫到、`REG_QUERY_OPTIONS.windowsHide`）。顺带修两条既有用例：三条「本机装了 Qoder」
+    的用例原先按快速路径决定是否跳过 —— 那**在「装在别处」的机器上会把真正该跑的那条静默跳过**，
+    改用完整探测判定；`QODER_UMID_PATH` 优先级高于候选表，留着它「国内版优先 Qoder CN」会测错对象
+    （用户按报错提示把路径指过去之后，这条在本地必红）。
+  - 代价只在落空之后：注册表那层只在第一层没命中时发生，最坏 3 次 `reg query`（实测每条约 70ms）。
+    50 分钟缓存的是三件套而不是解析出的目录，所以装在非默认位置的机器每 50 分钟仍会重付一次那串
+    查询 —— 开销可忽略，但别按「命中一次就不再查」做容量判断。
+- **已知限制（同一条链路，不挡本版，留待后续）**：`reg.exe` 的输出按 UTF-8 解码，而它写控制台用的
+  是当前 OEM 代码页（中文系统是 CP936）。纯 ASCII 路径不受影响，但「装在别处 **+** 用户名含非
+  ASCII」的机器仍会解出乱码、`existsSync` 落空、退回「未找到组件」。失效方向是 fail-safe（漏候选，
+  不会误取另一区域的设备身份）。收掉它需要 `encoding: 'buffer'` 再按代码页解码、失败退回 utf8。
+- `docs/PAT.md` 记下 Windows 的两层查找顺序，以及 `QODER_UMID_PATH` 的优先级在两层之上、
+  **不是唯一来源**（路径失效时会继续往下找）。
+
 ## 1.7.0 (2026-10-22)
 
 > 版本号取 **minor**：新增一项用户可见的界面能力（正文分栏 + 只读诊断栏），并让
