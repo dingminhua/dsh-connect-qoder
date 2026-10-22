@@ -148,7 +148,7 @@ PUT 202 + 2FA 轮询 GET 200 + `+ @dmh2002/dsh-connect-qoder@1.2.1`   ← 2FA �
 
 | 观测 | 含义 |
 | --- | --- |
-| packument 无该版本 | 真没发上去（1.1.0 那种）——或还在 2 分钟传播窗口内 |
+| packument 无该版本 | 真没发上去（1.1.0 那种）——或还在 2 分钟传播窗口内，**或撞上下面那个受理后的处理窗口（1.7.1）** |
 | packument **有**该版本、tarball 直链 404 | **已发布**，只是 CDN 资产滞后，等就行 |
 
 **先看 packument，别看 tarball 直链下结论。** registry 的 `time['X.Y.Z']` 一旦出现，
@@ -158,6 +158,45 @@ PUT 202 + 2FA 轮询 GET 200 + `+ @dmh2002/dsh-connect-qoder@1.2.1`   ← 2FA �
 真要逐字节比对产物，把下载重试放宽到**几分钟**（本轮 3 分钟）；直接 curl 拿到 404 时
 `file` 会告诉你它是 `JSON data` 而不是 gzip —— 那 21 字节的 `{"error":"Not found"}`
 是 CDN 的回复，不是「包不存在」。
+
+### ⚠️ 1.7.1 实测：还有**第三个**时刻——npm 自己的「受理后处理」窗口（2026-10-22）
+
+上一节的表把发布后的观测分成两行（packument / tarball）。1.7.1 撞出第三种时刻：npm **收下
+之后、registry 可见之前**还有一个自己的处理窗口，而且它的日志顺序是「notice 在前、`+` 行在
+后」。这一轮该窗口是 **6 分钟**，比 1.2.1 那次的约 2 分钟长得多：
+
+```
+Authenticate your account at: https://www.npmjs.com/auth/cli/eb11bc9f-…   ← 2FA 走完
+npm notice Your package is being processed and may take a few minutes
+           to become available.                                            ← 受理 = 正在处理
++ @dmh2002/dsh-connect-qoder@1.7.1                                         ← 约 15:27Z
+直连整份 packument 轮询 6 次 / 共 3 分钟：latest=1.7.0、has 1.7.1=false   ← 真实但滞后，**不是失败**
+registry 记的 time['1.7.1']                                              = 15:33:18Z   ← 约 6 分钟
+```
+
+**判据**：那一行 notice 出现 = npm 已收下并**正在处理**，此刻 registry 查不到是**预期行为**。
+它和 1.1.0 那种「打印了 `+` 行但 2FA 超时作废」的区别不在 `+` 行（两种情况都有），而在
+有没有这行 notice、以及**是否愿意等到窗口过去**。所以：
+
+- 看到 `Your package is being processed` 就不要在 3 分钟内判生死——**这一轮我差点把一次成功
+  发布判成待批准**（还顺手查了 `npm stage list`，本机 11.12.1 无此子命令，见本节开头那条；
+  那不是证据，只是命令不存在）。
+- 想**当场**定生死，除了整份 packument 再加一条**单版本端点**与 tarball 直链：它们是与
+  `dist-tags` 聚合路径**互相独立**的证据，任一条给 `200` 就足以确认包体已落地。
+  （**本轮没有对照数据**——那 6 分钟里我只轮询了整份 packument，单版本端点是事后才查的，
+  所以「谁更早」不作结论；下次两个一起轮。此处能确定的只有：它们独立，且都成立。）
+
+  ```bash
+  curl -s -o /tmp/v.json -w 'http=%{http_code}\n' --noproxy '*' \
+    "https://registry.npmjs.org/@dmh2002%2Fdsh-connect-qoder/1.7.1"
+  curl -sI --noproxy '*' \
+    "https://registry.npmjs.org/@dmh2002/dsh-connect-qoder/-/dsh-connect-qoder-1.7.1.tgz" | head -1
+  ```
+
+  `200` + 文档里的 `dist.shasum` 与本地 `npm pack --dry-run` 一致 → **发布成立**。（1.7.1 实测：
+  `adb40cd42e90f3a50d3ced0b78fe3d583cb56831` 逐位相同，tarball 26 个文件。）
+- **`cf-cache-status: HIT` 与内容新旧无关**，它只说明这一跳命中了 Cloudflare。别拿它当
+  「还没更新」的证据——1.7.1 那次 tarball 直链返回 `200` 且 `HIT`，包里已经是新代码。
 
 ### ⚠️ 1.2.1 实测：`~/.npm/_logs` 会被轮转掉，「读日志」要趁热
 
