@@ -71,8 +71,21 @@ export interface QoderShimOptions {
    * failure.
    */
   failoverAccount?: (triedIds: readonly string[]) => Promise<QoderServingAccount | undefined>
-  /** Record one serving account's pre-first-byte failure (pool measurement). */
-  onServingFailure?: (accountId: string, kind: UpstreamErrorKind, message: string) => void
+  /**
+   * Record one serving account's pre-first-byte failure (pool measurement).
+   *
+   * `context` 说这条失败**凭什么**被判成这个 kind（issue #6）：`kind` 只说「像
+   * 什么」，不说「凭什么」。`auth` 既可能是业务码 `105` 确认的凭据被拒（此时
+   * 永久剔除账号是对的），也可能只是 HTTP 403 兜底猜的（此时永久剔除会把一个
+   * 排队/限流中的账号踢出池且不自愈）。宿主写池记录需要这个区别，所以把上游
+   * 状态与业务码一起递过去。
+   */
+  onServingFailure?: (
+    accountId: string,
+    kind: UpstreamErrorKind,
+    message: string,
+    context?: { status?: number | undefined, code?: string | undefined },
+  ) => void
   /**
    * 判定「这条换号通知是否已经对用户说过」，说过就把这条并入上一次、不再重复写。
    *
@@ -637,7 +650,7 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         if (isQoderUpstreamError(error) && isFailoverEligible(error.kind) && !controller.signal.aborted) {
           // 每一次失败尝试都记测量，包括没有后继可试的最后一次——那正是下一个
           // 请求最该避开的账号。客户端已断开时不记：断开不是账号的错。
-          options.onServingFailure?.(serving.accountId, error.kind, error.message)
+          options.onServingFailure?.(serving.accountId, error.kind, error.message, { status: error.status, code: error.code })
           tried.push(serving.accountId)
           let next: QoderServingAccount | undefined
           try {

@@ -6,6 +6,7 @@ import * as Qoder from '../src/index.ts'
 import { qoderAccountId } from '../src/credentials.ts'
 import { cooldownOf } from '../src/probe.ts'
 import { exclusionOf } from '../src/account-pool.ts'
+import { classifyFailure, deepestBusinessCode } from '../src/upstream.ts'
 
 /**
  * The 0.1.7-shaped settings service the suite mounts so the plugin's
@@ -991,6 +992,72 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
     const probe = Qoder.liveRequestProbe('network', 'boom')
     expect(probe!.atMs).toBeGreaterThanOrEqual(before)
     expect(probe!.atMs).toBeLessThanOrEqual(Date.now())
+  })
+})
+
+// ==========================================================================
+// 「凭据被拒」也得有凭据（issue #6 的第二半）
+//
+// `auth` 这个 kind 只说「像凭据问题」，不说「凭什么」。两种来源必须分开处置：
+//
+//   · 业务码 105 / HTTP 401 —— 令牌真的被拒了，等也没用 ⇒ 永久剔除是对的；
+//   · 只是 HTTP 403 兜底猜的 —— 上游把排队（10605）、当日用量用尽（110）、
+//     限流也装在 403 里 ⇒ 永久剔除会把一个几分钟到几小时就自愈的账号踢出池，
+//     而且**不自愈**（`exclusionOf` 对 credential-rejected 连冷却期都不看）。
+//
+// 这条不是文案问题：它决定账号池会不会因为一次排队而少一个号。
+// ==========================================================================
+describe('凭据被拒要有凭据（issue #6）', () => {
+
+  it('业务码 105 确认的凭据被拒 ⇒ 仍然永久剔除', () => {
+    expect(Qoder.liveRequestProbe('auth', '登录态已过期', undefined, { status: 403, code: '105' })?.outcome)
+      .toBe('credential-rejected')
+  })
+
+  it('HTTP 401 ⇒ 仍然永久剔除（401 在这套上游语义里就是凭据被拒）', () => {
+    expect(Qoder.liveRequestProbe('auth', '401 TOKEN_EXPIRE', undefined, { status: 401, code: 'TOKEN_EXPIRE' })?.outcome)
+      .toBe('credential-rejected')
+  })
+
+  it('只是 403 兜底猜的 ⇒ 只冷却，不永久剔除（排队不该踢掉账号）', () => {
+    const probe = Qoder.liveRequestProbe('auth', '排队中', undefined, { status: 403, code: undefined })
+    expect(probe?.outcome).toBe('unavailable')
+    // 冷却会到期回池：永久排除则永远不会自愈（这正是 issue 的危害点）。
+    const at = probe!.atMs
+    expect(exclusionOf(probe, at + 60_000)).toBe('unavailable')
+    expect(exclusionOf(probe, at + 31 * 60_000)).toBeUndefined()
+  })
+
+  it('认不出的码也不当成凭据被拒（码认不出时只信状态，403 就是只冷却）', () => {
+    expect(Qoder.liveRequestProbe('auth', '未知码', undefined, { status: 403, code: '403' })?.outcome)
+      .toBe('unavailable')
+  })
+
+  it('旧调用方（不知道来源）保持原语义：永久剔除', () => {
+    // 不知道凭据时宁可多剔除，也不让一个坏账号一直留在池里被反复选中。
+    expect(Qoder.liveRequestProbe('auth', '401 TOKEN_EXPIRE')?.outcome).toBe('credential-rejected')
+  })
+
+  it('credentialOutcomeOf：判据集中在这一处', () => {
+    expect(Qoder.credentialOutcomeOf(undefined)).toBe('credential-rejected')
+    expect(Qoder.credentialOutcomeOf({ status: 401 })).toBe('credential-rejected')
+    expect(Qoder.credentialOutcomeOf({ status: 403, code: '105' })).toBe('credential-rejected')
+    expect(Qoder.credentialOutcomeOf({ status: 403 })).toBe('unavailable')
+    expect(Qoder.credentialOutcomeOf({ status: 429 })).toBe('unavailable')
+  })
+
+  it('整条链：实拍的排队帧 → transient → 池里不落永久排除', () => {
+    // 用户实拍的那一帧（CN 区）：外层 403，内层 10605（排队）。
+    const frame = '{"code":403,"message":"{\\"code\\":\\"10605\\",\\"message\\":\\"qmodel 排队中，请稍后重试\\"}"}'
+    const kind = classifyFailure(403, frame)
+    expect(kind).toBe('transient')
+    const code = deepestBusinessCode(frame)
+    expect(code).toBe('10605')
+    const probe = Qoder.liveRequestProbe(kind, '聊天请求失败: HTTP 403', undefined, { status: 403, code })
+    // 排队是**账号**的事实（它还排在那儿），但不是「这个号坏了」：落一条会冷却
+    // 的测量，而不是永久剔除。
+    expect(probe?.outcome).toBe('unavailable')
+    expect(exclusionOf(probe, probe!.atMs + 31 * 60_000)).toBeUndefined()
   })
 })
 

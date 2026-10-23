@@ -6,6 +6,7 @@ import {
   classifyBusinessCode,
   classifyFailure,
   businessCodeOf,
+  deepestBusinessCode,
   isContentPolicy,
   parseUsage,
   QoderUpstreamError,
@@ -928,5 +929,93 @@ describe('真路径按业务码分类（六个调用点逐一钉住）', () => {
       expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
       expect((error as QoderUpstreamError).code).toBe('110')
     }
+  })
+})
+
+// ==========================================================================
+// 业务码藏在第二/三层（issue #6）
+//
+// 现场帧（用户实拍，CN 区）：
+//
+//   {"code":403,"message":"{\"code\":\"10605\",\"message\":\"qmodel 排队中，请稍后重试\"}"}
+//
+// 外层那个 403 是 HTTP 语义的码，认不出；真正的业务码 10605（排队）藏在内层
+// message 里。旧实现只剥一层 ⇒ 读不到码 ⇒ 回落 HTTP 状态 ⇒ 403 → auth ⇒
+// credential-rejected ⇒ **账号被永久剔除且不自愈**，同时叫用户去换一个
+// 根本没坏的 PAT。
+//
+// 10605 / 10408 本来就在 TRANSIENT_CODES 里：码表没缺，缺的是「读到它」。
+// ==========================================================================
+describe('嵌套业务码下钻（issue #6）', () => {
+  /** 用户实拍的那一帧，逐字照抄。 */
+  const QUEUE_FRAME = '{"code":403,"message":"{\\"code\\":\\"10605\\",\\"message\\":\\"qmodel 排队中，请稍后重试\\"}"}'
+
+  it('实拍帧：403 外壳里的 10605 判成 transient，不是 auth', () => {
+    expect(classifyFailure(403, QUEUE_FRAME)).toBe('transient')
+    // 变异检查：把 classifyFailure 换回 classifyHttpStatus / businessCodeOf，
+    // 这条立刻红（旧实现给的是 auth）。
+    expect(classifyHttpStatus(403, QUEUE_FRAME)).toBe('auth')
+  })
+
+  it('已知码藏在深层（外层 403 + 内层 402）判成 quota-exhausted', () => {
+    const frame = '{"code":403,"message":"{\\"code\\":\\"402\\",\\"message\\":\\"insufficient balance\\"}"}'
+    expect(classifyFailure(403, frame)).toBe('quota-exhausted')
+  })
+
+  it('10408（p2 排队）在 429 外壳里也判成 transient', () => {
+    const frame = '{"code":429,"message":"{\\"code\\":\\"10408\\",\\"message\\":\\"p2 queueing\\"}"}'
+    expect(classifyFailure(429, frame)).toBe('transient')
+    // 变异检查：旧实现只读外层 ⇒ 回落 429 ⇒ rate-limited。
+    expect(classifyHttpStatus(429, frame)).toBe('rate-limited')
+  })
+
+  it('错误上带的是**真正的**业务码（卡片与池记录靠它溯源）', () => {
+    expect(deepestBusinessCode(QUEUE_FRAME)).toBe('10605')
+    // 外层那个 HTTP 语义的 403 不该盖住里层的真码。
+    expect(deepestBusinessCode('{"code":403,"message":"{\\"code\\":\\"10605\\"}"}')).toBe('10605')
+  })
+
+  it('认不出的外层码不早退：记下来、继续往里找', () => {
+    // 外层 403 认不出（不在官方码表），里层 110 才认得出 —— 先返回外层就还是
+    // auth，所以「认不出就继续找」这条纪律是承重的。
+    const frame = '{"code":403,"message":"{\\"code\\":\\"110\\",\\"message\\":\\"Billing daily count exceeded\\"}"}'
+    expect(classifyFailure(403, frame)).toBe('quota-exhausted')
+  })
+
+  it('下钻只沿 message 走（不走 error/data 这类更宽的键）', () => {
+    // 刻意不宽化：宽化会把外层信封那个 HTTP 语义的 code（或 code: 0 之类无关
+    // 字段）当成业务码返回 —— 那比旧实现更糟，因为认出的码会盖住真码。
+    const frame = '{"code":403,"error":"{\\"code\\":\\"10605\\"}"}'
+    expect(deepestBusinessCode(frame)).toBe('403')
+    expect(classifyFailure(403, frame)).toBe('auth')
+  })
+
+  it('认不出就原样回落 HTTP 状态（真被拒的那一侧逐字不变）', () => {
+    expect(classifyFailure(401, '{"code":"TOKEN_EXPIRE","message":"token is not active"}')).toBe('auth')
+    expect(classifyFailure(403, 'not json at all')).toBe('auth')
+    expect(classifyFailure(403, '')).toBe('auth')
+    expect(classifyFailure(429, '{"code":"99999"}')).toBe('rate-limited')
+    // 业务码 105（登录态/令牌过期）仍然是 auth —— 修复不能把另一侧改坏。
+    expect(classifyFailure(403, '{"code":"105","message":"Login expired"}')).toBe('auth')
+  })
+
+  it('深度有上限：自嵌套不会把解析变成死循环', () => {
+    // 三层（在下钻上限内）：读到最深的真码。
+    let shallow = '{"code":"10605"}'
+    for (let i = 0; i < 3; i += 1) shallow = JSON.stringify({ code: 403, message: shallow })
+    expect(deepestBusinessCode(shallow)).toBe('10605')
+
+    // 二十层（远超上限）：不崩、不死循环，认不出的外层码作为 fallback 返回。
+    let deep = '{"code":"10605"}'
+    for (let i = 0; i < 20; i += 1) deep = JSON.stringify({ code: 403, message: deep })
+    expect(() => classifyFailure(403, deep)).not.toThrow()
+    expect(deepestBusinessCode(deep)).toBe('403')
+  })
+
+  it('非对象 / 数组 / 非整数码都不产出业务码', () => {
+    expect(deepestBusinessCode('[1,2,3]')).toBeUndefined()
+    expect(deepestBusinessCode('{"code":1.5}')).toBeUndefined()
+    expect(deepestBusinessCode('{"message":"no code here"}')).toBeUndefined()
+    expect(deepestBusinessCode('')).toBeUndefined()
   })
 })

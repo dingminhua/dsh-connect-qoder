@@ -478,6 +478,27 @@ describe('Qoder shim pool failover', () => {
     expect(text).not.toContain('网络中断')
   })
 
+  it('hands the upstream status AND business code to the host (issue #6)', async () => {
+    // `kind` 只说「像什么」，不说「凭什么」：宿主要写池记录，就得知道这次 auth
+    // 是业务码 105 确认的（该永久剔除），还是只是 403 兜底猜的（只该冷却）。
+    // 少了这两个字段，宿主只能一律当永久剔除 —— 排队中的账号就此被踢出池。
+    const seen: Array<{ kind: UpstreamErrorKind, status?: number | undefined, code?: string | undefined }> = []
+    const upstream = {
+      chatStream: async () => {
+        throw new QoderUpstreamError('auth', '403 upstream', 403, '10605')
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({
+      upstream,
+      onServingFailure: (_id, kind, _message, context) => {
+        seen.push({ kind, status: context?.status, code: context?.code })
+      },
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(401)
+    expect(seen).toEqual([{ kind: 'auth', status: 403, code: '10605' }])
+  })
+
   it('records EVERY failed attempt and answers JSON when the pool is exhausted', async () => {
     const failures: Array<[string, UpstreamErrorKind]> = []
     const shim = await poolShim({

@@ -397,7 +397,7 @@ export class QoderUpstreamClient {
     const resp = await this.fetchImpl(url, { method: 'POST', headers, body })
     const text = await resp.text()
     if (resp.status !== 200) {
-      throw new QoderUpstreamError(classifyFailure(resp.status, text), `jobToken 交换失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `jobToken 交换失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, deepestBusinessCode(text))
     }
     let data: Record<string, unknown>
     try {
@@ -647,7 +647,7 @@ export class QoderUpstreamClient {
       // 用 classifyFailure 而不是 classifyHttpStatus：chat 面的「当日用量用尽」
       // 就是从这里进来的（实测 HTTP 403 + body `{"code":"110",…}`），只看状态会
       // 把它判成凭据被拒，进而把好的账号永久踢出池。
-      throw new QoderUpstreamError(classifyFailure(resp.status, errText), `聊天请求失败: HTTP ${resp.status} ${truncate(errText, 300)}`, resp.status, businessCodeOf(errText))
+      throw new QoderUpstreamError(classifyFailure(resp.status, errText), `聊天请求失败: HTTP ${resp.status} ${truncate(errText, 300)}`, resp.status, deepestBusinessCode(errText))
     }
     if (!resp.body) {
       throw new QoderUpstreamError('transient', '聊天响应没有 body')
@@ -751,7 +751,7 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200) {
-      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, deepestBusinessCode(text))
     }
     try {
       return JSON.parse(text) as Record<string, unknown>
@@ -889,7 +889,7 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200 && resp.status !== 201) {
-      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, deepestBusinessCode(text))
     }
     try {
       return JSON.parse(text) as Record<string, unknown>
@@ -980,7 +980,7 @@ export class QoderUpstreamClient {
     })
     const text = await resp.text()
     if (resp.status !== 200) {
-      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, businessCodeOf(text))
+      throw new QoderUpstreamError(classifyFailure(resp.status, text), `请求失败: HTTP ${resp.status} ${truncate(text, 200)}`, resp.status, deepestBusinessCode(text))
     }
     try {
       return JSON.parse(text) as Record<string, unknown>
@@ -1033,7 +1033,7 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
     // **这条路径就是本轮 bug 的现场**：用户实拍那句「Qoder 拒绝了这个账号的
     // PAT」，来自这里对 `statusCodeValue: 403` + body `{"code":"110",…}` 的分类。
     // 信封里的业务码比信封状态更具体，所以优先按码分（见 classifyFailure）。
-    throw new QoderUpstreamError(classifyFailure(Number(scv), detail), `上游信封错误: HTTP ${scv} ${truncate(detail, 300)}`, Number(scv), businessCodeOf(detail))
+    throw new QoderUpstreamError(classifyFailure(Number(scv), detail), `上游信封错误: HTTP ${scv} ${truncate(detail, 300)}`, Number(scv), deepestBusinessCode(detail))
   }
   const innerStr = wrapper.body
   if (typeof innerStr !== 'string' || innerStr === '') return undefined
@@ -1200,6 +1200,66 @@ export function businessCodeOf(detail: string): string | undefined {
 }
 
 /**
+ * 下钻的最大层数：防自嵌套/循环引用把解析变成死循环。
+ *
+ * 实测最深的两层就够（issue #6 的真实帧是「外层信封 → 内层业务码」），但这里给
+ * 一点余量，因为上游换一次包装就会多一层，而多一层只是多一次 JSON.parse。
+ */
+const MAX_CODE_NESTING = 6
+
+/**
+ * 取**最深一层认识的**业务码（`{"code":"10605","message":"…"}`）。
+ *
+ * 为什么不能只看最外层（issue #6）：上游的失败帧常是外层信封继续往里包，实拍帧：
+ *
+ * ```json
+ * { "code": 403, "message": "{\"code\":\"10605\",\"message\":\"qmodel 排队中，请稍后重试\"}" }
+ * ```
+ *
+ * 外层那个 `403` 是 HTTP 语义的码（`classifyBusinessCode('403')` → `unknown`），
+ * 真正的业务码 `10605`（排队）藏在内层 `message` 里。只剥一层 ⇒ 读不到码 ⇒ 回落
+ * HTTP 状态 ⇒ `403 → auth → credential-rejected → 永久剔除账号 + 叫用户换 PAT`。
+ * 而 `10605`/`10408` 本来就在 `TRANSIENT_CODES` 里 —— 码表没缺，缺的是「读到它」。
+ *
+ * 三条纪律（都来自现场形态，不是风格偏好）：
+ *
+ * 1. **只沿 `parsed.message` 往里走。** 改成遍历 `error`/`data`/`result` 之类更宽
+ *    的键集合，会把外层信封那个 HTTP 语义的 `code`（或 `code: 0` 之类无关字段）
+ *    当成业务码返回 —— 那比现在更糟，因为 `classifyBusinessCode` 一旦命中就可能
+ *    盖住真码。
+ * 2. **认不出的码要记进 `fallback` 并继续往里找**，不能直接 return。用例
+ *    「外层 403 + 内层 10605/402」就靠这条才过：外层认不出、里层才认得出，先
+ *    返回外层就还是 `auth`。
+ * 3. **认不出就原样回落 `classifyHttpStatus`** —— `TOKEN_EXPIRE` 这类字符串码、
+ *    非 JSON body、空 body 的行为与改动前逐字一致（真被拒的那一侧不能被改坏）。
+ */
+export function deepestBusinessCode(detail: string): string | undefined {
+  let text = typeof detail === 'string' ? detail.trim() : ''
+  let fallback: string | undefined
+  for (let depth = 0; depth < MAX_CODE_NESTING; depth += 1) {
+    if (!text.startsWith('{')) break
+    const parsed = parseJson(text)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) break
+    const record = parsed as Record<string, unknown>
+    const raw = record.code
+    let code: string | undefined
+    if (typeof raw === 'string' && raw !== '') code = raw
+    // 只接受整数码：`code: 1.5` 之类的东西不是上游的错误码，不该被当成认识的码。
+    else if (typeof raw === 'number' && Number.isInteger(raw)) code = String(raw)
+    if (code !== undefined) {
+      // 认识的码说了算（纪律 2：认不出的不 return，继续往里找）。
+      if (classifyBusinessCode(code) !== 'unknown') return code
+      if (fallback === undefined) fallback = code
+    }
+    const message = record.message
+    if (typeof message !== 'string') break
+    // 下一层就藏在 message 里（纪律 1：只走这一条路）。
+    text = message.trim()
+  }
+  return fallback
+}
+
+/**
  * 一次失败的分类：**业务码优先于 HTTP 状态**，状态只作兜底。
  *
  * 这是本轮的根因所在（用户实拍：国际版「Qoder 拒绝了这个账号的 PAT」）。实测
@@ -1221,9 +1281,13 @@ export function businessCodeOf(detail: string): string | undefined {
  *
  * 认识的码说了算；不认识的（如 `TOKEN_EXPIRE` 这类字符串码）回落状态分类，
  * 行为与改动前一致。
+ *
+ * 取码用 {@link deepestBusinessCode} 而不是 {@link businessCodeOf}：业务码可能
+ * 藏在第二/三层包装里（issue #6 的实拍帧），只剥一层就会把「排队」当成
+ * 「凭据被拒」，进而永久剔除一个其实几分钟就自愈的账号。
  */
 export function classifyFailure(status: number, detail: string): UpstreamErrorKind {
-  const code = businessCodeOf(detail)
+  const code = deepestBusinessCode(detail)
   if (code !== undefined) {
     const byCode = classifyBusinessCode(code)
     if (byCode !== 'unknown') return byCode

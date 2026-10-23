@@ -784,10 +784,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           : { accountId: serving.id, accountName: serving.accountName, pat: serving.pat }
       },
       failoverAccount: async tried => nextFailoverCredential(region, tried),
-      onServingFailure: (accountId, kind, message) => {
+      onServingFailure: (accountId, kind, message, context) => {
         // 池关着也要记账（只进内存）：否则「这个号今天已用尽」永远不知道，
         // 每个回合都要先撞一次 110、再白等 2 秒换号。
-        const probe = liveRequestProbe(kind, message)
+        const probe = liveRequestProbe(kind, message, undefined, context)
         if (probe === undefined || accountId === '') return
         poolRuntime[accountId] = probe
         // 持久化仍只写「池开着 + 是成员」的账号：见 `shouldRecordPoolFailure`
@@ -1233,11 +1233,18 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 卡片只认这三个字来渲染「凭据被拒」区块（以及切换到可用账号的按钮）。
       // 过期 PAT 此前既没有积分、也没有任何提示，就是这一步把错误吞成了
       // 「无数据」。其他 kind 原样保留，卡片按普通错误行显示上游原文。
+      //
+      // 但「凭据被拒」也得有凭据（issue #6）：只是 HTTP 403 兜底猜出来的 auth
+      //（上游把排队/用量限流也装在 403 里）不能这么写 —— 卡片会让用户去换一个
+      // 根本没坏的 PAT。没确认过的降级成 `unavailable`（普通错误行）。
       const kind = isQoderUpstreamError(error) ? error.kind : undefined
+      const context = isQoderUpstreamError(error)
+        ? { status: error.status, code: error.code }
+        : undefined
       usageCache[region] = {
         usage: undefined,
         atMs: Date.now(),
-        error: kind === 'auth' ? 'credential-rejected' : (kind ?? 'unknown'),
+        error: kind === 'auth' ? credentialOutcomeOf(context) : (kind ?? 'unknown'),
       }
     }
   }
@@ -1839,11 +1846,42 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
 }
 
 const FAIL_OVER_OUTCOME: Record<string, QoderWebProbeOutcome> = {
-  auth: 'credential-rejected',
+  // `auth` 不在这张表里：它要分「确认过」与「只是状态兜底猜的」两种处置，
+  // 由 credentialOutcomeOf 按上游状态/业务码判定（issue #6）。放进表里就会
+  // 又变成一张「一律永久排除」的表。
   'rate-limited': 'rate-limited',
   'quota-exhausted': 'out-of-credit',
   network: 'unavailable',
   transient: 'unavailable',
+}
+
+/**
+ * 「凭据被拒」这条结论**有没有凭据**。
+ *
+ * `auth` 这个 kind 只说「像凭据问题」，不说「凭什么」。两种来源的处置必须不同
+ * （issue #6）：
+ *
+ * - **业务码 `105` 确认**（官方码表：登录态或 Access Token 已过期）—— 令牌真的
+ *   被拒了，等也没用，永久剔除是对的。
+ * - **HTTP 401** —— 401 在这套上游语义里就是凭据被拒，同样永久剔除。
+ * - **只是 HTTP 403 兜底猜的**（`classifyHttpStatus` 的 `401/403 → auth`）——
+ *   上游把「当日用量用尽」「排队中」「限流」也装在 403 里（实测 403 + 码 110 /
+ *   10605）。此时永久剔除会把一个几分钟到几小时就自愈的账号踢出池，而且
+ *   **不自愈**：用户被要求换 PAT，换了也没用（问题从来不在凭据）。
+ *
+ * 所以这里只把**确认过**的拒绝记成永久排除，没确认的降级为冷却（`unavailable`
+ * ⇒ `exclusionOf` 走冷却期，到期自动回池）。
+ *
+ * `context` 缺席（旧调用方 / 不知道来源）时保持原语义：永久排除 —— 宁可多剔除，
+ * 也不让一个坏账号一直留在池里被反复选中。
+ */
+export function credentialOutcomeOf(
+  context?: { status?: number | undefined, code?: string | undefined },
+): QoderWebProbeOutcome {
+  if (context === undefined) return 'credential-rejected'
+  if (context.code === '105') return 'credential-rejected'
+  if (context.status === 401) return 'credential-rejected'
+  return 'unavailable'
 }
 
 /**
@@ -1860,9 +1898,17 @@ const FAIL_OVER_OUTCOME: Record<string, QoderWebProbeOutcome> = {
  *
  * 按本项目的既有教训（「判据与动作打包，于是动作有没有真的发生也能被断言」），
  * 把它做成可测函数而不是留在接线里：接线变异掉，测试照样全绿过一次了。
+ *
+ * `context`（上游状态 + 业务码）决定「凭据被拒」是永久排除还是冷却，见
+ * {@link credentialOutcomeOf}。
  */
-export function liveRequestProbe(kind: UpstreamErrorKind, message: string, modelId?: string): QoderPoolProbe | undefined {
-  const outcome = FAIL_OVER_OUTCOME[kind]
+export function liveRequestProbe(
+  kind: UpstreamErrorKind,
+  message: string,
+  modelId?: string,
+  context?: { status?: number | undefined, code?: string | undefined },
+): QoderPoolProbe | undefined {
+  const outcome = kind === 'auth' ? credentialOutcomeOf(context) : FAIL_OVER_OUTCOME[kind]
   if (outcome === undefined) return undefined
   return {
     outcome,
