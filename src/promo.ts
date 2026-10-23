@@ -298,7 +298,29 @@ export function promoWithinWindow(promo: QoderPromotion, now: Date): boolean {
 }
 
 /**
- * 此刻是否该画这枚徽标。
+ * 徽标此刻该以什么姿态出现。
+ *
+ * - `live`：此刻成立，正常画。
+ * - `pending`：上游声明了**读得懂**的窗口，但此刻不在窗口内——优惠是排定的、还没
+ *   到点。这一支存在的唯一理由是「白天看不见」：只画成立的那一种，一个白天开着
+ *   DSH 的用户永远发现不了晚上有折扣（2026-10-23 实拍：14:5x 时 Qwen3.8-Max 行上
+ *   什么都没有，而它的规则、文案、窗口在目录里全都齐）。卡片对 `pending` 画一枚
+ *   降饱和的胶囊，悬停里写明几点生效——**说明「还没到点」，不是「正在打折」**。
+ * - `none`：不画。三种情况：根本没有规则；声明了窗口但读不懂（`windowUnreadable`
+ *   不能被当成全天，也不能说「几点生效」）；没有窗口而 `active` 为 false（常驻
+ *   活动此刻没开，既没有窗口也没有「生效时间」可说，画出来只能是一句空话）。
+ */
+export type PromoDisplay = 'live' | 'pending' | 'none'
+
+export function promoDisplayAt(promo: QoderPromotion | undefined, now: Date): PromoDisplay {
+  if (promo === undefined) return 'none'
+  if (promo.windowUnreadable === true) return 'none'
+  if (promo.window === undefined) return promo.active ? 'live' : 'none'
+  return promoWithinWindow(promo, now) ? 'live' : 'pending'
+}
+
+/**
+ * 此刻是否成立（`promoDisplayAt(...) === 'live'`）。
  *
  * **有窗口时窗口说了算**（渲染时刻现算，快照多旧都不影响），没有窗口时才信上游的
  * `active`。为什么不是「两者都要成立」：目录是进程启动时取的一份内存快照，「从
@@ -307,11 +329,9 @@ export function promoWithinWindow(promo: QoderPromotion, now: Date): boolean {
  * 功能对「一直开着 DSH」的用户完全不存在。反过来，窗口是「此刻」的纯函数，它不会
  * 因为快照旧而说错话。
  *
- * 另外两支都不画：声明了窗口但读不懂（`windowUnreadable`），以及根本没有规则。
+ * 判「画不画成实心」用它；判「要不要画成灰的」用 `promoDisplayAt`。两个函数必须
+ * 保持同一套前提（窗口优先、读不懂不画），所以这里直接复用后者而不是重写一遍。
  */
 export function promoLiveAt(promo: QoderPromotion | undefined, now: Date): promo is QoderPromotion {
-  if (promo === undefined) return false
-  if (promo.windowUnreadable === true) return false
-  if (promo.window === undefined) return promo.active
-  return promoWithinWindow(promo, now)
+  return promoDisplayAt(promo, now) === 'live'
 }

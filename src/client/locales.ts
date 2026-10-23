@@ -161,6 +161,13 @@ export const en = {
 
   'row.modelMultimodal': 'Multimodal',
   'row.modelFree': 'Free',
+  // 「免费」徽标的悬停：上游对这个徽标只给一个 `is_free` 布尔量，没有 description /
+  // 时段 / 链接可引用，所以这句是插件自己写的解释。判据仍是上游的（倍率 0），
+  // 没有替上游承诺任何它没说过的事。
+  'row.modelFreeHint': 'Zero multiplier — calls with this model consume no credits',
+  // 「错峰」徽标在窗口外灰显时的悬停前缀：{start} 是上游声明的起点（如 22:00），
+  // 用来说清「还没到点」，与实心状态下的「正在打折」区分开。
+  'row.promoPending': 'Not active yet — starts at {start}',
   'row.modelImage': 'Image',
   'row.modelImageText': 'This model is documented as text-only — it does not accept image input',
   'row.modelImageUnverified': 'Native multimodal support is not verified for this model; leave it off unless you know it accepts images',
@@ -536,6 +543,10 @@ export const zh: Record<QoderSettingsKey, string> = {
 
   'row.modelMultimodal': '多模态',
   'row.modelFree': '免费',
+  // 见 en 侧同名注释：上游只给 `is_free` 布尔量，这句解释由插件自己写。
+  'row.modelFreeHint': '倍率为 0，不消耗积分',
+  // 窗口外灰显时的悬停前缀，见 en 侧同名注释。
+  'row.promoPending': '当前未生效，{start} 起生效',
   'row.modelImage': '图片',
   'row.modelImageText': '厂商文档标注该模型为纯文本，不接收图片输入',
   'row.modelImageUnverified': '该模型的原生多模态能力未经核实；除非你确定它能读图，否则请保持关闭',

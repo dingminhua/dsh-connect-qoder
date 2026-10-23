@@ -107,3 +107,28 @@ describe('out-of-credit 档不说「积分不足」', () => {
     }
   })
 })
+
+describe('两个模型徽标的悬停文案', () => {
+  it('「免费」的悬停说清判据是倍率 0、且不消耗积分（不是「限时」）', () => {
+    for (const lang of ['zh', 'en'] as const) {
+      const hint = qoderLocales[lang]['row.modelFreeHint']
+      // 判据要写出来：卡片上「免费」与「错峰 4 折」并排，后者才是限时的那个，
+      // 不写清判据就会被读成「这模型在搞活动」。
+      expect(hint).toMatch(lang === 'zh' ? /倍率/ : /multiplier/i)
+      expect(hint).toMatch(lang === 'zh' ? /不消耗|不扣/ : /no credits|consume/i)
+      expect(hint).not.toMatch(lang === 'zh' ? /限时|活动/ : /limited|promo/i)
+    }
+  })
+
+  it('灰显徽标的悬停带 {start} 占位，插进去是上游声明的起点', () => {
+    for (const lang of ['zh', 'en'] as const) {
+      const pending = render(qoderLocales[lang]['row.promoPending'], { start: '22:00' })
+      // 起点必须真的被插进去：只剩模板文本等于没说几点生效。
+      expect(pending).toContain('22:00')
+      expect(pending).not.toContain('{start}')
+      // 措辞必须点明「还没生效」——灰胶囊挂的是上游那句「错峰 4 折」，
+      // 悬停若不说清状态，读者会以为现在就在打折。
+      expect(pending).toMatch(lang === 'zh' ? /未生效|还没/ : /not active|not yet|starts/i)
+    }
+  })
+})
