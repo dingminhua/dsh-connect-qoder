@@ -489,14 +489,10 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:0}
 .dsm-qoder-bar-status{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /*
- * 「PAT 从哪来」的就地说明（「添加 PAT」标签与按钮之间）。
- *
- * flex:1 1 auto + min-width:0 让它吃掉标签与按钮之间的余量并参与换行：
- * 窄卡片上整行会折到按钮上方，而不是把按钮挤出可视区（.dsm-qoder-bar
- * 本身是 flex-wrap:wrap）。次级色，不与标签抢注意力。
+ * 「PAT 从哪来」的那一句搬进对话框后，这条 bar 上只剩按钮与（偶发的）状态行；
+ * 原来那条「.dsm-qoder-bar-hint」（常驻在标签与按钮之间）已无渲染者，随之删除。
+ * 按钮靠 margin-left:auto 仍然贴右端。
  */
-.dsm-qoder-bar-hint{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#9aa0a8)}
-.dsm-qoder-bar-hint{color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-bar-actions{display:flex;gap:8px;flex:none;margin-left:auto}
 .dsm-qoder-bar a{color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
 .dsm-qoder-bar a:hover{text-decoration:underline}
@@ -523,9 +519,16 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-addpat-name{width:100%;box-sizing:border-box;padding:6px 10px;margin-bottom:8px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e8e9ed);font:inherit;font-size:12px}
 .dsm-qoder-addpat-name:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 /* 弹窗里的「如何创建 PAT？」入口：小字、品牌色、不抢主按钮的注意力。 */
-.dsm-qoder-addpat-doc{margin:0 0 8px}
+/* 「PAT 从哪来」的文字路径 + 文档外链合成一块：左侧一道细竖线表示「参考信息」，
+   与上面两个待填的输入框区分开。块内段落必须按「对话框 > 块 > 段落」的完整路径
+   覆盖边距——「.dsm-qoder-transfer-dialog p」给了 8px 下边距，不覆盖的话两行会散开
+   成两块。 */
+.dsm-qoder-transfer-dialog .dsm-qoder-addpat-origin{display:flex;flex-direction:column;gap:2px;margin:0 0 10px;padding-left:9px;border-left:2px solid var(--dsw-alias-border-l2,#3a3d45)}
+.dsm-qoder-transfer-dialog .dsm-qoder-addpat-origin p{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-addpat-doc a{color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;line-height:18px;text-decoration:none}
 .dsm-qoder-addpat-doc a:hover{text-decoration:underline}
+/* 「按下添加之后会发生什么」——紧贴按钮行上方，弱一档，不与主按钮抢注意力。 */
+.dsm-qoder-transfer-dialog p.dsm-qoder-addpat-verify{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#9aa0a8)}
 /* The shared busy veil: a fixed overlay for operations whose result only shows
    up after the list re-read (remove / import / add). It is NOT a modal: no
    control, no dismissal — only "this is running" and "here is why nothing
