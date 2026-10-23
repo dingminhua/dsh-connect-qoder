@@ -90,14 +90,33 @@ export function poolErrorText(
 
 /**
  * The message to show for a failed pool request, from every signal available.
+ *
+ * 移植自 dsh-connect-workbuddy（issue #86）：status tier 在响应体根本不是 JSON
+ * 时再分流一次。每条池路由的 handler 都用 JSON 作答（含自身的 405
+ * `{error:'method not allowed'}`），所以一个 body 为空或不可解析的 405 不是本插件
+ * 拒绝该方法，而是宿主 HTTP 层在为一个从未注册的路由作答——即宿主进程还在跑更旧的
+ * 构建。这种情形下应提示「重启应用」而非「升级插件」，后者正是被 #86 修正的误导文案。
  */
+export interface PoolFailureInput {
+  status: number
+  reason?: string | undefined
+  error?: string | undefined
+  /**
+   * 响应体根本不是 JSON（无法解析）。每条路由都以 JSON 作答，含自身的 405，
+   * 所以一个不可解析的 405 来自宿主而非插件。
+   */
+  bodyUnreadable?: boolean
+}
+
 export function poolFailureText(
   t: Translate,
-  input: { status: number, reason?: string | undefined, error?: string | undefined },
+  input: PoolFailureInput,
 ): string {
   return poolErrorText(t, input.reason, input.error)
     ?? input.error
-    ?? t('row.poolErrHttp', { status: String(input.status) })
+    ?? (input.bodyUnreadable === true && input.status === 405
+      ? t('row.poolErrRouteMissing')
+      : t('row.poolErrHttp', { status: String(input.status) }))
 }
 
 /**

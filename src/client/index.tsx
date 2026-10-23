@@ -69,9 +69,9 @@ export function apply(ctx: QoderClientContext): void {
       settingsScope = forms.get(ns)
     }
 
-    const registerCard = (slotName: string, key: string): void => {
+    const registerCard = (slotName: string, key: string): (() => void) | undefined => {
       try {
-        ctx.slots.inject(slotName as never, () => (ctx.slots as unknown as {
+        return ctx.slots.inject(slotName as never, () => (ctx.slots as unknown as {
           register(
             options: { name: string; key: string; priority: number; inject: () => QoderCardInjected },
             component: unknown,
@@ -86,6 +86,7 @@ export function apply(ctx: QoderClientContext): void {
         }, QoderCard))
       } catch (error: unknown) {
         console.error(`[dsh-connect-qoder] card slot "${slotName}" failed to register (host provider unaffected):`, error)
+        return undefined
       }
     }
 
@@ -94,8 +95,9 @@ export function apply(ctx: QoderClientContext): void {
     // `plugins.row.config` wants `<package name>#<row id>`. Both are built from
     // the build-injected package name — see `slot-keys.ts` for why hardcoding
     // them made the card render nothing after the scoped rename.
-    registerCard('plugins.bundle.config', QODER_CARD_SLOT_KEYS.bundle)
-    registerCard('plugins.row.config', QODER_CARD_SLOT_KEYS.row)
+    //
+    // 注册改由 `bindSettingsScope()` 在下方统一收口：settings 命名空间在宿主镜像
+    // 就绪后才确定，早期就注册会绑错 scope 且永不回看（workbuddy #46/#55）。
 
     /**
      * Credit readout in the composer tool row (`conversation.input.left`, a
@@ -112,7 +114,7 @@ export function apply(ctx: QoderClientContext): void {
      * reads the Host's `modelSelection` projection and returns null for every
      * other provider.
      */
-    const registerComposerCredits = (): void => {
+    const registerComposerCredits = (): (() => void) | undefined => {
       try {
         ctx.slots.inject('conversation.input.left' as never, () => (ctx.slots as unknown as {
           register(
@@ -132,6 +134,7 @@ export function apply(ctx: QoderClientContext): void {
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-qoder] composer credits slot failed to register (host provider unaffected):', error)
+        return undefined
       }
     }
 
@@ -153,7 +156,7 @@ export function apply(ctx: QoderClientContext): void {
      * 的地方，本来就是用户读会话数字的位置；`order` 10 排在 shell 统计（注册在 0）
      * 之后，所以自带统计仍在最左，读数是**追加**而不是顶替。
      */
-    const registerStatsCredits = (): void => {
+    const registerStatsCredits = (): (() => void) | undefined => {
       try {
         ctx.slots.inject('conversation.composer.dock' as never, () => (ctx.slots as unknown as {
           register(
@@ -171,11 +174,107 @@ export function apply(ctx: QoderClientContext): void {
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-qoder] stats credits slot failed to register (host provider unaffected):', error)
+        return undefined
       }
     }
 
-    registerComposerCredits()
-    registerStatsCredits()
+    /**
+     * 把本插件贡献的所有槽位收口成一组注册，供 `rebindSlots` 统一 dispose/重建。
+     * 参考：dingminhua/dsh-connect-workbuddy（MIT）的 `registerAllSlots` ——
+     * settings 命名空间的绑定与槽位注册必须**一起**移动：晚到的 namespace 必须
+     * 产生全新的注册而非改写旧闭包，否则渲染器按 entry 身份缓存 inject 结果，
+     * 旧注册永远不被重新求值（issue #55：空 Plugins 页且无报错）。
+     */
+    const registerAllSlots = (): Array<() => void> => [
+      registerCard('plugins.bundle.config', QODER_CARD_SLOT_KEYS.bundle),
+      registerCard('plugins.row.config', QODER_CARD_SLOT_KEYS.row),
+      registerComposerCredits(),
+      registerStatsCredits(),
+    ].filter((disposer): disposer is () => void => disposer !== undefined)
+
+    /** 当前绑定下已注册的槽位 disposer。 */
+    let liveDisposers: Array<() => void> = []
+
+    /**
+     * 用当前 `settingsScope` 重建全部槽位注册。先 dispose 旧的，再注册新的——
+     * 顺序不能反（同 key 同优先级的 keyed 槽位重复注册会抛 "already has an entry"）。
+     */
+    const rebindSlots = (): void => {
+      for (const dispose of liveDisposers) {
+        try { dispose() } catch { /* 已被槽位服务 dispose 过 */ }
+      }
+      liveDisposers = []
+      liveDisposers = registerAllSlots()
+      try {
+        console.info(
+          `[dsh-connect-qoder] registered ${String(liveDisposers.length)} slots `
+            + `(settings form: ${settingsScope === undefined ? 'none — card is read-only' : 'bound'})`,
+        )
+      } catch { /* 无 console 的宿主也要能注册 */ }
+    }
+
+    /**
+     * 把 `settingsScope` 绑到宿主**真正在服务的**命名空间，并在该答案变化时重注册。
+     *
+     * 为什么不是启动时读一次：宿主的 `configForms` mirror 由异步
+     * `remote.settings.describe()` 填充，apply 时刻通常还是空的。旧代码把这份空
+     * 当成「声明名一定对」、绑了 `forms.get('qoder')`，之后不再回看；宿主精确按
+     * 命名空间匹配，于是这个猜错的 form 永远 `unavailable`，卡片空白且无报错
+     * （workbuddy #46/#55）。
+     *
+     * `whileServed` 是宿主自己的惯用法（mirror 订阅 + 即时同步），只在
+     * unserved→served 的**边缘**触发 register，且会顺着把旧注册 withdraw——
+     * 这正是「新命名空间要到货才能重绑」所需的语义。宿主若不支持（旧线），回退成
+     * 「声明名一次性绑定 + 注册一次」。
+     */
+    const bindSettingsScope = (): void => {
+      const candidates = [QODER_SETTINGS_NS]
+      // 宿主支持 whileServed 时，订阅镜像、命名空间到货即重绑；否则回退单次绑定。
+      if (forms !== undefined && typeof (forms as { whileServed?: unknown }).whileServed === 'function') {
+        // 宿主动态拿到的 `forms` 没有静态类型；这里把它当黑盒，只断言我们用的形状。
+        const servedForms = forms as unknown as {
+          whileServed(c: string[], cb: (served: Set<string>) => (() => void) | void): unknown
+        }
+        // `ctx.effect` 期望回调返回一个 effect 对象；`whileServed` 的真实返回就是它，
+        // 但此处无静态类型，故把 `ctx.effect` 当 `() => unknown` 的黑盒调用。
+        ;(ctx.effect as (execute: () => unknown, label?: string) => unknown)(
+          () => servedForms.whileServed(
+            candidates,
+            (served: Set<string>) => {
+              const ns = candidates.find(candidate => served.has(candidate))
+                ?? [...served].find(entry => /qoder/i.test(entry))
+              settingsScope = ns === undefined ? undefined : forms.get(ns)
+              rebindSlots()
+              return () => {
+                for (const dispose of liveDisposers) {
+                  try { dispose() } catch { /* 已被槽位服务 dispose 过 */ }
+                }
+                liveDisposers = []
+              }
+            },
+          ),
+          'dsh-connect-qoder: settings namespace binding',
+        )
+        // 先无条件注册一次：若 mirror 首答已含本命名空间，边缘同步内已触发；若不含
+        // （命名不预期、settings 面迟迟未答、或部署未挂可配置项），边缘永不触发、
+        // 卡片永不注册——所以这里兜底注册一次，后续边缘若有则替换。
+        rebindSlots()
+        return
+      }
+      // 无 settings 面或旧宿主：沿用单次绑定回退。
+      if (forms !== undefined) {
+        let ns: string = QODER_SETTINGS_NS
+        try {
+          const namespaces = forms.describe().getSnapshot().view?.namespaces ?? []
+          const served = namespaces.find(entry => entry.ns === QODER_SETTINGS_NS || /qoder/i.test(entry.ns))
+          if (served !== undefined) ns = served.ns
+        } catch { /* mirror 未就绪：声明名仍正确 */ }
+        settingsScope = forms.get(ns)
+      }
+      liveDisposers = registerAllSlots()
+    }
+
+    bindSettingsScope()
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     console.error('[dsh-connect-qoder] client apply failed:', error)

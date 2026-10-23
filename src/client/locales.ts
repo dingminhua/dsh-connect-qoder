@@ -352,6 +352,13 @@ export const en = {
   'row.poolErrNoFreeModel': 'This region has no zero-multiplier model to test with. Refresh the model catalog, or pick a target model yourself.',
   'row.poolErrNoCheckin': 'This region has no daily check-in — the action is not offered here.',
   'row.poolErrStaleModel': 'The target model is no longer offered by this region. Pick another, or switch back to automatic.',
+  // A 405 whose body was empty or unparseable did NOT come from this plugin: it
+  // is the Host's HTTP layer answering for a route that was never registered —
+  // i.e. a Host process still running older code. The fix is to restart DSH,
+  // NOT to reinstall/upgrade this plugin. (Mirrors workbuddy fix for issue #86,
+  // which otherwise told the user "confirm the plugin is up to date" while the
+  // plugin was already current.)
+  'row.poolErrRouteMissing': 'The batch route answered 405 with no response body. This is the host process answering for a route it never registered — restart the app; do not reinstall or upgrade this plugin.',
   'row.requestFailed': 'Request failed',
   'row.requestFailedHint': 'Refresh failed — showing the last loaded data: {message}',
 
@@ -717,6 +724,11 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolErrNoFreeModel': '本区域没有可用的免费（倍率为 0）模型。请先刷新模型目录，或自己指定一个目标模型。',
   'row.poolErrNoCheckin': '本区域没有每日签到 —— 这里不提供该操作。',
   'row.poolErrStaleModel': '目标模型已不在本区域目录中。请改选一个，或切回自动。',
+  // 405 且响应体为空或不可解析时，说明不是本插件拒绝该方法，而是宿主 HTTP 层
+  // 在为一个从未注册的路由作答——即宿主进程仍在跑更旧的构建。修复方式是重启应用，
+  // 而不是重装或升级本插件。（对应 workbuddy 对 #86 的修复，否则会误导用户
+  // "请确认插件是最新版本"，而插件其实已经是最新的。）
+  'row.poolErrRouteMissing': '批量接口返回 405 且响应体为空。这是宿主进程在为一个从未注册的路由作答——请重启应用；不要重装或升级本插件。',
   'row.requestFailed': '请求失败',
   'row.requestFailedHint': '刷新失败——下方为上次加载的数据：{message}',
 
