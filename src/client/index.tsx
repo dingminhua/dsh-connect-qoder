@@ -19,6 +19,8 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import { QoderCard } from './QoderCard.tsx'
 import type { QoderCardInjected } from './QoderCard.tsx'
 import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
+import { createQoderModelLabel, QODER_MODEL_LABEL_SLOT } from './QoderModelLabel.tsx'
+import type { QoderModelLabelSlots } from './QoderModelLabel.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
 import { QODER_CARD_SLOT_KEYS } from './slot-keys.ts'
@@ -185,11 +187,28 @@ export function apply(ctx: QoderClientContext): void {
      * 产生全新的注册而非改写旧闭包，否则渲染器按 entry 身份缓存 inject 结果，
      * 旧注册永远不被重新求值（issue #55：空 Plugins 页且无报错）。
      */
+    const registerModelLabel = (): (() => void) | undefined => {
+      try {
+        const label = createQoderModelLabel(ctx.slots as unknown as QoderModelLabelSlots)
+        return ctx.slots.inject(QODER_MODEL_LABEL_SLOT as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; priority: number; locale: string }, component: unknown): () => void
+        }).register({
+          name: QODER_MODEL_LABEL_SLOT,
+          priority: -1,
+          locale: namespace,
+        }, label))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-qoder] model label slot failed to register (host provider unaffected):', error)
+        return undefined
+      }
+    }
+
     const registerAllSlots = (): Array<() => void> => [
       registerCard('plugins.bundle.config', QODER_CARD_SLOT_KEYS.bundle),
       registerCard('plugins.row.config', QODER_CARD_SLOT_KEYS.row),
       registerComposerCredits(),
       registerStatsCredits(),
+      registerModelLabel(),
     ].filter((disposer): disposer is () => void => disposer !== undefined)
 
     /** 当前绑定下已注册的槽位 disposer。 */

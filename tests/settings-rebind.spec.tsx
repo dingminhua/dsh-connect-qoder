@@ -70,7 +70,7 @@ function formsStub(options: { served?: string[]; mirrorLandsLater?: boolean } = 
  */
 function slotsStub() {
   const ledger = new Map<string, { inject: () => any; dispose: () => void }>()
-  const injected: Array<{ slot: string; cell: string; props: () => any }> = []
+  const injected: Array<{ slot: string; cell: string; props: () => any; options: Record<string, unknown> }> = []
   const slots = {
     inject: (slotName: string, factory: () => (() => void)) => {
       const dispose = factory()
@@ -83,7 +83,7 @@ function slotsStub() {
       }
       const entry = { inject: options.inject, dispose: () => { ledger.delete(cell) } }
       ledger.set(cell, entry)
-      injected.push({ slot: options.name, cell, props: options.inject })
+      injected.push({ slot: options.name, cell, props: options.inject, options })
       return entry.dispose
     },
   }
@@ -147,17 +147,17 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
   it('边缘永不触发时卡片仍必须注册（#55：空 Plugins 页且无报错）', () => {
     const stub = formsStub({ mirrorLandsLater: true })
     const { live } = mount(stub.forms)
-    // 还没等到任何镜像答案，四个槽位就应该在册。
-    expect(live()).toHaveLength(4)
+    // 还没等到任何镜像答案，五个槽位就应该在册（#12 起含模型选择器标签）。
+    expect(live()).toHaveLength(5)
   })
 
   it('重绑是先 dispose 再注册：同 key 同优先级不会撞「already has an entry」', () => {
     const stub = formsStub({ served: ['dsh-connect-qoder'] })
     const { live } = mount(stub.forms)
-    expect(live()).toHaveLength(4)
+    expect(live()).toHaveLength(5)
     // 命名空间答案变化 → 重绑。若顺序反了（先注册再 dispose），这里就抛。
     expect(() => stub.land(['include:dsh-connect-qoder'])).not.toThrow()
-    expect(live()).toHaveLength(4)
+    expect(live()).toHaveLength(5)
   })
 
   it('旧宿主（无 whileServed）回退成单次绑定 + 单次注册', () => {
@@ -166,20 +166,20 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
       get: (ns: string) => ({ __form: ns, status: 'ready' }),
     }
     const { injected, live } = mount(legacy)
-    expect(live()).toHaveLength(4)
+    expect(live()).toHaveLength(5)
     const cardProps = injected.filter(e => e.slot === 'plugins.row.config').map(e => e.props()).at(-1)
     expect((cardProps?.settingsScope as any)?.__form).toBe('dsh-connect-qoder')
   })
 
   it('无 settings 面（configForms 缺席）时卡片仍注册，且只读', () => {
     const { injected, live } = mount(undefined)
-    expect(live()).toHaveLength(4)
+    expect(live()).toHaveLength(5)
     const cardProps = injected.filter(e => e.slot === 'plugins.bundle.config').map(e => e.props()).at(-1)
     expect(cardProps?.settingsScope).toBeUndefined()
     expect(cardProps?.t).toBeDefined()
   })
 
-  it('真正的重绑（served → unserved → served）：四条注册**全部**换新，且不吞掉重复注册', () => {
+  it('真正的重绑（served → unserved → served）：五条注册**全部**换新，且不吞掉重复注册', () => {
     // 这条盯的是「每条注册的 disposer 都被追踪」：`registerAllSlots` 靠各
     // register* 的**返回值**收集 disposer，少一个 `return` 就会让那两个 composer
     // 读数槽漏出 `liveDisposers` —— 后果有两层：① 插件 fiber 拆除时它们不被
@@ -188,13 +188,13 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     // settingsScope 换绑了它也看不见。
     const stub = formsStub({ served: ['dsh-connect-qoder'] })
     const { live, propsOf } = mount(stub.forms)
-    expect(live()).toHaveLength(4)
+    expect(live()).toHaveLength(5)
 
     stub.land([])                            // 宿主停止服务 → whileServed 拆除注册
     expect(live()).toHaveLength(0)
 
     stub.land(['include:dsh-connect-qoder'])  // 换个拼写再服务 → 边缘触发重绑
-    expect(live()).toHaveLength(4)
+    expect(live()).toHaveLength(5)
 
     // 四个槽位当前在册的那一代，都得读到**新**命名空间的 form。
     const cells = [
@@ -208,7 +208,7 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
   })
 
   it('重绑期间不得有任何注册失败被吞掉（含 already-has-an-entry）', () => {
-    // 上一条断言「四条都在册」；这一条断言「过程中没有静默失败」。两者要分开：
+    // 上一条断言「五条都在册」；这一条断言「过程中没有静默失败」。两者要分开：
     // 注册失败被 try/catch 降级成 console.error 时，槽位数可能仍然凑够（旧一代
     // 没被 dispose 掉，还挂在账本上），只有这条能看出差别。
     const stub = formsStub({ served: ['dsh-connect-qoder'] })
@@ -218,6 +218,18 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     const failures = errorSpy.mock.calls.map(call => String(call[1] ?? call[0]))
     errorSpy.mockRestore()
     expect(failures).toEqual([])
+  })
+
+  it('模型选择器标签以 priority -1 + locale 注册（single 槽：与他人同优先级会直接抛）', () => {
+    const stub = formsStub({ served: ['dsh-connect-qoder'] })
+    const { injected } = mount(stub.forms)
+    const label = injected.filter(e => e.slot === 'conversation.input.model.label').at(-1)
+    expect(label).toBeDefined()
+    // workbuddy 占着默认优先级 0；同优先级注册在 single 槽上会抛
+    // 「already has a registration at priority ...」。升序取首条 ⇒ 要排在它前面。
+    expect(label?.options.priority).toBe(-1)
+    // locale 决定渲染器是否把命名空间绑好的 t 递进来（#12 报告的坑 D）。
+    expect(label?.options.locale).toBe('settings.qoder')
   })
 
   it('单个槽位注册失败不拖垮其余槽位（每槽各自 try/catch）', () => {
@@ -238,8 +250,8 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     }
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
     expect(() => apply(ctx)).not.toThrow()
-    // 四条里坏了一条，其余三条仍在册。
-    expect(slots.live()).toHaveLength(3)
+    // 五条里坏了一条，其余四条仍在册。
+    expect(slots.live()).toHaveLength(4)
     errorSpy.mockRestore()
   })
 })

@@ -250,6 +250,18 @@ export const QODER_CARD_CSS = `
  * 仍然成立）。悬停里写明几点生效，那才是这个状态真正的信息。
  */
 .dsm-qoder-model-promo-pending{color:var(--dsw-alias-label-tertiary,#9aa0a8);background:rgba(174,179,187,.10);border-style:dashed;border-color:rgba(174,179,187,.32)}
+/*
+ * 模型选择器里的同两枚徽标（issue #12）。
+ *
+ * 宿主把这段内容内联进 picker 的模型行，外面没有卡片外壳，所以这里只管三件
+ * 事：基线对齐（行高由 picker 决定，抬到 middle 会跟名字错位）、不换行（窄行
+ * 里换行会把整行撑高）、以及菜单行里给胶囊一个宽度上限（trigger 行宽，菜单行
+ * 窄；不限宽时较长的上游文案会把模型名挤成省略号，主次颠倒）。
+ * 颜色、圆角、虚线灰显全部复用上面的 .dsm-qoder-model-promo* 一族，两个表面
+ * 不各写一套。
+ */
+.dsm-qoder-model-label{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;vertical-align:baseline;min-width:0}
+.dsm-qoder-model-label-promo{max-width:6em;overflow:hidden;text-overflow:ellipsis}
 .dsm-qoder-model-desc{margin:0;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-qoder-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
 .dsm-qoder-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}
