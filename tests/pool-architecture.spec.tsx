@@ -268,6 +268,21 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     }
   })
 
+  it('三颗账号工具按钮共用一行：拆壳 + 边距归零 + 对话框排最后', () => {
+    // 三条规则环环相扣，少一条就退回「三行按钮」或「打开对话框后导出 / 导入整行
+    // 消失」——这两种都在真机截图里出现过。
+    //
+    // 1) 拆壳：两条 <section class="dsm-qoder-bar"> 各自是 flex 容器，不塌陷就
+    //    各占一行；display:contents 把按钮与对话框交给外层排列。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-tools > \.dsm-qoder-bar\{display:contents\}/)
+    // 2) 两组按钮都带 margin-left:auto，在外层会**平分**剩余空间（实测第一颗停在
+    //    行的中间），归零后由容器的 justify-content:flex-end 统一右对齐。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-tools \.dsm-qoder-bar-actions\{margin-left:0\}/)
+    // 3) DOM 里「添加 PAT」的对话框夹在两组按钮中间，不指定 order 时它一换行就把
+    //    跟在后面的「导出 / 导入」挤到下一行。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-tools \.dsm-qoder-transfer-dialog\{order:2;flex:1 1 100%;margin:0\}/)
+  })
+
   it('保存条钉在视口底部——面板比一屏高，改完时按钮必须在看得见的地方', () => {
     // jsdom 不做布局，只能断言规则本身在。
     expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-save-bar\{[^}]*position:sticky/)

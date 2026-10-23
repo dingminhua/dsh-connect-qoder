@@ -983,3 +983,33 @@ describe('积分读数席位控件', () => {
     }
   })
 })
+
+/**
+ * 账号工具区：两条动作条并成一行。
+ *
+ * 这里钉 DOM 事实（两条 bar 仍是兄弟、三颗按钮的归属与无障碍名），排版本身由
+ * 样式规则保证，见 pool-architecture 里那三条正则。
+ */
+describe('账号工具区：添加 PAT 与导出 / 导入共用一行', () => {
+  it('两条工具条是同一容器下的兄弟，名字挂在各自的按钮组上', async () => {
+    const { container, unmount } = await mountCard()
+    try {
+      const tools = container.querySelector('.dsm-qoder-pool-tools')
+      expect(tools).not.toBeNull()
+      // 壳仍留在 DOM 里（display:contents 只塌陷布局），两条工具条是兄弟节点。
+      const bars = Array.from(tools!.children).filter(el => el.classList.contains('dsm-qoder-bar'))
+      expect(bars.length).toBe(2)
+
+      const groups = Array.from(tools!.querySelectorAll('.dsm-qoder-bar-actions'))
+      // 名字改挂在按钮组上：壳塌陷后 <section> 的名字在部分浏览器里会从无障碍树消失。
+      expect(groups.map(group => group.getAttribute('role'))).toEqual(['group', 'group'])
+      expect(groups.map(group => group.getAttribute('aria-label')))
+        .toEqual(['row.addAccountStart', 'row.transferTitle'])
+      // 三颗按钮，DOM 顺序即视觉顺序（添加 PAT 在最左，导出、导入依次向右）。
+      expect(groups.flatMap(group => Array.from(group.querySelectorAll('button')).map(b => b.textContent)))
+        .toEqual(['row.addAccountStart', 'row.transferExport', 'row.transferImport'])
+    } finally {
+      await unmount()
+    }
+  })
+})

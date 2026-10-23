@@ -127,7 +127,10 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
         {finishText === '' ? null : (
           <p className={`dsm-qoder-bar-status ${phase.kind === 'done' ? 'dsm-qoder-bar-ok' : 'dsm-qoder-bar-error'}`}>{finishText}</p>
         )}
-        <div className="dsm-qoder-bar-actions">
+        {/* 名字落在这个按钮组上而不是外层 <section> 上：工具区用
+            display:contents 把两条 bar 的壳塌陷成一行，<section> 的名字在部分
+            浏览器里会随之从无障碍树消失。group 保住了「这一组是添加 PAT」。 */}
+        <div className="dsm-qoder-bar-actions" role="group" aria-label={t('row.addAccountStart')}>
           <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { setPat(''); setName(''); setTouched(false); setPhase({ kind: 'idle' }); setDialogOpen(true) }}>
             {t('row.addAccountStart')}
           </button>

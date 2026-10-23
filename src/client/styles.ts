@@ -421,7 +421,33 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-dirty{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-qoder-pool-settings{display:flex;flex-direction:column;gap:1px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
 /* Add-PAT + export/import, above the 「更多设置」 heading. */
-.dsm-qoder-pool-tools{display:flex;flex-direction:column;gap:2px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;padding:4px 10px}
+/*
+ * 账号工具（添加 PAT / 导出 / 导入）：三颗按钮共用一行。
+ *
+ * 两条工具条各自是 <section class="dsm-qoder-bar">，这里用 display:contents 把它们
+ * 的壳塌陷掉——「添加 PAT」与「导出 / 导入」的按钮、状态行、对话框直接参与外层的
+ * 排列，于是三颗按钮落在同一行，右端对齐，间距由 gap 统一。
+ *
+ * 对话框用 flex-basis:100% 强制换行、独占一行：让它保持在按钮**下方展开**的原有
+ * 行为（不改成绝对定位的浮层——浮层要盖住下面的成员表，还得自己管阴影与遮挡）。
+ *
+ * 备注：display:contents 会让 <section> 的名字在某些浏览器里从无障碍树消失，
+ * 所以两个 .dsm-qoder-bar-actions 各自带 role="group" + aria-label（组件里）。
+ */
+.dsm-qoder-pool-tools{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;padding:6px 10px}
+.dsm-qoder-pool-tools > .dsm-qoder-bar{display:contents}
+/*
+ * 两处必须覆盖，都是「塌陷成一行」之后才出现的：
+ *
+ * 1. 两组按钮各自带 margin-left:auto，在外层会**平分**剩余空间——实测第一颗
+ *    停在行的中间、第二组贴着右端，中间空出一大截。右对齐交给容器的
+ *    justify-content 统一负责，这里归零。
+ * 2. DOM 顺序里「添加 PAT」的对话框夹在两组按钮中间。对话框一换行，跟在它后面
+ *    的「导出 / 导入」就被挤到下一行（实测两颗按钮整行消失）。用 order 把对话框
+ *    排到所有按钮之后。
+ */
+.dsm-qoder-pool-tools .dsm-qoder-bar-actions{margin-left:0}
+.dsm-qoder-pool-tools .dsm-qoder-transfer-dialog{order:2;flex:1 1 100%;margin:0}
 .dsm-qoder-pool-set{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31)}
 .dsm-qoder-pool-set:first-child{border-top:0}
 .dsm-qoder-pool-set-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
