@@ -299,13 +299,48 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   if (owned === undefined) return null
 
   const signedIn = usage?.status === 'signed-in' ? usage : undefined
-  const total = signedIn === undefined ? undefined : creditsOf(signedIn)
+  /**
+   * 文档级总额：**这份文档是用哪个号读上来的**，就是哪个号的余额 —— 也就是
+   * 第一发目标（选中号）的余额。它不等于「此刻在计费的号」的余额，见 `total`。
+   */
+  const docTotal = signedIn === undefined ? undefined : creditsOf(signedIn)
   const signedOut = usage !== undefined && usage.status === 'signed-out'
-  const valueText = total === undefined ? '—' : formatCredits(total)
   const label = t(activeRegion === 'cn' ? 'composer.pointsCn' : 'composer.pointsGlobal' as QoderSettingsKey)
 
   const selectedId = accountCredits?.find(account => account.selected)?.id
     ?? (signedIn === undefined ? undefined : signedIn.accountId)
+
+  /**
+   * 此刻**真正在计费**的账号 —— 与面板「当前选用」同一条判据（表格的 `current`
+   * 来自 `accountCreditsOf`、池视图的 `current` 来自 `web-status`，两者都与
+   * `src/shim.ts` 的请求路径逐字同判）。两者都缺席（旧宿主 / 池关）时退回选中号：
+   * 没有接管机制时第一发确实是它。
+   */
+  const billingId =
+    accountCredits?.find(account => account.current === true)?.id
+    ?? signedIn?.pool?.accounts.find(account => account.current === true)?.accountId
+    ?? selectedId
+  const billingName =
+    accountCredits?.find(account => account.id === billingId)?.accountName
+    ?? signedIn?.pool?.accounts.find(account => account.accountId === billingId)?.accountName
+    ?? (signedIn !== undefined && signedIn.accountId === billingId ? signedIn.accountName : undefined)
+  /**
+   * 胶囊显示的数字：**计费账号**的余额，而不是文档级总额。
+   *
+   * 优先表格的逐号读数（面板打开 / 切号 / 测试后取，最新），其次同一份 usage 文档
+   * 里池视图的每行余额（composer 拉的是 full 文档，恒带）；**只有当计费账号就是
+   * 文档自己的账号时**才退回文档级总额 —— 否则胶囊会显示一个根本没在计费的号的
+   * 余额：池接管的瞬间，文档级总额仍是被排除的选中号的读数（用户截图：面板高亮
+   * 「丁晓潇 100」，胶囊却读着已禁用的 ddd 的 773）。拿不到计费号的余额就显示
+   * 「—」：说不知道，比说一个错的号强。
+   */
+  const billingCredits =
+    accountCredits?.find(account => account.id === billingId)?.credits
+    ?? signedIn?.pool?.accounts.find(account => account.accountId === billingId)?.credits
+  const total = billingCredits ?? (billingId === signedIn?.accountId ? docTotal : undefined)
+  const valueText = total === undefined ? '—' : formatCredits(total)
+  /** 悬停说清这个数字是谁的：接管发生时，光看「QD AI · 100」不知道 100 归谁。 */
+  const billingTitle = billingName === undefined ? undefined : t('composer.billingAccount', { name: billingName })
   const sourceRows: QoderWebAccountCredit[] = accountCredits
     ?? (signedIn === undefined
       ? []
@@ -317,8 +352,8 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const rows: QoderWebAccountCredit[] = sourceRows.map(row => {
     // The selected account's balance is already in the usage document the
     // readout rendered, so fall back to it when the table request carried none.
-    if (row.id !== selectedId || row.credits !== undefined || total === undefined) return row
-    return { ...row, credits: total }
+    if (row.id !== selectedId || row.credits !== undefined || docTotal === undefined) return row
+    return { ...row, credits: docTotal }
   })
   const canSwitch = settingsScope !== undefined
 
@@ -343,6 +378,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => { setOpen(!open) }}
+        {...billingTitle === undefined ? {} : { title: billingTitle }}
       >
         {label} · {valueText}
       </button>

@@ -402,6 +402,9 @@ export const en = {
   'composer.dataStale': 'not updated',
   // 第二行的「当前选用」提示：能用的号本来就是绿点，哪一个是它靠这行字说。
   'composer.currentPick': 'In use',
+  // 胶囊悬停：这个数字是**哪个号**的。池接管时胶囊与「选中」不是同一个号，
+  // 不说清就会读成「我还有 773」而面板说在用 100 的那个（issue 截图的同款困惑）。
+  'composer.billingAccount': 'Balance of the account billing right now: {name}',
   'composer.panelTitle': 'Qoder credits',
   // 机器读的一条：卡片用它问「宿主现在按哪种语言渲染」，好去上游的中英文案里挑
   // 对的那一条（见 `promo-badge.ts` 的 `hostLanguage`）。人不会看到它。
@@ -776,6 +779,8 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.dataStale': '未更新',
   // 第二行的「当前选用」提示：能用的号本来就是绿点，哪一个是它靠这行字说。
   'composer.currentPick': '当前选用',
+  // 胶囊悬停：这个数字是**哪个号**的，见 en 侧同名注释。
+  'composer.billingAccount': '当前计费的账号：{name}',
   'composer.panelTitle': 'Qoder 积分',
   // 机器读的一条，见 en 侧同名的注释。
   'promo.locale': 'zh-CN',
