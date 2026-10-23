@@ -20,6 +20,7 @@ import {
   clockMinute,
   parsePromoWindow,
   parseQoderPromotion,
+  promoDisplayAt,
   promoLiveAt,
   promoWithinWindow,
   readPromotion,
@@ -270,6 +271,42 @@ describe('promoLiveAt：有窗口看窗口，没窗口才看 active', () => {
     // 解析结果本身没有任何「已判定」的痕迹：它就是上游的规则。
     expect(parsed.active).toBe(true)
     expect(parsed.window?.start).toBe('22:00')
+  })
+})
+
+describe('promoDisplayAt：实心 / 灰显 / 不画', () => {
+  it('窗口内 → live（实心）', () => {
+    expect(promoDisplayAt(rule({ active: false }), NIGHT)).toBe('live')
+  })
+
+  it('窗口外 → pending（灰显，悬停里说几点生效）', () => {
+    expect(promoDisplayAt(rule({ active: true }), NOON)).toBe('pending')
+  })
+
+  it('没有窗口声明时只信 active：开则实心、关则整枚不画', () => {
+    const standing = rule({ window_start: undefined, window_end: undefined })
+    expect(promoDisplayAt({ ...standing, active: true }, NOON)).toBe('live')
+    // 常驻活动此刻没开，既没有窗口也没有「几点生效」可说，画出来只能是一句空话。
+    expect(promoDisplayAt({ ...standing, active: false }, NOON)).toBe('none')
+  })
+
+  it('没有规则 → none', () => {
+    expect(promoDisplayAt(undefined, NIGHT)).toBe('none')
+  })
+
+  it('声明了窗口但读不懂 → none（不能退化成「全天」或「几点生效」）', () => {
+    const broken = parseQoderPromotion(upstreamPromotion({ window_start: '22:30', window_end: '24:30' }))
+    expect(broken).toBeDefined()
+    expect(broken!.windowUnreadable).toBe(true)
+    expect(promoDisplayAt(broken, NIGHT)).toBe('none')
+  })
+
+  it('与 promoLiveAt 同一套前提：pending 永远不算 live', () => {
+    const parsed = rule({ active: true })
+    expect(promoDisplayAt(parsed, NOON)).toBe('pending')
+    expect(promoLiveAt(parsed, NOON)).toBe(false)
+    expect(promoDisplayAt(parsed, NIGHT)).toBe('live')
+    expect(promoLiveAt(parsed, NIGHT)).toBe(true)
   })
 })
 

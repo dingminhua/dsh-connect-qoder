@@ -6,10 +6,11 @@
  *
  * 1. **徽标在名字外面**：`.dsm-qoder-model-name` 是省略号截断的，把胶囊塞进去
  *    会被一起裁掉。断言它在 `.dsm-qoder-model-copy` 里、但**不在**名字 span 里。
- * 2. **画不画由渲染时刻决定**：同一个模型行，喂「此刻在窗口内」就画（哪怕快照里
- *    的 `active` 是 false），喂「此刻在窗口外」就不画。判定函数本身在
- *    `tests/promo.spec.ts` 里测过，这里测的是卡片确实调用了它、且用的是上游的
- *    文案而不是插件自己编的。
+ * 2. **画不画由渲染时刻决定**：同一个模型行，喂「此刻在窗口内」就画实心，喂
+ *    「此刻在窗口外」画成灰的（`promoDisplayAt` 的 `pending`）——窗口是排定的，
+ *    白天也得让人看出晚上有折扣；喂「没有窗口且 active 为 false」才整枚不画。
+ *    判定函数本身在 `tests/promo.spec.ts` 里测过，这里测的是卡片确实调用了它、
+ *    且用的是上游的文案而不是插件自己编的。
  *
  * 参考：`tests/card-render.spec.tsx`（同款挂载 harness）。
  */
@@ -95,7 +96,7 @@ function usageDoc(model: Record<string, unknown>): Record<string, unknown> {
   }
 }
 
-async function renderWith(model: Record<string, unknown>): Promise<{ container: HTMLDivElement, unmount: () => Promise<void> }> {
+async function renderWith(model: Record<string, unknown>, translate: any = t): Promise<{ container: HTMLDivElement, unmount: () => Promise<void> }> {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url.includes('/plugins/dsh-connect-qoder/usage')) {
@@ -107,7 +108,7 @@ async function renderWith(model: Record<string, unknown>): Promise<{ container: 
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root: Root = createRoot(container)
-  await act(async () => { root.render(React.createElement(QoderCard, { t, view: 'page' })) })
+  await act(async () => { root.render(React.createElement(QoderCard, { t: translate, view: 'page' })) })
   return {
     container,
     async unmount() {
@@ -198,10 +199,33 @@ describe('模型行活动徽标', () => {
     await view.unmount()
   })
 
-  it('上游说生效但此刻不在窗口内：不画', async () => {
+  it('窗口外画成灰的，悬停里写明几点生效（不是「正在打折」）', async () => {
     const away = windowAwayFromNow('Asia/Shanghai')
-    const view = await renderWith(modelOf({ promotion: rule(away) }))
-    expect(view.container.querySelector('.dsm-qoder-model-promo')).toBeNull()
+    // 把 key 与参数一起回显：这里断言的是「用了哪个 key、带进去哪个起点」，
+    // 具体措辞由 `tests/locales.spec.ts` 对着真表钉。
+    const echo: any = (key: string, params?: Record<string, unknown>) =>
+      params === undefined ? key : `${key}(${String(params['start'])})`
+    const view = await renderWith(modelOf({ promotion: rule(away) }), echo)
+    const badge = view.container.querySelector('.dsm-qoder-model-promo')
+    expect(badge).not.toBeNull()
+    // 灰显靠一个修饰类，不是靠内联样式——CSS 里那份才是唯一真源。
+    expect(badge!.className).toContain('dsm-qoder-model-promo-pending')
+    expect(badge!.textContent).toBe('错峰 4 折')
+    const tip = badge!.getAttribute('title') ?? ''
+    expect(tip.startsWith(`row.promoPending(${away.window_start})`)).toBe(true)
+    // 灰显不等于少说信息：上游的时段与时区仍在悬停里。
+    expect(tip).toContain(`${away.window_start}–${away.window_end} (Asia/Shanghai)`)
+    await view.unmount()
+  })
+
+  it('「免费」徽标带悬停解释（上游只给一个布尔量，这句是插件写的）', async () => {
+    const view = await renderWith(modelOf({ creditMultiplier: 0, isFree: true }))
+    const tag = view.container.querySelector('.dsm-qoder-model-meta-tag')
+    expect(tag).not.toBeNull()
+    expect(tag!.textContent).toBe('row.modelFree')
+    // 上游对这个徽标没有 description / 时段 / 链接可引用，所以这里用的是插件
+    // 自己那条 key —— 断言它，而不是断言某句中文。
+    expect(tag!.getAttribute('title')).toBe('row.modelFreeHint')
     await view.unmount()
   })
 

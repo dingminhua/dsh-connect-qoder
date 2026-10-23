@@ -240,6 +240,16 @@ export const QODER_CARD_CSS = `
  * flex:none 是关键：模型名会省略号截断，徽标必须不被压缩。
  */
 .dsm-qoder-model-promo{flex:none;display:inline-flex;align-items:center;padding:0 7px;border-radius:999px;font-size:10px;line-height:16px;font-weight:600;white-space:nowrap;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(255,255,255,.08);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#5686fe) 16%,transparent);border:1px solid transparent;border-color:color-mix(in srgb,var(--dsw-alias-brand-primary,#5686fe) 40%,transparent)}
+/*
+ * 同一条活动规则，但**此刻不在窗口内**（promoDisplayAt 的 pending）。
+ *
+ * 灰显不是为了好看，是为了让「还没到点」和「正在打折」在同一行里一眼分得开：
+ * 两种状态挂着同一句上游文案（「错峰 4 折」），只靠颜色深浅区分会让人读成
+ * 「现在就在打折」。所以这里同时换三样东西——品牌色换成 tertiary 灰、底色退回
+ * 中性、描边改成虚线（虚线是形状差异，不依赖颜色，色觉障碍与高对比度主题下
+ * 仍然成立）。悬停里写明几点生效，那才是这个状态真正的信息。
+ */
+.dsm-qoder-model-promo-pending{color:var(--dsw-alias-label-tertiary,#9aa0a8);background:rgba(174,179,187,.10);border-style:dashed;border-color:rgba(174,179,187,.32)}
 .dsm-qoder-model-desc{margin:0;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-qoder-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
 .dsm-qoder-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}

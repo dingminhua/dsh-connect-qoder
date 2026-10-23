@@ -69,7 +69,7 @@ import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
 import { QODER_CARD_CSS } from './styles.ts'
 import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
-import { promoLiveAt } from '../promo.ts'
+import { promoDisplayAt } from '../promo.ts'
 import { promoBadgeLabel, promoBadgeTooltip, hostLanguage } from './promo-badge.ts'
 import type { Translate } from './locales.ts'
 
@@ -828,17 +828,31 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                           : null}
                       </span>
                       {/* 活动徽标放在**名字外面**（同一行、名字之后）：模型名是
-                          省略号截断的，塞进去会被一起裁掉。文案是上游自己的话，
-                          只在「此刻落在上游的窗口内」（没有窗口时才看 active）时画一枚。 */}
+                          省略号截断的，塞进去会被一起裁掉。文案是上游自己的话。
+                          两种姿态：此刻在窗口内画实心；声明了窗口但还没到点画灰的，
+                          悬停里写明几点生效——白天只画实心的话，用户看不出晚上有折扣
+                          （2026-10-23 实拍：14:5x 的 Qwen3.8-Max 行上什么都没有）。 */}
                       {(() => {
                         const promo = model.promotion
-                        if (!promoLiveAt(promo, promoNow)) return null
+                        const display = promoDisplayAt(promo, promoNow)
+                        // `display === 'none'` 已经涵盖「没有规则」，但 `promoDisplayAt`
+                        // 不是类型谓词（它有三种结论），这里得再窄一次给后面的函数用。
+                        if (promo === undefined || display === 'none') return null
                         const label = promoBadgeLabel(promo, promoLanguage)
                         if (label === undefined) return null
+                        const pending = display === 'pending'
+                        const start = promo.window?.start
+                        // `pending` 只可能来自「有窗口且不在窗口内」，起点必然在；
+                        // 真的读不到就整枚不画，而不是画一句没有生效时间的灰胶囊。
+                        if (pending && start === undefined) return null
+                        const tip = promoBadgeTooltip(promo, promoLanguage)
+                        const title = pending
+                          ? [t('row.promoPending', { start }), tip].filter(part => part !== '').join(' · ')
+                          : tip
                         return (
                           <span
-                            className="dsm-qoder-model-promo"
-                            title={promoBadgeTooltip(promo, promoLanguage)}
+                            className={pending ? 'dsm-qoder-model-promo dsm-qoder-model-promo-pending' : 'dsm-qoder-model-promo'}
+                            title={title}
                             // 整行是包着复选框的 `<label>`，点胶囊会顺手把模型取消勾选。
                             // 胶囊只是提示，不该携带那个副作用。
                             onClick={(event) => { event.preventDefault(); event.stopPropagation() }}
@@ -898,7 +912,14 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                         （`auto` 也属于这一类，但它已经不在目录里了：它是路由而
                         不是模型，见 `native-modality.ts` 的 `ROUTER_MODEL_IDS`。） */}
                     {renderEffortPicker(model)}
-                    {model.isFree === true ? <span className="dsm-qoder-model-meta-tag">{t('row.modelFree')}</span> : null}
+                    {/* 「免费」不是活动徽标，是上游的 `is_free`（倍率 0）。它没有
+                        description / 时段 / 链接可引用，所以悬停那句话是插件写的
+                        解释（`row.modelFreeHint`）——徽标本身只有两个字，不说清
+                        「免费」是「不扣积分」还是「限时」，而这两种在这张卡片上
+                        都有（隔壁的错峰 4 折才是限时）。 */}
+                    {model.isFree === true
+                      ? <span className="dsm-qoder-model-meta-tag" title={t('row.modelFreeHint')}>{t('row.modelFree')}</span>
+                      : null}
                   </div>
                 </div>
 
