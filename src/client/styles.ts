@@ -318,6 +318,12 @@ export const QODER_CARD_CSS = `
    ——压到 8px 会让它离上线近、离下线远，反而更明显。 */
 .dsm-qoder-pool{display:flex;flex-direction:column;gap:12px;margin:0;padding:12px 0 4px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
 .dsm-qoder-pool-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+/* 「谁在服务」这一槽——池关着是选号下拉，池开着是「当前使用」芯片。
+   两者由同一条 margin-left:auto 推到右端，标题行不会在两种状态之间跳。
+   下拉此前住在下面设置区自己的一行里，于是同一个账号名在标题行、那一行、
+   成员表里各出现一次（workbuddy 94c339f 同规）。 */
+.dsm-qoder-pool-head-pick{margin-left:auto;display:flex;align-items:center;gap:8px;font-size:12px}
+.dsm-qoder-pool-head-pick-label{color:var(--dsw-alias-label-secondary,#c6c9d0);white-space:nowrap}
 /* 积分开关已搬进设置区顶部那两行（形状照 dsh-connect-trae），标题行不再有
    额外的壳——它当初存在只因「开关要和标题挤一行」。 */
 .dsm-qoder-pool-current-badge{margin-left:auto;padding:2px 10px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;font-weight:600;line-height:18px;white-space:nowrap}
@@ -325,11 +331,26 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-current-badge-off{background:rgba(120,120,128,.14);color:var(--dsw-alias-text-secondary,#6b6b70)}
 .dsm-qoder-pool-account-select{min-width:200px}
 .dsm-qoder-pool-title{margin:0;font-size:15px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
-.dsm-qoder-pool-badge{flex:none;padding:2px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.12);border:1px solid rgba(86,134,254,.32)}
-.dsm-qoder-pool-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px}
+/* 模式条：整页的总开关，紧跟标题。沿用 .dsm-qoder-pool-settings 的带边框
+   堆叠样式（组件测试把「启用账号池」定位为它里面的第一个复选框），另加一层
+   品牌色描边与浅底，让它读作「这一页其余部分由我定义」而不是又一张设置卡。
+   开关原先在**页面底部**，比它控制的一切低 400px。 */
+.dsm-qoder-pool-modebar{padding:12px 14px;gap:8px;border-color:rgba(86,134,254,.36);background:linear-gradient(180deg,rgba(86,134,254,.10),rgba(86,134,254,.02)),var(--dsw-alias-bg-layer-2,#24262c)}
+.dsm-qoder-pool-modebar-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.dsm-qoder-pool-modebar-label{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
+/* 模式用文字说出来：开关的位置是一个 20px 的形状要解码，这枚芯片直接说
+   现在是哪种模式，也就说清了下面那张表该怎么读。 */
+.dsm-qoder-pool-modebar-state{flex:none;padding:1px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.14);border:1px solid rgba(86,134,254,.3)}
+.dsm-qoder-pool-modebar .dsm-qoder-pool-dirty{margin-left:auto}
+.dsm-qoder-pool-modebar .dsm-qoder-pool-note{margin:0;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* 「有人在服务但不在池里」：一条左竖线标它是上一行的旁注，不是警告 */
+.dsm-qoder-pool-serving-note{padding-left:10px;border-left:2px solid rgba(86,134,254,.5);color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* 批量动作条：成员区内部一行，所以没有上边框——分隔线会把按钮和上一行
+   「已选 N / M」切开，而那两个数字正是这些按钮的作用范围。 */
+.dsm-qoder-pool-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
 .dsm-qoder-pool-actions-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.dsm-qoder-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#999)}
-.dsm-qoder-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999)}
+.dsm-qoder-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-qoder-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-warn{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-state-warn-primary,#f59e0b);background:rgba(245,158,11,.09);border:1px solid rgba(245,158,11,.3)}
 /* 空状态（这一区一个账号都没有）：不是警告，是引导 —— 用中性色，别让「还没添加」
    读起来像「出问题了」。 */
@@ -381,7 +402,6 @@ export const QODER_CARD_CSS = `
 /* 到点之后同样是主句、不缩进；绿色表示「此刻有事可做」，与「已签到」同色。 */
 .dsm-qoder-pool-checkin-due{color:var(--dsw-alias-state-success-primary,#22a06b)}
 .dsm-qoder-pool-unknown{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
-.dsm-qoder-pool-member{color:var(--dsw-alias-brand-primary,#5686fe)}
 /* 优先级名次。手动排序用品牌色实心底（这是用户自己定的，是「生效的顺序」）；
    自动排序用虚线灰框（不占位、不抢注意力，也不假装名次已经固定）。 */
 .dsm-qoder-pool-rank{flex:none;padding:0 6px;border-radius:9px;font-size:11px;line-height:17px;font-weight:600;color:var(--dsw-alias-brand-primary,#5686fe);background:color-mix(in srgb,var(--dsw-alias-brand-primary,#5686fe) 14%,transparent)}
@@ -392,11 +412,42 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-move-btn:disabled{opacity:.35;cursor:default}
 .dsm-qoder-pool-move-btn:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 .dsm-qoder-pool-not-member{color:var(--dsw-alias-label-dimmed,#9aa0a6)}
-.dsm-qoder-pool-settings-wrap{display:flex;flex-direction:column;gap:10px}
+/* 一道分节线，不只是间距：过这条线，页面从「池是什么」转到「改它的旋钮」。
+   没有这条线，标题就浮在表格下面，主题换了却没有任何标记（workbuddy 同规）。 */
+.dsm-qoder-pool-settings-wrap{display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:14px}
+/* 「更多设置」的副标题：比页面标题低一级，面板只有一个主标题而非两个一样响的。 */
+.dsm-qoder-pool-card-head{display:flex;align-items:center;gap:8px}
+.dsm-qoder-pool-card-title{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-dirty{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-qoder-pool-settings{display:flex;flex-direction:column;gap:1px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
-/* Add-PAT + export/import, hosted inside the pool settings block. */
-.dsm-qoder-pool-tools{display:flex;flex-direction:column;gap:2px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;padding:4px 10px}
+/* Add-PAT + export/import, above the 「更多设置」 heading. */
+/*
+ * 账号工具（添加 PAT / 导出 / 导入）：三颗按钮共用一行。
+ *
+ * 两条工具条各自是 <section class="dsm-qoder-bar">，这里用 display:contents 把它们
+ * 的壳塌陷掉——「添加 PAT」与「导出 / 导入」的按钮、状态行、对话框直接参与外层的
+ * 排列，于是三颗按钮落在同一行，右端对齐，间距由 gap 统一。
+ *
+ * 对话框用 flex-basis:100% 强制换行、独占一行：让它保持在按钮**下方展开**的原有
+ * 行为（不改成绝对定位的浮层——浮层要盖住下面的成员表，还得自己管阴影与遮挡）。
+ *
+ * 备注：display:contents 会让 <section> 的名字在某些浏览器里从无障碍树消失，
+ * 所以两个 .dsm-qoder-bar-actions 各自带 role="group" + aria-label（组件里）。
+ */
+.dsm-qoder-pool-tools{display:flex;flex-wrap:wrap;align-items:center;justify-content:flex-end;gap:8px;border:1px dashed var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;padding:6px 10px}
+.dsm-qoder-pool-tools > .dsm-qoder-bar{display:contents}
+/*
+ * 两处必须覆盖，都是「塌陷成一行」之后才出现的：
+ *
+ * 1. 两组按钮各自带 margin-left:auto，在外层会**平分**剩余空间——实测第一颗
+ *    停在行的中间、第二组贴着右端，中间空出一大截。右对齐交给容器的
+ *    justify-content 统一负责，这里归零。
+ * 2. DOM 顺序里「添加 PAT」的对话框夹在两组按钮中间。对话框一换行，跟在它后面
+ *    的「导出 / 导入」就被挤到下一行（实测两颗按钮整行消失）。用 order 把对话框
+ *    排到所有按钮之后。
+ */
+.dsm-qoder-pool-tools .dsm-qoder-bar-actions{margin-left:0}
+.dsm-qoder-pool-tools .dsm-qoder-transfer-dialog{order:2;flex:1 1 100%;margin:0}
 .dsm-qoder-pool-set{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31)}
 .dsm-qoder-pool-set:first-child{border-top:0}
 .dsm-qoder-pool-set-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
@@ -406,7 +457,10 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-num{width:74px;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:13px;text-align:center;font-variant-numeric:tabular-nums}
 .dsm-qoder-pool-select{max-width:260px;padding:6px 10px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e6e6e6);font:inherit;font-size:13px;cursor:pointer}
 .dsm-qoder-pool-select:disabled,.dsm-qoder-pool-num:disabled{opacity:.5;cursor:default}
-.dsm-qoder-pool-save-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px}
+/* 提交行：面板在屏期间钉在视口底部。面板比一屏还高，而让任何编辑真正生效的
+   两颗按钮原本在它最底部——用户改完的那一刻正好在视口之外，截图里干脆看不见。
+   背景必须不透明：内容会从它下面滚过去。（workbuddy 94c339f 同规。） */
+.dsm-qoder-pool-save-bar{display:flex;align-items:center;justify-content:space-between;gap:12px;border-top:1px solid var(--dsw-alias-border-l2,#36373b);padding-top:12px;position:sticky;bottom:0;z-index:2;padding-bottom:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33)}
 /* 与模型保存行同规：flex-wrap 去掉、按钮组 flex:none 去掉——两行是同一个
    组件族的同一种「保存行」，一行会换行、另一行不会，看起来就是两套样式
    （用户实拍：「这里的样式不统一」）。左端的仓库链接靠 usage-cheer 自带的
@@ -431,7 +485,11 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-log-info{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-log-empty{padding:14px;font-size:12px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-pool-row-actions{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex:none}
-.dsm-qoder-pool-row-actions .dsm-qoder-pool-small-btn{padding:2px 10px;font-size:12px}
+/* 操作列只有 .8fr（约 88px 内容宽），两颗按钮必须**不换行**：中文可以在任意
+   两字之间断行，于是「测试」「删除」会被压成竖排的两个字（桌面宽度下实测）。
+   nowrap + 略收窄的左右 padding，比给这一列加宽更划算——加宽要从「账号」列
+   拿空间，而账号名那一列本来就挤（名次、箭头、徽章都在里面）。 */
+.dsm-qoder-pool-row-actions .dsm-qoder-pool-small-btn{padding:2px 7px;font-size:12px;white-space:nowrap;flex:none}
 /* 「删除」在静止态刻意保持中性（outline）：它和「测试」并排，一个中性一个危险，
    每次看都要重新判断哪个会丢数据。危险色留给按下去之后那条确认条里的按钮——
    也就是用户已经明确表达「我要删」的那一刻。 */
@@ -455,17 +513,12 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool .sw input:disabled{cursor:default}
 /* Account action bars: Add-PAT and export/import. */
 .dsm-qoder-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:8px 0;padding:0}
-.dsm-qoder-bar-label{flex:none;margin:0;font-size:12px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-bar-status{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-primary,#e8e9ed);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /*
- * 「PAT 从哪来」的就地说明（「添加 PAT」标签与按钮之间）。
- *
- * flex:1 1 auto + min-width:0 让它吃掉标签与按钮之间的余量并参与换行：
- * 窄卡片上整行会折到按钮上方，而不是把按钮挤出可视区（.dsm-qoder-bar
- * 本身是 flex-wrap:wrap）。次级色，不与标签抢注意力。
+ * 「PAT 从哪来」的那一句搬进对话框后，这条 bar 上只剩按钮与（偶发的）状态行；
+ * 原来那条「.dsm-qoder-bar-hint」（常驻在标签与按钮之间）已无渲染者，随之删除。
+ * 按钮靠 margin-left:auto 仍然贴右端。
  */
-.dsm-qoder-bar-hint{flex:1 1 auto;min-width:0;margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#9aa0a8)}
-.dsm-qoder-bar-hint{color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-bar-actions{display:flex;gap:8px;flex:none;margin-left:auto}
 .dsm-qoder-bar a{color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
 .dsm-qoder-bar a:hover{text-decoration:underline}
@@ -492,9 +545,16 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-addpat-name{width:100%;box-sizing:border-box;padding:6px 10px;margin-bottom:8px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:8px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-primary,#e8e9ed);font:inherit;font-size:12px}
 .dsm-qoder-addpat-name:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
 /* 弹窗里的「如何创建 PAT？」入口：小字、品牌色、不抢主按钮的注意力。 */
-.dsm-qoder-addpat-doc{margin:0 0 8px}
+/* 「PAT 从哪来」的文字路径 + 文档外链合成一块：左侧一道细竖线表示「参考信息」，
+   与上面两个待填的输入框区分开。块内段落必须按「对话框 > 块 > 段落」的完整路径
+   覆盖边距——「.dsm-qoder-transfer-dialog p」给了 8px 下边距，不覆盖的话两行会散开
+   成两块。 */
+.dsm-qoder-transfer-dialog .dsm-qoder-addpat-origin{display:flex;flex-direction:column;gap:2px;margin:0 0 10px;padding-left:9px;border-left:2px solid var(--dsw-alias-border-l2,#3a3d45)}
+.dsm-qoder-transfer-dialog .dsm-qoder-addpat-origin p{margin:0;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-addpat-doc a{color:var(--dsw-alias-brand-primary,#5686fe);font-size:12px;line-height:18px;text-decoration:none}
 .dsm-qoder-addpat-doc a:hover{text-decoration:underline}
+/* 「按下添加之后会发生什么」——紧贴按钮行上方，弱一档，不与主按钮抢注意力。 */
+.dsm-qoder-transfer-dialog p.dsm-qoder-addpat-verify{margin:0 0 8px;font-size:12px;line-height:18px;color:var(--dsw-alias-label-tertiary,#9aa0a8)}
 /* The shared busy veil: a fixed overlay for operations whose result only shows
    up after the list re-read (remove / import / add). It is NOT a modal: no
    control, no dismissal — only "this is running" and "here is why nothing

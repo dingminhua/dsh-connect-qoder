@@ -534,7 +534,13 @@ describe('QoderCard render', () => {
         expect(container.querySelector('.dsm-qoder-pool-tools')).not.toBeNull()
         expect(container.textContent).toContain('row.addAccountStart')
         // 导出 / 导入同一处，也不能一起消失。
-        expect(container.textContent).toContain('row.transferTitle')
+        // 按 **aria-label** 断言：账号工具条不再自己念一遍标题（workbuddy
+        // 94c339f）——「导出 / 导入账号」压在「导出」「导入」两个同名按钮上，
+        // 只是把按钮重说一次。名字保留在 <section> 的 aria-label 里，属性不进
+        // textContent，所以这里必须换靶子，否则删掉标题后断言会悄悄变绿。
+        expect(container.querySelector('.dsm-qoder-pool-tools [aria-label="row.transferTitle"]')).not.toBeNull()
+        // 而且那条标题**不在屏幕上**：两个工具条都不再自己念一遍名字。
+        expect(container.querySelectorAll('.dsm-qoder-bar-label').length).toBe(0)
       } finally {
         await unmount()
       }
@@ -621,7 +627,8 @@ describe('cn / global 两个 tab 的渲染对等', () => {
     checkinButton: (host.textContent ?? '').includes('row.poolCheckinAll'),
     testButton: (host.textContent ?? '').includes('row.poolTestAll'),
     addPat: (host.textContent ?? '').includes('row.addAccountStart'),
-    transfer: (host.textContent ?? '').includes('row.transferTitle'),
+    // 导出/导入的标题只存在于 aria-label（见上一条的说明）。
+    transfer: host.querySelector('.dsm-qoder-pool-tools [aria-label="row.transferTitle"]') !== null,
     checkinColumn: (host.textContent ?? '').includes('row.poolColumnCheckin'),
   })
 
@@ -971,6 +978,36 @@ describe('积分读数席位控件', () => {
       // 仍在 DOM 里（选项本身不该消失），但不可操作。
       expect(select).not.toBeNull()
       expect(select!.disabled).toBe(true)
+    } finally {
+      await unmount()
+    }
+  })
+})
+
+/**
+ * 账号工具区：两条动作条并成一行。
+ *
+ * 这里钉 DOM 事实（两条 bar 仍是兄弟、三颗按钮的归属与无障碍名），排版本身由
+ * 样式规则保证，见 pool-architecture 里那三条正则。
+ */
+describe('账号工具区：添加 PAT 与导出 / 导入共用一行', () => {
+  it('两条工具条是同一容器下的兄弟，名字挂在各自的按钮组上', async () => {
+    const { container, unmount } = await mountCard()
+    try {
+      const tools = container.querySelector('.dsm-qoder-pool-tools')
+      expect(tools).not.toBeNull()
+      // 壳仍留在 DOM 里（display:contents 只塌陷布局），两条工具条是兄弟节点。
+      const bars = Array.from(tools!.children).filter(el => el.classList.contains('dsm-qoder-bar'))
+      expect(bars.length).toBe(2)
+
+      const groups = Array.from(tools!.querySelectorAll('.dsm-qoder-bar-actions'))
+      // 名字改挂在按钮组上：壳塌陷后 <section> 的名字在部分浏览器里会从无障碍树消失。
+      expect(groups.map(group => group.getAttribute('role'))).toEqual(['group', 'group'])
+      expect(groups.map(group => group.getAttribute('aria-label')))
+        .toEqual(['row.addAccountStart', 'row.transferTitle'])
+      // 三颗按钮，DOM 顺序即视觉顺序（添加 PAT 在最左，导出、导入依次向右）。
+      expect(groups.flatMap(group => Array.from(group.querySelectorAll('button')).map(b => b.textContent)))
+        .toEqual(['row.addAccountStart', 'row.transferExport', 'row.transferImport'])
     } finally {
       await unmount()
     }

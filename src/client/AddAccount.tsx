@@ -112,21 +112,25 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
       : ''
 
   return (
+    // 标题**不再念一遍**（workbuddy 94c339f）：这颗按钮就叫「添加账号」，
+    // 同名的标题只是用更小的字号把按钮重说一次，还多占一行。
+    // 名字仍留在 <section> 的 aria-label 里，屏幕阅读器照样听得到。
     <section className="dsm-qoder-bar" aria-label={t('row.addAccountStart')}>
-        <p className="dsm-qoder-bar-label">{t('row.addAccountStart')}</p>
-        {/* 「PAT 从哪来」的就地说明：用户看到这个入口的瞬间最想知道的就是它，
-            所以写在入口这一行，而不是只留在对话框里的文档链接。
-            域名逐区域不同（国内 qoder.com.cn / 国际 qoder.com），由 region 决定。 */}
-        <p className="dsm-qoder-bar-hint">
-          {t('row.addAccountPatHint', { domain: QODER_CONSOLE_DOMAIN[region] })}
-        </p>
+        {/* 「PAT 从哪来」的路径说明**不再常驻这一行**，它搬进了对话框（见下方
+            `addpat-origin`）。常驻的代价是：这条 bar 只剩一颗按钮，却要为一句
+            只有「准备粘贴」时才读的话常年占一行；而对话框里本来就有一句同话题的
+            「如何创建 PAT?」外链——同一件事分居两处，读起来像两件事。 */}
+
         {/* 状态行只在有状态时出现（workbuddy 的 bar-status 同规）。此前这里常驻
             一行「本区域生效的账号，从设置中的 PAT……」——那讲的是账号行的话题，
             不是「添加 PAT」，常驻还把这一行撑成三行高。 */}
         {finishText === '' ? null : (
           <p className={`dsm-qoder-bar-status ${phase.kind === 'done' ? 'dsm-qoder-bar-ok' : 'dsm-qoder-bar-error'}`}>{finishText}</p>
         )}
-        <div className="dsm-qoder-bar-actions">
+        {/* 名字落在这个按钮组上而不是外层 <section> 上：工具区用
+            display:contents 把两条 bar 的壳塌陷成一行，<section> 的名字在部分
+            浏览器里会随之从无障碍树消失。group 保住了「这一组是添加 PAT」。 */}
+        <div className="dsm-qoder-bar-actions" role="group" aria-label={t('row.addAccountStart')}>
           <button type="button" className="dsm-btn dsm-btn-outline" onClick={() => { setPat(''); setName(''); setTouched(false); setPhase({ kind: 'idle' }); setDialogOpen(true) }}>
             {t('row.addAccountStart')}
           </button>
@@ -151,12 +155,19 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
             value={name}
             onChange={(event) => { setName(event.target.value) }}
           />
-          <p>{t('row.addAccountTouchedOnce')}</p>
-          {/* PAT 指南入口放在这里而不是页脚：用户正在找「PAT 从哪来」的时刻，
-              正是这一行有用的时刻。页脚那条常驻提示已按用户要求删除。 */}
-          <p className="dsm-qoder-addpat-doc">
-            <a href={QODER_PAT_DOC_URL} target="_blank" rel="noopener noreferrer">{t('row.docsHint')}</a>
-          </p>
+          {/* 「PAT 从哪来」的答案写成一块：文字路径 + 详细文档外链。两者回答的是
+              同一个问题（去哪拿 token），分开摆就成了「一句话在这里、外链在那
+              里」，读者要各读一半。域名逐区域不同（国内 qoder.com.cn / 国际
+              qoder.com），由 region 决定。 */}
+          <div className="dsm-qoder-addpat-origin">
+            <p>{t('row.addAccountPatHint', { domain: QODER_CONSOLE_DOMAIN[region] })}</p>
+            <p className="dsm-qoder-addpat-doc">
+              <a href={QODER_PAT_DOC_URL} target="_blank" rel="noopener noreferrer">{t('row.docsHint')}</a>
+            </p>
+          </div>
+          {/* 「按下去之后会发生什么」紧贴主按钮：这句描述的就是那次点击的后果，
+              放在输入框下方会读成「对输入的要求」。 */}
+          <p className="dsm-qoder-addpat-verify">{t('row.addAccountTouchedOnce')}</p>
           <div className="dsm-qoder-transfer-dialog-actions">
             <button type="button" className="dsm-btn dsm-btn-outline" onClick={closeDialog}>{t('row.addAccountDialogClose')}</button>
             <button

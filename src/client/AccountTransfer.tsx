@@ -172,13 +172,15 @@ export function AccountTransfer({ t, region, accounts, onChanged }: AccountTrans
   }
 
   return (
+    // 标题已去掉（workbuddy 94c339f）：「导出」「导入」这两个按钮自己就说清了
+    // 这一行做什么，而「导出 / 导入账号」压在上面对着同两个词。名字保留在
+    // <section> 的 aria-label 上。
     <section className="dsm-qoder-bar" aria-label={t('row.transferTitle')}>
       <BusyOverlay
         message={phase.kind === 'refreshing' || phase.kind === 'importing' ? t('row.transferImporting') : t('row.transferExporting')}
         hint={t('row.veilHintList')}
         visible={phase.kind === 'importing' || phase.kind === 'refreshing'}
       />
-      <p className="dsm-qoder-bar-label">{t('row.transferTitle')}</p>
       {/* 状态行只在有结果时出现（workbuddy 同规）：常驻的「导出为 JSON 文件……」
           把这一行撑成三行高，而它讲的是弹窗里的操作，应当在弹窗里说。 */}
       {phase.kind === 'done'
@@ -186,7 +188,9 @@ export function AccountTransfer({ t, region, accounts, onChanged }: AccountTrans
         : phase.kind === 'error'
           ? <p className="dsm-qoder-bar-status dsm-qoder-bar-error">{phase.message}</p>
           : null}
-      <div className="dsm-qoder-bar-actions">
+      {/* 名字落在这个按钮组上：工具区用 display:contents 把两条 bar 塌陷成一行，
+          <section> 的名字在部分浏览器里会随之从无障碍树消失。 */}
+      <div className="dsm-qoder-bar-actions" role="group" aria-label={t('row.transferTitle')}>
         <button type="button" className="dsm-btn dsm-btn-outline" disabled={accounts.length === 0} onClick={() => { closeDialog(); setDialog('export'); setPhase({ kind: 'idle' }) }}>
           {t('row.transferExport')}
         </button>
