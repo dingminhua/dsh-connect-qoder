@@ -435,11 +435,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
       })
-      const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+      let bodyUnreadable = false
+      const raw = await response.json().catch(() => { bodyUnreadable = true; return {} }) as Record<string, unknown>
       if (!response.ok) {
         const reason = typeof raw['reason'] === 'string' ? raw['reason'] : undefined
         const error = typeof raw['error'] === 'string' ? raw['error'] : undefined
-        throw new Error(poolFailureText(t, { status: response.status, reason, error }))
+        throw new Error(poolFailureText(t, { status: response.status, reason, error, bodyUnreadable }))
       }
       if (raw['action'] === 'checkin' && Array.isArray(raw['rows'])) {
         const rows = (raw['rows'] as unknown[]).map(parseCheckinRow).filter(row => row !== undefined)
@@ -592,11 +593,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
       })
-      const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+      let bodyUnreadable = false
+      const raw = await response.json().catch(() => { bodyUnreadable = true; return {} }) as Record<string, unknown>
       if (!response.ok) {
         const reason = typeof raw['reason'] === 'string' ? raw['reason'] : undefined
         const error = typeof raw['error'] === 'string' ? raw['error'] : undefined
-        throw new Error(poolFailureText(t, { status: response.status, reason, error }))
+        throw new Error(poolFailureText(t, { status: response.status, reason, error, bodyUnreadable }))
       }
       if (raw['action'] === 'test' && Array.isArray(raw['rows'])) {
         const rows = (raw['rows'] as unknown[]).map(parseTestRow).filter(row => row !== undefined)
@@ -683,11 +685,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'same-origin',
       })
-      const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+      let bodyUnreadable = false
+      const raw = await response.json().catch(() => { bodyUnreadable = true; return {} }) as Record<string, unknown>
       if (!response.ok) {
         const reason = typeof raw['reason'] === 'string' ? raw['reason'] : undefined
         const error = typeof raw['error'] === 'string' ? raw['error'] : undefined
-        throw new Error(poolFailureText(t, { status: response.status, reason, error }))
+        throw new Error(poolFailureText(t, { status: response.status, reason, error, bodyUnreadable }))
       }
       const accountName = pool?.accounts.find(a => a.accountId === accountId)?.accountName ?? t('row.accountUnnamed')
       appendLog({ atMs: Date.now(), text: t('row.poolRowRemoved', { accountName }), tone: 'ok' })
