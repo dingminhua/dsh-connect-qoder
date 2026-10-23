@@ -202,6 +202,8 @@ parsed models: 11   carrying a rule: 2
 | `src/web-status.ts` `webModelOf` | 投影时原样带出（对象展开，运行期无需改） |
 | `src/client/promo-badge.ts` `hostLanguage` / `promoBadgeLabel` / `promoBadgeTooltip` | 选中文/英文文案、拼悬停 |
 | `src/client/QoderCard.tsx` `renderModels` | 模型行渲染（名旁一枚胶囊） |
+| `src/client/QoderModelLabel.tsx` `createQoderModelLabel` | 选择器里的同一枚胶囊（issue #12；工厂按 fiber 捕获槽位表，非本插件 provider 委托回账本下一位） |
+| `src/client/index.tsx` `registerModelLabel` | `conversation.input.model.label` 注册（`priority: -1` 抢在 workbuddy 的默认 0 之前，single 槽同优先级会抛） |
 | `src/client/styles.ts` `.dsm-qoder-model-promo` | 胶囊样式 |
 | `scripts/probe-promo.mjs` | 真机只读探针（解析 + 判定 + 时钟平移） |
 
@@ -221,4 +223,12 @@ parsed models: 11   carrying a rule: 2
 - **到点变化最多慢一拍**：卡片靠 60 秒轮询（`POLL_INTERVAL_MS`）触发重渲染，判定也在
   那次渲染里重算，所以 22:00 开启、08:00 结束最迟各差一分钟。不另加定时器：为一个
   提示性胶囊多挂一个每秒的计时器不值得。
+- **选择器里的数据可能比卡片旧至多一分钟**：标签组件读 `detail=fast` 文档（不触发
+  上游重读，只答本地已有状态），行数据按区域共享缓存 60 秒；窗口边界的翻面靠
+  共享分钟时器重读时钟，不依赖新数据到达。徽标本身仍是渲染时刻现算（与卡片同规）。
+- **single 槽的跨插件耦合**：`conversation.input.model.label` 只渲染第一条注册。
+  本插件以 `priority: -1` 抢位后必须把非本插件的 provider **委托**回账本里的下一位
+  （workbuddy 的标签），否则对方的倍率后缀与忙闲图标会一起消失。若对方将来也开始
+  委托，理论上存在互委托环 —— 宿主的错误边界会把抛错的 entry 一次性弃权（下一帧
+  换幸存者渲染），不会死循环；当前生态（workbuddy、1017 参考实现）都是终点型组件。
 - **不 bump 版本、不改 `CHANGELOG.md`**：按 `RELEASING.md` §4，那是发版时维护者的动作。
