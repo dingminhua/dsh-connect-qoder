@@ -2,6 +2,87 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.7.3 (2026-10-23)
+
+> 版本号取 **patch**：纯客户端健壮性修复（PR #7，移植自同族 `dsh-connect-workbuddy`）。对外
+> API、配置键、落盘格式、请求形状、CLI 与 peer 宿主范围全都不动 —— 改的四个文件都在
+> `src/client/` 与 `src/status-paths.ts` 的浏览器半边；新增的
+> `QODER_SETTINGS_NAMESPACE_CANDIDATES` 是**新增导出**，既有常量与函数签名一律不变。
+
+### Fixed
+
+- **设置卡片整页空白、且没有任何报错（移植自 workbuddy #46/#55，PR #7）。** 宿主的 settings
+  镜像由异步 `remote.settings.describe()` 填充，`apply` 时刻通常还是空的。旧实现把这份空当成
+  「声明名一定对」，绑了 `forms.get(声明名)` 之后**不再回看**；而宿主按命名空间**精确**匹配，
+  于是这个猜错的 form 永远 `unavailable` —— 用户看得见卡片、却存不了任何设置，且控制台干净。
+
+  - 改为订阅宿主的 `whileServed`（mirror 订阅 + 即时同步）：命名空间真正到货才绑定，并**重建
+    全部槽位注册**。重建不是可选动作 —— 渲染器按 entry **身份**缓存 inject 结果
+    （`dsh-client-ui-renderer` 的 `rootInjectCache`），早于镜像落地的那批注册永远不会被重新
+    求值，留着它就等于一直发旧 props。顺序也不能反：先 dispose 再注册，否则同 key 同优先级的
+    keyed 槽位会撞「already has an entry」。
+  - **边缘不触发也无条件先注册一次**：`whileServed` 只在 unserved→served 的**边缘**触发
+    register。镜像首答不含本命名空间时（拼写没预料到、settings 面答得晚或直接失败、部署根本没
+    挂可配置项）边缘永不触发，卡片就永远不注册 —— 那正是 workbuddy #55 的空白页。卡片**没有**
+    form 也有用（它从宿主自己的 status 路由读状态、按只读渲染），所以注册不能以「拿到 settings
+    命名空间」为前提。
+  - 宿主那条线没有 `whileServed` 时回退成「问一次镜像 + 绑上 + 注册一次」，代价是镜像晚到时
+    绑错且不回看 —— 没有订阅机制可用时，这仍好过永远不注册。
+- **两个 composer 读数槽的 disposer 从不被追踪（PR #7 移植时走样，审查中修掉）。**
+  `registerComposerCredits` / `registerStatsCredits` 的返回类型已经写成
+  `(() => void) | undefined`，函数体里 `ctx.slots.inject(...)` 前面却漏了 `return`（上游两处
+  都有）。于是 `registerAllSlots()` 只收到卡片那两条，实测日志是 `registered 2 slots` 而非 4：
+
+  - 插件 fiber 拆除时这两个槽**不被 dispose**（泄漏）；
+  - 每次重绑都撞宿主「already has an entry」，而那个错误被每槽自己的 try/catch 降级成一行
+    `console.error` ⇒ composer 读数**永远停在第一代闭包**里，`settingsScope` 换绑了它也看不见。
+  - 宿主对 keyed 与 list 槽位的重复注册**都**抛错（`ui-slots/src/index.ts`），所以这不是
+    「注册两次无所谓」的场景。
+- **批量接口 405 的误导文案（移植自 workbuddy #86，PR #7）。** 旧文案「请确认插件是最新版本」
+  在**宿主路由未注册**（宿主进程还在跑更旧的构建）时把用户引向一条走不通的路 —— 插件其实已经
+  是最新的，该做的是重启 DSH。每条池路由的 handler 都以 JSON 作答（含自身的 405
+  `{error:'method not allowed'}`），所以「**405 且响应体不可解析**」是宿主在为一个从未注册的
+  路由作答的指纹 ⇒ 新增 `row.poolErrRouteMissing`，提示重启应用并**明确否定**「重装或升级
+  插件」。以 JSON 作答的 405 仍是「方法不对」；别的状态没有 body 也照旧措辞（客户端在这里只发
+  POST，未注册的路径只可能回 405）。
+- **命名空间候选表只有一种拼写 ⇒ 回调里的兜底成了死代码（审查中修掉）。** `whileServed` 只在
+  **被监视的**命名空间到货时触发边缘。只监视 `dsh-connect-qoder` 的话，宿主若以
+  `include:dsh-connect-qoder` 挂载（同族 workbuddy 记着实测 Desktop 宿主就是这么挂的），边缘
+  永不触发，回调里那条 `/qoder/i` 扫描根本没机会跑，卡片永远停在只读降级 —— 与 #46 同一个
+  症状、另一条成因。新增 `QODER_SETTINGS_NAMESPACE_CANDIDATES`（裸 entry id → `include:`
+  前缀 → 声明名），与上游同构；`forms` 同时补上 `whileServed` 的静态类型，两处黑盒 `as` 断言
+  随之删掉（`tsc` 现在管得住这段，之前它是 `unknown`）。
+
+### Tests
+
+- `tests/settings-rebind.spec.tsx` 新增 9 条，**直接 import 真实 `apply()`**。上游那边导入真实
+  入口会拉进浏览器专属的宿主包，只能测手抄的 apply 镜像（`issue46` / `issue55` /
+  `client-fallback` 三个文件都带 DRIFT WARNING，随产品漂移就会静默失效）；qoder 侧实测可以直接
+  import（jsdom，511ms 解析完成），所以断言的是**产品代码本身**。覆盖：`include:` 挂载下绑对
+  命名空间、宿主不服务本命名空间时 `settingsScope` 必须是 `undefined`（只读降级，不是猜出来的
+  form）、边缘不触发也要注册、真正的 served→unserved→served 重绑四条全换新、重绑过程零
+  `console.error`、旧宿主回退、无 settings 面回退、单槽注册失败不拖垮其余。
+- `tests/pool-failure-text.spec.ts` 新增 8 条：405 分诊、别的状态不劫持、结构化 `reason` 优先、
+  上游 `error` 原文优先，并用**真实 locale 表**钉住文案层（必须含「重启」、必须明确否定「重装
+  或升级」）—— 沿用 `tests/locales.spec.ts` 的既有纪律：key-preserving 的假翻译器只能钉住
+  「用了哪个 key」，永远说不出「这句话是不是在误导用户」。
+- **六个变异逐个跑过**（基线 9/9 与 8/8）：加回早期猜测绑定 ⇒ 1 条红；去掉两个 composer 的
+  `return` ⇒ 2 条红；候选表缩回单一拼写 ⇒ 3 条红；`rebindSlots` 先注册后 dispose ⇒ 4 条红；
+  去掉 `status === 405` 限定 ⇒ 1 条红；去掉 `bodyUnreadable` 判据 ⇒ 1 条红。
+
+### Notes
+
+- **明确未搬**（逐条核过，都不是遗漏）：`ghostMembers` / `allMembersBlockedByModel`（qoder 的
+  `excludedBy` 无 `model-busy`，池成员是本地 PAT vault、不会「本地消失」，硬搬是死代码）；
+  排序箭头跟随草稿开关（`AccountPool.tsx` **刻意**用已保存的 `enabled`，不是漏改）；workbuddy
+  特有业务（CLI 胶囊 / 企业真名 / busy 图标 / 生图 opt-in / 测速 / 4-tab 重组）—— qoder 无对应
+  入口，或与双区域 tab 的核心设计冲突。
+- `AccountPool.tsx` 的 progress 轮询分支未接 `bodyUnreadable` 也是对的：它 `!response.ok` 就
+  `return`、不抛错，接进去没有消费者。
+- 溯源：三处修复均移植自 `dingminhua/dsh-connect-workbuddy`（MIT，Copyright (c) 2026 LaoDing，
+  同族同作者），`THIRD_PARTY_NOTICES.md` 与双语 README 的致谢章节已覆盖该项目，本轮无新增
+  第三方来源。
+
 ## 1.7.2 (2026-10-23)
 
 > 版本号取 **patch**：修一处失败分类的读码缺陷（issue #6）。对外 API、配置键、落盘格式、
