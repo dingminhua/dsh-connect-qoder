@@ -1428,3 +1428,27 @@ export function poolPreferencesOf(value: unknown, region: QoderWebRegion): {
  * profile patch (`cordis.patch.yml`), so the declared id mirrors it.
  */
 export const QODER_SETTINGS_NS = 'dsh-connect-qoder' as const
+
+/**
+ * Every namespace spelling the browser half follows when looking for the
+ * settings form the host actually serves, in preference order.
+ *
+ * `describe()` keys a form by its Loader ENTRY ID, and the profile patch picks
+ * that id — so the plugin must ASK rather than assume. The observed spellings
+ * are the bare entry id and the `include:`-wrapped id (the sibling workbuddy
+ * plugin records that the live Desktop host mounts it that way), with the
+ * declared name as the last resort.
+ *
+ * ⚠️ **这份表是 `whileServed` 的监视对象，不只是「匹配时的候选」**：宿主只在
+ * **被监视的命名空间之一**到货时才触发 register 边缘。少一种拼写 ⇒ 宿主若正好
+ * 用那种拼写挂载，边缘**永不触发**，于是回调里那条 `/qoder/i` 兜底成了死代码，
+ * 卡片永远停在只读降级上（用户看得见卡片、却存不了设置，且无任何报错）。
+ *
+ * Lives here, not in the host entry, because the browser half needs the same
+ * list and must not import node-only host code.
+ */
+export const QODER_SETTINGS_NAMESPACE_CANDIDATES: readonly string[] = [
+  QODER_SETTINGS_NS,
+  `include:${QODER_SETTINGS_NS}`,
+  'qoder',
+]
