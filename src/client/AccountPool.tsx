@@ -708,6 +708,74 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const targetMisses = pool?.targetModelSource === 'none' || pool?.targetModelSource === 'stale'
 
   /**
+   * 运行中的模式（`saved.enabled`），**不是**草稿（`active.enabled`）。
+   *
+   * 开关显示的是「你正要改成什么」，旁边那枚脏标记说的是「还没保存」；所以
+   * 模式芯片必须回答另一个问题——「池子此刻在做什么」。读草稿会让页面写着
+   * 「自动挑号」，而保存着的池其实还关着、下面的手动选号仍在生效，正是这一节
+   * 反复防的「显示 A、实际记 B」。
+   */
+  const poolRunning = saved.enabled
+  // 同名计数只依赖账号列表，整块算一次即可（每次 map 里重算就是 O(n²)）。
+  const accountCounts = nameCountsOf(pool?.accounts ?? [])
+  /**
+   * 「谁在服务」这一槽：池关着时是选号下拉，池开着时是「当前使用」芯片。
+   *
+   * 两者是同一个问题的两半，所以共用一个位置。此前下拉在设置区里独占一行，
+   * 于是同一个账号名在一屏上出现三次（标题芯片、那一行、成员表），读起来像
+   * 机器拼的而不是设计出来的。
+   *
+   * workbuddy 同构（94c339f）。qoder 的差异保留：下拉里有「自动」这个真实
+   * 第三态（设置 → 环境变量 → 保险库三级回退），不能照抄 workbuddy 那个没有
+   * 自动项的下拉。
+   */
+  const manualPicker = !poolRunning && onSelectAccount !== undefined && (pool?.accounts.length ?? 0) > 0
+    ? (
+      <label className="dsm-qoder-pool-head-pick">
+        <span className="dsm-qoder-pool-head-pick-label">{t('row.poolManualAccountLabel')}</span>
+        <select
+          className="dsm-qoder-pool-select dsm-qoder-pool-account-select"
+          value={currentAccountId ?? MANUAL_ACCOUNT_NONE}
+          disabled={!canEditPool}
+          aria-label={t('row.accountSelectAria')}
+          onChange={(e) => {
+            // 哨兵值只用于显示「没有账号在生效」，选中它不是一个动作。
+            if (e.target.value === MANUAL_ACCOUNT_NONE) return
+            onSelectAccount(e.target.value)
+          }}
+        >
+          {/* 「没有账号在生效」是真实状态（保存的 id 已失效、刷新失败）。
+              没有匹配项时受控 select 会静默显示第一项——那就是「看着正常，
+              但不是真正在跑的」那种混淆，正是这个控件要避免的。
+              哨兵用非空串而非 `''`：`''` 是「自动」这个**真实选项**的值，
+              两者共用会让 select 在无生效账号时显示成「自动」，等于宣称
+              用户选了自动。 */}
+          {currentAccountId === undefined
+            ? <option value={MANUAL_ACCOUNT_NONE} disabled>{t('row.poolManualAccountNone')}</option>
+            : null}
+          <option value="">{t('row.accountSelectAuto')}</option>
+          {(pool?.accounts ?? []).map(account => (
+            <option key={account.accountId} value={account.accountId}>
+              {poolAccountLabel(t, account, accountCounts)}
+            </option>
+          ))}
+        </select>
+      </label>
+    )
+    : null
+
+  /**
+   * 「在用」与「在池里」是正交的两件事。
+   *
+   * 同一行同时写「当前使用」和「未入池」会让人问「都在用了为什么不在池里」——
+   * 不是 bug，但解释必须存在，且只在这个状态需要它时出现。放在模式条下面
+   * 一行，不占成员表的地方。
+   */
+  const servingOutside = poolRunning
+    && currentAccount !== undefined
+    && !effective.includes(currentAccount.accountId)
+
+  /**
    * 本区域「下一窗什么时候开」的倒计时，来自上游活动行的 `endAt`。
    *
    * 区域级而不是账号级：活动窗对整个区域是同一批（所有成员领的是同一份每日
@@ -746,74 +814,79 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         {/* 积分开关**不在这里**：它已搬进设置区顶部那两行（形状照
             dsh-connect-trae 的「在输入框工具栏显示积分读数」）。标题行只剩
             标题与右端的状态芯片——一个是名字，一个是状态，各归各位。 */}
-        {/* 「当前使用」芯片：由宿主给出的 `current` 事实驱动（正在计费的那个
-            账号），不是从排序或列表位置猜出来的——否则卡片会宣称一次并未发生
-            的切换。靠 `margin-left:auto` 推到右端（workbuddy 同规）：这样开关
-            的文案长度随区域变化时，芯片的位置不会跟着左右晃。
+        {/* 「谁在服务」只有一处答案：池关着是选号下拉（名字由控件自己带着，
+            再挂一枚芯片就是同一件事写两遍），池开着是「当前使用」芯片。
+            workbuddy 同构（94c339f）。
             池里一个能用的都没有时，宿主把 `current` 全部置为 false 并给
             `servingUnavailable`——这时芯片改说「没有账号在服务」，而不是让
             它凭空消失：位置空了会让人以为卡片坏了。 */}
-        {currentAccount === undefined
-          ? pool?.servingUnavailable === true
-            ? (
+        {manualPicker !== null
+          ? manualPicker
+          : currentAccount === undefined
+            ? pool?.servingUnavailable === true
+              ? (
+                <span
+                  className="dsm-qoder-pool-current-badge dsm-qoder-pool-current-badge-off"
+                  title={t('row.poolCurrentHintUnavailable')}
+                >
+                  {t('row.poolCurrentHeaderUnavailable')}
+                </span>
+              )
+              : null
+            : (
               <span
-                className="dsm-qoder-pool-current-badge dsm-qoder-pool-current-badge-off"
-                title={t('row.poolCurrentHintUnavailable')}
+                className="dsm-qoder-pool-current-badge"
+                title={pool?.servingSource === 'failover'
+                  ? t('row.poolCurrentHintFailover')
+                  : t('row.poolCurrentHintSelected')}
               >
-                {t('row.poolCurrentHeaderUnavailable')}
+                {t(pool?.servingSource === 'failover' ? 'row.poolCurrentHeaderFailover' : 'row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
               </span>
-            )
-            : null
-          : (
-            <span
-              className="dsm-qoder-pool-current-badge"
-              title={pool?.servingSource === 'failover'
-                ? t('row.poolCurrentHintFailover')
-                : t('row.poolCurrentHintSelected')}
-            >
-              {t(pool?.servingSource === 'failover' ? 'row.poolCurrentHeaderFailover' : 'row.poolCurrentHeader', { account: currentAccount.accountName || currentAccount.accountId })}
-            </span>
-          )}
+            )}
       </div>
 
-      <div className="dsm-qoder-pool-actions">
-        <div className="dsm-qoder-pool-actions-group">
-          {/* 签到是这一行里唯一会**带来收益**的动作，所以用 primary 并且在最左
-              （workbuddy 同规：签到按钮在前、测试在后）。区域不支持签到时整个
-              按钮不渲染——空按钮会暗示「这里能签到，只是现在不行」。 */}
-          {pool?.checkinSupported !== true
-            ? null
-            : <button
-                type="button"
-                className="dsm-btn dsm-btn-primary"
-                disabled={!canEditPool || effective.length === 0 || batchBusy || rowTestBusy}
-                onClick={() => { void runCheckinBatch() }}
-              >
-                {batchAction === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll')}
-              </button>}
-          <button
-            type="button"
-            className="dsm-btn dsm-btn-outline"
-            disabled={!canEditPool || effective.length === 0 || batchBusy || rowTestBusy || targetMisses}
-            title={pool?.targetModelSource === 'none'
-              ? t('row.poolTargetNone')
-              : pool?.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined}
-            onClick={() => { void runTestBatch() }}
-          >
-            {batchAction === 'test' ? t('row.poolTesting') : t('row.poolTestAll')}
-          </button>
-          {/* 批量测试期间说明「正在逐个处理」并逐行落位进度：宿主每测完一个
-              账号就把那条测量写进快照，卡片在飞期间每 2.5 秒重读一次（见上方
-              那个 effect），所以这句话是真的——并不是「一次性等到最后」。
-              行内测试**不挂这句**：它只测一个账号，「正在逐个账号执行」在只跑
-              一行时是一句假话；行内自己的「测试中…」按钮就是那句轻提示。 */}
-          {batchAction === undefined ? null : <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span>}
+      {/* 模式条：整页的总开关，紧跟标题（workbuddy 同构，94c339f）。
+          「启用账号池」原在设置卡片里——在被它控制的一切**下方**约 400px，且
+          在每一列含义都随之变化的成员表之后（「未入池」只在池负责挑号时才
+          有意义）。这一页只有两种模式「插件挑」和「你挑」，选模式的那个控件
+          必须排在所有模式专属控件之前，而不是全排完之后。
+          它刻意沿用 `dsm-qoder-pool-settings` 这个类：那是设置分组的样式
+          （带边框的堆叠行），而组件测试把「启用账号池」定位为它里面的第一个
+          复选框——学会了「设置住在带边框的块里」的用户不必再学第二种形状。 */}
+      <div className="dsm-qoder-pool-settings dsm-qoder-pool-modebar">
+        <div className="dsm-qoder-pool-modebar-row">
+          <label className="sw">
+            <input
+              type="checkbox"
+              checked={active.enabled}
+              disabled={!canEditPool}
+              onChange={(e) => editDraft(prev => ({ ...prev, enabled: e.target.checked }))}
+            />
+            <span className="sw-track" />
+          </label>
+          <b className="dsm-qoder-pool-modebar-label">{t('row.poolEnabled')}</b>
+          {/* 运行中的模式，不是草稿：开关显示待提交的编辑、脏标记说它待提交，
+              这枚芯片才有空回答「此刻池子在做什么」。 */}
+          <span className="dsm-qoder-pool-modebar-state">
+            {poolRunning ? t('row.poolModeAuto') : t('row.poolModeManual')}
+          </span>
+          {/* 未保存状态贴着开关：开关是用户第一件能改脏的东西，而它原来挂在
+              设置卡片的标题上，也就是挂在它所警告的一切下面。 */}
+          {dirty ? <span className="dsm-qoder-pool-dirty">{t('row.poolDirty')}</span> : null}
         </div>
+        {/* 只留一句。同一段「开启后……关闭后……」原来在批量按钮下方和设置卡片
+            的开关下方各出现一次，读起来像开发注释漏到界面上，还把页面拉长了一截。 */}
+        <p className="dsm-qoder-pool-note">{t('row.poolEnabledHint')}</p>
       </div>
 
-      {/* 池开关关掉时说明它的语义：手动测试仍可用，只是不再自动选号。 */}
-      {pool?.enabled === false
-        ? h('p', { className: 'dsm-qoder-pool-note' }, t('row.poolEnabledHint'))
+      {/* 池开着，正在计费的那个号却不在成员名单里：不加解释就是一屏自相矛盾
+          （「当前使用」+「未入池」）。只在这个状态出现，一句话说清后果。 */}
+      {servingOutside
+        ? (
+          <p className="dsm-qoder-pool-note dsm-qoder-pool-serving-note">
+            {t('row.poolServingOutside', { account: currentAccount?.accountName || currentAccount?.accountId || '' })}
+          </p>
+        )
         : null}
       {/* 开着却没有可用成员时直说：失败会被直接报出来而不是被重试。
           但**一个账号都没有**时不能说这句 —— 那段文案在讲「成员要么限流、要么
@@ -843,6 +916,55 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             </span>
             <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={pool?.accounts.length === 0 || !canEditPool} onClick={() => selectAll(true)}>{t('row.poolSelectAll')}</button>
             <button type="button" className="dsm-btn dsm-btn-outline dsm-qoder-pool-small-btn" disabled={effective.length === 0 || !canEditPool} onClick={() => selectAll(false)}>{t('row.poolSelectNone')}</button>
+          </div>
+        </div>
+        {/* 批量动作条就放在这里——成员区标题之下、账号行之上（workbuddy
+            同构，94c339f）：条上每个按钮都只对**这个标题所声明的集合**做事，
+            一句「已选 N / M」与「全选/全不选」在上一行，被它们计数的复选框在
+            下一行。它原来站在整个成员块之上，读起来像一条页面级工具栏，而
+            「对哪些账号动作？」要整整一块之后才有控件回答。
+            没有上边框：它现在是成员块内部的一行，分隔线会把按钮和解释它们的
+            数字切开。 */}
+        <div className="dsm-qoder-pool-actions">
+          <div className="dsm-qoder-pool-actions-group">
+            {/* 签到是这一行里唯一会**带来收益**的动作，所以用 primary 并且在最左
+                （workbuddy 同规：签到按钮在前、测试在后）。区域不支持签到时整个
+                按钮不渲染——空按钮会暗示「这里能签到，只是现在不行」。 */}
+            {pool?.checkinSupported !== true
+              ? null
+              : <button
+                  type="button"
+                  className="dsm-btn dsm-btn-primary"
+                  disabled={!canEditPool || effective.length === 0 || batchBusy || rowTestBusy}
+                  onClick={() => { void runCheckinBatch() }}
+                >
+                  {batchAction === 'checkin' ? t('row.poolCheckingIn') : t('row.poolCheckinAll')}
+                </button>}
+            <button
+              type="button"
+              className="dsm-btn dsm-btn-outline"
+              disabled={!canEditPool || effective.length === 0 || batchBusy || rowTestBusy || targetMisses}
+              title={pool?.targetModelSource === 'none'
+                ? t('row.poolTargetNone')
+                : pool?.targetModelSource === 'stale' ? t('row.poolTargetStale', { model: pool.staleTargetModelId ?? '' }) : undefined}
+              onClick={() => { void runTestBatch() }}
+            >
+              {batchAction === 'test' ? t('row.poolTesting') : t('row.poolTestAll')}
+            </button>
+            {/* 批量测试期间说明「正在逐个处理」并逐行落位进度：宿主每测完一个
+                账号就把那条测量写进快照，卡片在飞期间每 2.5 秒重读一次（见上方
+                那个 effect），所以这句话是真的——并不是「一次性等到最后」。
+                行内测试**不挂这句**：它只测一个账号，「正在逐个账号执行」在只跑
+                一行时是一句假话；行内自己的「测试中…」按钮就是那句轻提示。 */}
+            {batchAction === undefined
+              ? null
+              : <span className="dsm-qoder-pool-hint">{t('row.poolBusyHint')}</span>}
+            {/* 两颗按钮为什么都不能点，就写在它们旁边。这句话原来是一块琥珀色
+                横幅挂在成员表下方——离它解释的按钮整整一屏，而且让页面上唯一
+                有颜色的东西成了一句话脚注，而不是一个错误。 */}
+            {batchAction === undefined && effective.length === 0
+              ? <span className="dsm-qoder-pool-hint">{t('row.poolNoneSelectedHint')}</span>
+              : null}
           </div>
         </div>
         {/* 签到列只在区域真的支持签到时出现——空列会暗示「这个状态存在，只是
@@ -944,11 +1066,14 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                           {t(pool?.servingSource === 'failover' ? 'row.poolCurrentBadgeFailover' : 'row.poolCurrentBadge')}
                         </span>
                       : null}
-                    {/* 成员资格每行写明：未勾选账号的空积分/探针列，否则与
-                        「勾了但还没数据」无法区分。 */}
-                    <span className={inPool ? 'dsm-qoder-pool-member' : 'dsm-qoder-pool-not-member'}>
-                      {inPool ? t('row.poolMember') : t('row.poolNotMember')}
-                    </span>
+                    {/* 成员资格只给**不在池里**的行写一句话（workbuddy 同构）：
+                        勾选框已勾上、行底色也已标出的行，再写一次「已在池中」
+                        是同一件事说第三遍，还让每个成员多占一行字。
+                        缺席的那一半才需要文字：空复选框配着空的积分/探针列，
+                        否则与「勾了但还没数据」分不开。 */}
+                    {inPool
+                      ? null
+                      : <span className="dsm-qoder-pool-not-member">{t('row.poolNotMember')}</span>}
                     {excluded === undefined
                       ? account.probe === undefined ? null : <span>{t('row.poolTestedAt', { at: formatProbeMoment(account.probe.atMs) })}</span>
                       : <span className="dsm-qoder-pool-excluded">{excluded}</span>}
@@ -1093,10 +1218,9 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         </div>
       </div>
 
-      {effective.length === 0
-        ? h('p', { className: 'dsm-qoder-pool-warn', role: 'status' },
-            `${t('row.poolNoneSelected')} ${t('row.poolNoneSelectedHint')}`)
-        : null}
+      {/* 空池的琥珀横幅**已删**：同一个事实就写在两颗被禁用的按钮旁边，
+          那才是用户撞上它的地方。300px 之下再来一份更响的副本，只会让页面
+          看起来在两处坏掉。（workbuddy 同构，94c339f。） */}
       {/* 幽灵成员没有提示行：上面那个 effect 静默收敛名单（用户实拍：
           「你应该直接就清理掉，而不是再给我这么一个提示」）。 */}
       {dirty && !sameIds(active.memberAccountIds, saved.memberAccountIds)
@@ -1131,7 +1255,6 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
       <RenderSettings
         t={t}
         active={active}
-        saved={saved}
         dirty={dirty}
         saving={saving}
         canEditPool={canEditPool}
@@ -1139,9 +1262,6 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         catalog={pool?.catalog}
         targetProvenance={targetProvenance}
         accountTools={accountTools}
-        accounts={pool?.accounts ?? []}
-        currentAccountId={currentAccountId}
-        onSelectAccount={onSelectAccount}
         onEdit={editDraft}
         onSave={() => { void savePool() }}
         onDiscard={() => { setDraftPool(saved); setDraftRegion(region); setDirty(false); setSaveError(undefined) }}
@@ -1175,12 +1295,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
 function RenderSettings(props: {
   t: Translate
   active: PoolPreferences
-  /**
-   * 宿主已知的真实偏好。`active` 是**草稿**（改了要按保存才生效），而
-   * 「使用哪个账号」这一行立即生效、不走保存——它的在场判据必须跟真实状态，
-   * 不能跟草稿。
-   */
-  saved: PoolPreferences
+  /** 有未保存改动才让「保存/放弃」可点——它们本身就是提交这一支的收尾。 */
   dirty: boolean
   saving: boolean
   canEditPool: boolean
@@ -1193,102 +1308,40 @@ function RenderSettings(props: {
   catalog?: readonly QoderWebPoolModel[] | undefined
   /** 目标模型的来源一句话（「当前：xx（你指定）」），null 表示无话可说。 */
   targetProvenance: string | null
-  /** 账号工具（添加 PAT / 导出导入），虚线框放在标题之下、说明行之上。 */
-  accountTools?: ReactNode | undefined
-  /** 池里的账号，供「使用哪个账号」下拉列出。 */
-  accounts: readonly QoderWebPoolAccount[]
-  /** 当前真正在服务的账号 id；undefined = 没有任何账号在生效。 */
-  currentAccountId?: string | undefined
   /**
-   * 池关闭时由用户手选服务账号。`undefined` 表示调用方不提供这个控件（此时
-   * 整行不渲染）——这样「能不能改」只有一个真值来源，不必再传一个 flag。
+   * 账号工具（添加 PAT / 导出导入）：虚线框在「更多设置」标题**之上**——
+   * 它们立即生效，而标题之下的行都要保存。判据与文案同 workbuddy 94c339f。
    */
-  onSelectAccount?: ((accountId: string) => void) | undefined
+  accountTools?: ReactNode | undefined
   onEdit: (update: (prev: PoolPreferences) => PoolPreferences) => void
   onSave: () => void
   onDiscard: () => void
 }): ReactNode {
-  const { t, active, saved, dirty, saving, canEditPool, saveError, catalog, targetProvenance, accountTools, accounts, currentAccountId, onSelectAccount, onEdit, onSave, onDiscard } = props
-  // 同名计数只依赖账号列表，整块渲染算一次即可（每次 map 里重算就是 O(n²)）。
-  const counts = nameCountsOf(accounts)
+  const { t, active, dirty, saving, canEditPool, saveError, catalog, targetProvenance, accountTools, onEdit, onSave, onDiscard } = props
   return (
     <div className="dsm-qoder-pool-settings-wrap">
-      {/* 设置区自己的小标题 + 脏标记（workbuddy 同构）：下面几行是草稿，
-          与上方立即生效的表格区分开。 */}
-      <div className="dsm-qoder-pool-head">
-        <h3 className="dsm-qoder-pool-title">{t('row.poolSettingsTitle')}</h3>
-        {dirty ? <span className="dsm-qoder-pool-dirty">{t('row.poolDirty')}</span> : null}
-      </div>
-      {/* 账号工具在说明行之前（workbuddy 同构）：它们立即生效，而说明行提到的
-          是「下面这些偏好要点保存」，顺序颠倒会让读者以为工具也要保存。 */}
+      {/* 账号工具在「更多设置」标题**之上**（workbuddy 同构，94c339f）：它们
+          点一下立刻生效，而标题之下的一切都是要按保存的草稿（标题下面那句
+          说明正写着）。立即生效的控件不能住在承诺「点保存才生效」的区块里——
+          先读说明的人会等一个根本不需要的按钮，先动手的人则会惊讶表格自己变了。
+          虚线边框与「这里没有保存按钮」的对比就是真话：上面是动作，下面是偏好。 */}
       {accountTools === undefined ? null : <div className="dsm-qoder-pool-tools">{accountTools}</div>}
+      {/* 这是一个**小标题**，不是第二个页面标题：这一块是「剩下的设置」（一个
+          测试模型、一个测试体积），不是本面板的主角，不该和顶端的「账号池」
+          一样响。脏标记已上移到模式条——开关才是第一件能改脏的东西。 */}
+      <div className="dsm-qoder-pool-card-head">
+        <h4 className="dsm-qoder-pool-card-title">{t('row.poolSettingsTitle')}</h4>
+      </div>
       <p className="dsm-qoder-pool-note">{t('row.poolSettingsHint')}</p>
       <div className="dsm-qoder-pool-settings">
-      {/* 「使用哪个账号」——**只在池确实关闭时**出现。
-          判据用 `saved.enabled`（宿主已知的真实状态），**不是** `active.enabled`
-          （草稿）：这一行立即生效、不走保存，若跟着草稿走，用户把开关拨到「开」
-          但还没保存时，这一行会消失，而他其实还没关闭池；反过来拨到「关」时它
-          又提前出现，仿佛现在就由它决定了。控件在不在，必须和「现在谁真正在
-          选号」一致。
-          位置在池开关之上：先回答「池关着时谁服务」，再回答「要不要让池接管」。 */}
-      {saved.enabled || onSelectAccount === undefined || accounts.length === 0
-        ? null
-        : <div className="dsm-qoder-pool-set">
-            <div className="dsm-qoder-pool-set-copy">
-              <b>{t('row.poolManualAccountLabel')}</b>
-              <span>{t('row.poolManualAccountHint')}</span>
-            </div>
-            <div className="dsm-qoder-pool-set-ctl">
-              <select
-                className="dsm-qoder-pool-select"
-                value={currentAccountId ?? MANUAL_ACCOUNT_NONE}
-                disabled={!canEditPool}
-                aria-label={t('row.accountSelectAria')}
-                onChange={(e) => {
-                  // 哨兵值只用于显示「没有账号在生效」，选中它不是一个动作。
-                  if (e.target.value === MANUAL_ACCOUNT_NONE) return
-                  onSelectAccount(e.target.value)
-                }}
-              >
-                {/* 「没有账号在生效」是真实状态（保存的 id 已失效、刷新失败）。
-                    没有匹配项时受控 select 会静默显示第一项——那就是「看着正常，
-                    但不是真正在跑的」那种混淆，正是这个控件要避免的。
-                    哨兵用非空串而非 `''`：`''` 是「自动」这个**真实选项**的值，
-                    两者共用会让 select 在无生效账号时显示成「自动」，等于宣称
-                    用户选了自动。 */}
-                {currentAccountId === undefined
-                  ? <option value={MANUAL_ACCOUNT_NONE} disabled>{t('row.poolManualAccountNone')}</option>
-                  : null}
-                {/* 「自动」保留：qoder 的账号来源有 settings / env / vault 三级，
-                    `state.accountId` 为空时正是按这个顺序回退，所以它不是一个
-                    占位选项，而是一个真的第三态。workbuddy 没有这条回退链，它
-                    的下拉里没有自动项，这里不能照抄。 */}
-                <option value="">{t('row.accountSelectAuto')}</option>
-                {accounts.map(account => (
-                  <option key={account.accountId} value={account.accountId}>
-                    {poolAccountLabel(t, account, counts)}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>}
-      <div className="dsm-qoder-pool-set">
-        <div className="dsm-qoder-pool-set-copy">
-          <b>{t('row.poolEnabled')}</b>
-          <span>{t('row.poolEnabledHint')}</span>
-        </div>
-        <div className="dsm-qoder-pool-set-ctl">
-          <label className="sw">
-            <input
-              type="checkbox"
-              checked={active.enabled}
-              disabled={!canEditPool}
-              onChange={(e) => onEdit(prev => ({ ...prev, enabled: e.target.checked }))}
-            />
-            <span className="sw-track" />
-          </label>
-        </div>
-      </div>
+      {/* 「使用哪个账号」**不在这里**：它搬进了标题行，与「当前使用」芯片共用
+          一个槽位（见本文件顶部的 `manualPicker`）。同一屏上第三次复述同一个
+          账号名，正是让页面读起来像机器拼的那处重复。
+          「启用账号池」**也不在这里**：它是整页的模式选择器，现在站在标题正下方
+          （模式条）。这里剩下的是手动**测试**需要的两个设置，所以池关着时它们
+          仍然够得着。 */}
+      {/* 「使用哪个账号」已经搬进标题行（`manualPicker`），判据不变：只在池
+          **确实**关闭时出现，用 `saved.enabled` 而不是草稿。 */}
       <div className="dsm-qoder-pool-set">
         <div className="dsm-qoder-pool-set-copy">
           <b>{t('row.poolTargetLabel')}</b>

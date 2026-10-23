@@ -112,8 +112,10 @@ export function AddAccount({ t, region, onAdded }: AddAccountProps): ReactElemen
       : ''
 
   return (
+    // 标题**不再念一遍**（workbuddy 94c339f）：这颗按钮就叫「添加账号」，
+    // 同名的标题只是用更小的字号把按钮重说一次，还多占一行。
+    // 名字仍留在 <section> 的 aria-label 里，屏幕阅读器照样听得到。
     <section className="dsm-qoder-bar" aria-label={t('row.addAccountStart')}>
-        <p className="dsm-qoder-bar-label">{t('row.addAccountStart')}</p>
         {/* 「PAT 从哪来」的就地说明：用户看到这个入口的瞬间最想知道的就是它，
             所以写在入口这一行，而不是只留在对话框里的文档链接。
             域名逐区域不同（国内 qoder.com.cn / 国际 qoder.com），由 region 决定。 */}

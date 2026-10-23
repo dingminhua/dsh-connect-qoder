@@ -28,8 +28,14 @@ describe('QODER_CARD_CSS', () => {
     // 模型保存行（模型区）与账号池保存行（池设置区）是同一种东西：左边一个
     // 仓库链接、右边一对按钮。此前池那条多了 `flex-wrap:wrap`、按钮组多了
     // `flex:none`，于是空间紧时只有它会换行——看起来就是两套样式。
-    expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-save-bar'))
-      .toBe(ruleOf(QODER_CARD_CSS, 'dsm-qoder-model-actions'))
+    // 池的保存行多了一条 `position:sticky;bottom:0`（面板比一屏高，提交按钮
+    // 必须在改完的瞬间就看得见）。所以这里断的是「布局同源」而不是「逐字相同」：
+    // 两行的盒模型、间距、上边框一字不差，差别只允许出现在钉底那几条上。
+    const modelBar = ruleOf(QODER_CARD_CSS, 'dsm-qoder-model-actions')!
+    const poolBar = ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-save-bar')!
+    expect(poolBar.startsWith(modelBar.replace(/\}$/, ''))).toBe(true)
+    expect(poolBar).toContain('position:sticky')
+    expect(poolBar).toContain('bottom:0')
     expect(ruleOf(QODER_CARD_CSS, 'dsm-qoder-pool-save-buttons'))
       .toBe(ruleOf(QODER_CARD_CSS, 'dsm-qoder-model-actions-buttons'))
   })

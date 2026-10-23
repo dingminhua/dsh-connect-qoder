@@ -138,7 +138,10 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       // 当前计费账号用文字标签标出，不只靠行底色。
       const first = rows[0]!
       expect(first.querySelector('.dsm-qoder-pool-current-tag')?.textContent).toBe('row.poolCurrentBadge')
-      expect(first.querySelector('.dsm-qoder-pool-member')?.textContent).toBe('row.poolMember')
+      // 成员资格只给**不在池里**的行写一句话：勾选框已勾、行底色已标出的成员
+      // 行再写「已在池中」是同一件事说第三遍（94c339f 判据）。
+      expect(first.querySelector('.dsm-qoder-pool-member')).toBeNull()
+      expect(first.querySelector('.dsm-qoder-pool-not-member')).toBeNull()
 
       // 积分列：总数 + 临期高亮（expiringSoon > 0 用 soon 而不是 soon-plain）。
       const credits = first.querySelector('.dsm-qoder-pool-credits')
@@ -160,11 +163,13 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       // 整池只有一张成员表。
       expect(container.querySelector('.dsm-qoder-pool-settings-wrap')).not.toBeNull()
       expect(container.querySelectorAll('.dsm-qoder-pool-table')).toHaveLength(1)
-      expect(container.querySelector('.dsm-qoder-pool-settings-wrap .dsm-qoder-pool-title')?.textContent)
+      // 「更多设置」是小标题（h4），不是第二个页面标题——面板只有一个主标题。
+      expect(container.querySelector('.dsm-qoder-pool-settings-wrap .dsm-qoder-pool-card-title')?.textContent)
         .toBe('row.poolSettingsTitle')
 
       // 目标模型来源一句话出现在目标设置里。
-      const settings = container.querySelector('.dsm-qoder-pool-settings')
+      // 排除模式条：它复用了同一个带框类（见下方「保存行」那条的说明）。
+      const settings = container.querySelector('.dsm-qoder-pool-settings:not(.dsm-qoder-pool-modebar)')
       expect(settings).not.toBeNull()
       expect(settings!.textContent).toContain('row.poolTargetCurrentPreferred')
 
@@ -193,7 +198,9 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     // workbuddy 里它是那张卡片的**兄弟**。
     const { container, unmount } = await mountPool()
     try {
-      const card = container.querySelector('.dsm-qoder-pool-settings')
+      // 模式条刻意复用了 `.dsm-qoder-pool-settings` 的带框样式（它就是这个
+      // 形状），所以这里必须排除它——否则 `card` 会命中页面顶部的模式条。
+      const card = container.querySelector('.dsm-qoder-pool-settings:not(.dsm-qoder-pool-modebar)')
       const bar = container.querySelector('.dsm-qoder-pool-save-bar')
       expect(card).not.toBeNull()
       expect(bar).not.toBeNull()
@@ -208,22 +215,23 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
-  it('账号工具在设置区顶部的虚线框里（标题之下、说明行之上）', async () => {
+  it('账号工具在「更多设置」标题之上、说明行之前', async () => {
     const tools = React.createElement('span', { className: 'test-tool' }, 'TOOL')
     const { container, unmount } = await mountPool({ accountTools: tools })
     try {
       const box = container.querySelector('.dsm-qoder-pool-tools')
       expect(box).not.toBeNull()
       expect(box!.querySelector('.test-tool')?.textContent).toBe('TOOL')
-      // 位置：设置区标题之后、说明行之前——工具立即生效，说明行讲的是下面
-      // 那些「要保存才生效」的偏好，顺序颠倒会让读者以为工具也要保存。
+      // 位置：「更多设置」标题**之上**（94c339f）。工具立即生效，而标题之下
+      // 的一切都要按保存——立即生效的控件不能住在承诺「点保存才生效」的区块里。
       const html = container.innerHTML
       const titleAt = html.indexOf('row.poolSettingsTitle')
       const toolsAt = html.indexOf('dsm-qoder-pool-tools')
       const hintAt = html.indexOf('row.poolSettingsHint')
       expect(titleAt).toBeGreaterThan(-1)
-      expect(toolsAt).toBeGreaterThan(titleAt)
-      expect(hintAt).toBeGreaterThan(toolsAt)
+      expect(toolsAt).toBeGreaterThan(-1)
+      expect(toolsAt).toBeLessThan(titleAt)
+      expect(hintAt).toBeGreaterThan(titleAt)
     } finally {
       await unmount()
     }
@@ -302,11 +310,11 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       // 设置区仍是「标题 → 账号工具虚线框（若有）→ 说明行 → 设置卡片」。
       const wrap = container.querySelector('.dsm-qoder-pool-settings-wrap')
       expect(wrap).not.toBeNull()
-      const head = wrap!.querySelector('.dsm-qoder-pool-head')
+      // 设置区不再有页面级标题行：它被降级为一个 h4 小标题（card-head）。
+      expect(wrap!.querySelector('.dsm-qoder-pool-head')).toBeNull()
+      const head = wrap!.querySelector('.dsm-qoder-pool-card-head')
       expect(head).not.toBeNull()
-      expect(head!.querySelector('.dsm-qoder-pool-head-extra')).toBeNull()
-      expect(head!.querySelector('.dsm-qoder-pref')).toBeNull()
-      expect(head!.querySelector('.dsm-qoder-pool-title')).not.toBeNull()
+      expect(head!.querySelector('.dsm-qoder-pool-card-title')).not.toBeNull()
       // 芯片仍靠 CSS 的 margin-left:auto 靠右，而不是靠 space-between 容器。
       expect(container.querySelector('.dsm-qoder-pool-head-right')).toBeNull()
     } finally {
@@ -991,14 +999,9 @@ describe('AccountPool「使用哪个账号」设置行', () => {
     }
   }
 
+  /** 选号下拉现在住在标题行右侧（与「当前使用」芯片同一个槽位）。 */
   function manualSelect(container: HTMLElement): HTMLSelectElement | null {
-    const rows = Array.from(container.querySelectorAll('.dsm-qoder-pool-set'))
-    for (const row of rows) {
-      if (row.querySelector('.dsm-qoder-pool-set-copy b')?.textContent === 'row.poolManualAccountLabel') {
-        return row.querySelector<HTMLSelectElement>('.dsm-qoder-pool-select')
-      }
-    }
-    return null
+    return container.querySelector<HTMLSelectElement>('.dsm-qoder-pool-head-pick select')
   }
 
   it('池开着时不渲染：那时谁服务由排序决定，控件改了也不生效', async () => {
@@ -1012,14 +1015,13 @@ describe('AccountPool「使用哪个账号」设置行', () => {
     }
   })
 
-  it('池关闭时渲染标题、说明与下拉，选中值就是在服务的账号', async () => {
+  it('池关闭时在标题行给出选号下拉，选中值就是在服务的账号', async () => {
     const { container, unmount } = await mountPool({ pool: poolOff(), onSelectAccount: () => {} })
     try {
-      const row = Array.from(container.querySelectorAll('.dsm-qoder-pool-set'))
-        .find(r => r.querySelector('.dsm-qoder-pool-set-copy b')?.textContent === 'row.poolManualAccountLabel')
-      expect(row).toBeDefined()
-      // 说明文案必须解释「为什么关掉池才由你选」，否则这行看不出和池开关的关系。
-      expect(row!.querySelector('.dsm-qoder-pool-set-copy span')?.textContent).toBe('row.poolManualAccountHint')
+      const pick = container.querySelector('.dsm-qoder-pool-head-pick')
+      expect(pick).not.toBeNull()
+      // 控件自带名字（workbuddy 判据：名字由控件本身携带，不再单占一行说明）。
+      expect(pick!.querySelector('.dsm-qoder-pool-head-pick-label')?.textContent).toBe('row.poolManualAccountLabel')
 
       const select = manualSelect(container)!
       // a1 在 fixture 里 current: true —— 下拉显示的必须正是它，不能是列表第一项。
@@ -1307,3 +1309,4 @@ describe('AccountPool 名次与可用性', () => {
     }
   })
 })
+

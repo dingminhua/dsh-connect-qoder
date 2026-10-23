@@ -534,7 +534,13 @@ describe('QoderCard render', () => {
         expect(container.querySelector('.dsm-qoder-pool-tools')).not.toBeNull()
         expect(container.textContent).toContain('row.addAccountStart')
         // 导出 / 导入同一处，也不能一起消失。
-        expect(container.textContent).toContain('row.transferTitle')
+        // 按 **aria-label** 断言：账号工具条不再自己念一遍标题（workbuddy
+        // 94c339f）——「导出 / 导入账号」压在「导出」「导入」两个同名按钮上，
+        // 只是把按钮重说一次。名字保留在 <section> 的 aria-label 里，属性不进
+        // textContent，所以这里必须换靶子，否则删掉标题后断言会悄悄变绿。
+        expect(container.querySelector('.dsm-qoder-pool-tools [aria-label="row.transferTitle"]')).not.toBeNull()
+        // 而且那条标题**不在屏幕上**：两个工具条都不再自己念一遍名字。
+        expect(container.querySelectorAll('.dsm-qoder-bar-label').length).toBe(0)
       } finally {
         await unmount()
       }
@@ -621,7 +627,8 @@ describe('cn / global 两个 tab 的渲染对等', () => {
     checkinButton: (host.textContent ?? '').includes('row.poolCheckinAll'),
     testButton: (host.textContent ?? '').includes('row.poolTestAll'),
     addPat: (host.textContent ?? '').includes('row.addAccountStart'),
-    transfer: (host.textContent ?? '').includes('row.transferTitle'),
+    // 导出/导入的标题只存在于 aria-label（见上一条的说明）。
+    transfer: host.querySelector('.dsm-qoder-pool-tools [aria-label="row.transferTitle"]') !== null,
     checkinColumn: (host.textContent ?? '').includes('row.poolColumnCheckin'),
   })
 
