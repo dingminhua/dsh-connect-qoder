@@ -198,6 +198,10 @@ registry 记的 time['1.7.1']                                              = 15:
 - **`cf-cache-status: HIT` 与内容新旧无关**，它只说明这一跳命中了 Cloudflare。别拿它当
   「还没更新」的证据——1.7.1 那次 tarball 直链返回 `200` 且 `HIT`，包里已经是新代码。
 
+> **这个窗口不是常数**：1.2.1 约 2 分钟、1.4.0 约 1 分钟、1.7.1 约 6 分钟、1.7.2 约 1–2 分钟
+> （见 §11.1）。所以别把任何一次的数字当阈值读；能确定的只有「看到 `being processed` 就等，
+> 判据是 `time['X.Y.Z']`」。
+
 ### ⚠️ 1.2.1 实测：`~/.npm/_logs` 会被轮转掉，「读日志」要趁热
 
 上一节要求「判定发布成败，先读日志再查 registry」。1.2.1 发布约 7 分钟后再回去读那次
@@ -406,3 +410,67 @@ POST 挂起等 release，GET 立刻回当前进度。
 
 量到的两个数（改前 → 改后）：说明行到分隔线 4 → 12 CSS px；标题居中偏差 10.5 → 0.0 CSS px。
 改完值再截一次同样量，别只看代码改对了没有。
+
+## 11. 1.7.2 实测三笔（2026-10-23）
+
+这一版是修 issue #6（业务码藏在第二/三层时读不到 ⇒ 排队被判 `auth` ⇒ PAT 被
+`credential-rejected` 永久剔除）。发布本身顺利，但留下三条与**核验**有关的经验。
+
+### 11.1 「受理后处理」窗口再次不是常数：这次约 1–2 分钟
+
+§2 的 1.7.1 一节记下那个窗口是 **6 分钟**，并警告「别在 3 分钟内判生死」。1.7.2 这次：
+
+```
+npm publish 打印 `+ @dmh2002/dsh-connect-qoder@1.7.2`（用户终端，约 04:14Z 前后）
+第一次直连 packument 轮询：latest=1.7.1、time['1.7.2'] 不存在     ← 仍在窗口内
+约 1 分钟后再查：latest=1.7.2、time['1.7.2']=2026-10-23T04:15:35.506Z   ← 翻转
+tarball 直链：翻转后第 1 次就 HTTP 200（无 §2 的 1.2.1 那种 3 分钟 CDN 滞后）
+```
+
+**结论不是「窗口变短了」，而是它本来就不是常数。** 目前四个数据点：1.2.1 约 2 分钟、
+1.4.0 约 1 分钟、1.7.1 约 6 分钟、1.7.2 约 1–2 分钟。所以：
+
+- 不要把任何一次的分钟数当阈值；第一次查不到**不构成任何结论**。
+- 判据始终只有两条，且都不需要下载 tarball：packument 的 `time['X.Y.Z']` 出现，
+  以及 `dist.shasum` 与 `npm publish` 输出里那行 `npm notice shasum: …` 逐位相同。
+- 这一轮 `shasum` 是**当场**就比对成功的（`5b15fa6f0c122690074a3b0432ea626e770e6f22`，
+  与用户贴的终端输出一致）—— 用户把 publish 输出贴回来时，那行 notice 里的 shasum
+  就是最省事的对照物，不必等 tarball 可下载。
+
+### 11.2 核验发布产物时，别用 `require()` 去读 ESM 的 `lib/index.js`
+
+想对**已发布的原件**复跑行为用例（这正是 issue 报告者的取证方式），第一反应是
+`node -e "require('/tmp/…/package/lib/index.js')"` —— 失败，`ERR_MODULE_NOT_FOUND`：
+`package.json` 里 `"type": "module"`，`lib/index.js` 是 ESM，`require()` 读不了。
+
+两条可用路子：
+
+1. **分类函数在 `lib/host-heartbeat-*.js` 里**（本轮的 `classifyFailure` /
+   `deepestBusinessCode` / 三张码表都在），那个文件同样是 ESM，但可以**抽文本 + `new Function`
+   编译**：按函数名定位，用括号配平切出函数体（注意跳过字符串字面量里的 `{`，
+   否则 `startsWith("{")` 这种会把配平数错），拼成一个自包含片段再编译。
+   本轮就是这么对官方 1.7.1 原件与 1.7.2 原件各跑了一组 9 条用例。
+2. 真要 `import()`，得在一个 `"type":"module"` 的临时目录里做，且它会把整条依赖链
+   （cordis / pi-ai 等 peer）拉进来 —— 对「只验一个纯函数」是过重的。
+
+**顺带一条**：抽取脚本里 `const NAME = 6;` 这种**无括号**的常量，配平逻辑要允许
+「没见到任何括号就在 `;` 处收尾」，否则会一路吃到下一个函数的文档注释，编译期报
+`SyntaxError: Invalid or unexpected token`。本轮踩了一次。
+
+### 11.3 `businessCodeOf` 会从发布产物里消失（tree-shake），别拿它当核验锚点
+
+1.7.2 把 `classifyFailure` 与六个调用点都改用 `deepestBusinessCode` 之后，
+`businessCodeOf` 在包内**不再被引用**，tsdown 直接把它摇掉了：
+
+```
+grep -c "deepestBusinessCode" lib/host-heartbeat-WX-jJIAB.js   → 9（定义 + 六个调用点 + 注释）
+grep -c "businessCodeOf"      lib/host-heartbeat-WX-jJIAB.js   → 0
+```
+
+它在 `src/upstream.ts` 里仍是 `export`，但**不是包的公开 API**（`lib/index.d.ts` 不含它），
+所以摇掉不算破坏兼容。两点提醒：
+
+- 核验脚本若硬找 `businessCodeOf` 会误判「产物不对」；抽取器要容忍它缺席（本轮改成
+  找不到就补一个 `return undefined` 的占位）。
+- 反过来，这也是个**有用的信号**：某个内部函数从产物里消失，说明调用点真的全换过去了。
+  本轮就用它确认「六个调用点一个都没漏」。
