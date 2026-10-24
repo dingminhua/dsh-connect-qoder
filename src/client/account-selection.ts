@@ -229,6 +229,24 @@ export async function writeRegionCreditPosition(
 }
 
 /**
+ * Write one region's cross-connector compare toggle (issue #14), then confirm
+ * it landed. Verification is exact for the same reason as the position write:
+ * opt-in means `undefined` (never configured) and `false` (explicitly off)
+ * must both read back as off.
+ */
+export async function writeRegionCreditsForeign(
+  scope: QoderAccountScope,
+  region: QoderWebRegion,
+  foreign: boolean,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['showCreditsForForeignModels'] === foreign
+  })
+}
+
+/**
  * Write one region's account-pool PREFERENCES, verifying they landed.
  */
 export async function writePoolPreferences(

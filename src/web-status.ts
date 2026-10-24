@@ -227,6 +227,13 @@ export interface QoderWebRouteDeps {
    * 所以早于本设置的宿主渲染得与从前完全一样。
    */
   creditPosition?(region: QoderRegion): QoderCreditPosition
+  /**
+   * Whether this region's credit line ALSO renders for another connector's
+   * models (cross-connector compare, issue #14).
+   *
+   * Optional, and absent reads as `false` —— opt-in，默认不显示。
+   */
+  creditsForeign?(region: QoderRegion): boolean
   regionUsable?(region: QoderRegion, usable: boolean): void
   store(region: QoderRegion): QoderAccountDeps
   credentialSources(region: QoderRegion): { settingsPat?: string | undefined, envPat?: string | undefined }
@@ -848,6 +855,7 @@ export async function buildWebUsage(
       enabled: deps.regionEnabled(region),
       showCreditsInMainUi: deps.regionCreditsShown(region),
       creditPosition: deps.creditPosition?.(region) ?? 'composer',
+      showCreditsForForeignModels: deps.creditsForeign?.(region) ?? false,
       message: selectionLost
         ? '所选账号已不存在，请重新选择或填写 PAT'
         : '请填写 Qoder PAT（或设置环境变量）',
@@ -923,6 +931,7 @@ export async function buildWebUsage(
     enabled: deps.regionEnabled(region),
     showCreditsInMainUi: deps.regionCreditsShown(region),
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
+    showCreditsForForeignModels: deps.creditsForeign?.(region) ?? false,
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
     accounts: accounts.map(webAccountOf(deps, region)),

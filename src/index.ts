@@ -237,6 +237,14 @@ const regionConfig = z.object({
    * 用户的选择，正是让一个插件的存在不再决定另一个插件的可见性。
    */
   creditPosition: z.union([z.const('composer'), z.const('stats')]).default('composer').description('积分读数的位置："composer" = 输入框工具栏（默认），"stats" = 输入框卡片下方的常驻栏，与 shell 自己的 token 统计同行。若输入框那行被其他插件占用，选 "stats"。'),
+  /**
+   * 会话选中的模型属于**别的连接器**时，本区域的积分读数是否仍然显示
+   * （跨连接器余额对比，issue #14）。
+   *
+   * opt-in 且默认 false：胶囊默认只在本插件的模型被选中时出现——两个连接器
+   * 的胶囊同时常驻是用户明确要的对比用法，不是所有人都期待的默认行止。
+   */
+  showCreditsForForeignModels: z.boolean().default(false).description('会话当前模型属于其他连接器时，是否仍显示本区域的积分读数（跨连接器余额对比）。默认 false。'),
   /** 用户勾选的模型 key 集合。 */
   enabledModelKeys: z.array(z.string()).default([]),
   /**
@@ -347,6 +355,15 @@ function regionCreditsShown(config: { regions?: Record<string, unknown> | null }
 function creditPosition(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): QoderCreditPosition {
   const state = regionStateOf(config, region)
   return state.creditPosition === 'stats' ? 'stats' : 'composer'
+}
+
+/**
+ * 某区域是否在**其他连接器**的模型被选中时仍显示积分（跨连接器对比，
+ * issue #14）。本地读取而非依赖 schema 默认值，理由同 `creditPosition`。
+ */
+function regionCreditsForeign(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+  const state = regionStateOf(config, region)
+  return state.showCreditsForForeignModels === true
 }
 
 /** 某区域是否配置了凭据（设置 PAT 或环境变量其一）。 */
@@ -1687,6 +1704,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       regionEnabled: region => regionEnabled(config, region),
       regionCreditsShown: region => regionCreditsShown(config, region),
       creditPosition: region => creditPosition(config, region),
+      creditsForeign: region => regionCreditsForeign(config, region),
       regionUsable: (region, usable) => {
         if (!usable) log(`region ${region} is signed out`)
       },
