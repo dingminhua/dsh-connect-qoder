@@ -60,6 +60,7 @@ import {
   type QoderWebCreditPackage,
   type QoderWebAccountCredit,
   type QoderWebRecovery,
+  type QoderWebQuotaExhaustion,
   type QoderCreditPosition,
 } from './status-paths.ts'
 import { qoderAccountId, maskPat, patFromEnv } from './credentials.ts'
@@ -637,6 +638,15 @@ export function apply(ctx: Context, config: Config): void {
   let stopped = false
 
   const stacks = {} as Record<QoderRegion, QoderRegionStack>
+  /**
+   * 每区域最近一次**上游明说**的额度耗尽（`liveQuotaExhaustion` 的落点）。
+   *
+   * 与 `stacks[].poolRuntime` 分开存：那份按账号、服务于池的换号决策；这份按
+   * 区域、只服务于 UI——usage 路由把它带进文档，卡片显示「最近一次」。进程内
+   * 状态（重启即清）：它说的是「上游最近一次说过」，不是「现在仍然耗尽」，
+   * 事实性由时间戳保证，不需要落盘承诺。
+   */
+  const quotaExhaustionByRegion: Partial<Record<QoderRegion, QoderWebQuotaExhaustion>> = {}
   const usageCache: Partial<Record<QoderRegion, {
     usage: QoderUsage | undefined
     atMs: number
@@ -802,6 +812,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       },
       failoverAccount: async tried => nextFailoverCredential(region, tried),
       onServingFailure: (accountId, kind, message, context) => {
+        // 区域级通知先记（与池无关）：池关着时这是 code 110 唯一的 UI 出口。
+        const exhaustion = liveQuotaExhaustion(kind, message, context, Date.now())
+        if (exhaustion !== undefined) quotaExhaustionByRegion[region] = exhaustion
         // 池关着也要记账（只进内存）：否则「这个号今天已用尽」永远不知道，
         // 每个回合都要先撞一次 110、再白等 2 秒换号。
         const probe = liveRequestProbe(kind, message, undefined, context)
@@ -1705,6 +1718,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       regionCreditsShown: region => regionCreditsShown(config, region),
       creditPosition: region => creditPosition(config, region),
       creditsForeign: region => regionCreditsForeign(config, region),
+      lastQuotaExhaustion: region => quotaExhaustionByRegion[region],
       regionUsable: (region, usable) => {
         if (!usable) log(`region ${region} is signed out`)
       },
@@ -1938,6 +1952,32 @@ export function liveRequestProbe(
     // 空串不写：那是「没有原因」，与「原因是空」是两件事（卡片按 undefined 说
     // 「上游未给出」）。非空一律脱敏后带上 —— pt- 形态的凭据绝不能进落盘文件。
     ...(message === '' ? {} : { message: redactUpstreamText(message) }),
+  }
+}
+
+/**
+ * 一次真实请求的失败要不要记成**区域级**的「上游报额度耗尽」通知。
+ *
+ * 与 {@link liveRequestProbe} 的分工：那条按**账号**记、供池换号决策用，且有
+ * 两道门（池关不记盘、非成员不记）；这条按**区域**记、纯粹给 UI 看——池关着时
+ * 一次 code 110 的失败此前在任何面板上都无处显示（0.7.x 的「今日额度疑似已
+ * 用尽」胶囊拆掉后留下的缺口）。只要 `kind` 是 `quota-exhausted`（上游业务码
+ * 命中配额族）就记，展示口径「最近一次」——上游恢复正常不会主动通知，所以不
+ * 设失效时刻，事实性由时间戳保证。
+ *
+ * 抽成纯函数的理由同 `liveRequestProbe`：接线变异掉时测试仍能钉住判据。
+ */
+export function liveQuotaExhaustion(
+  kind: UpstreamErrorKind,
+  message: string,
+  context: { status?: number | undefined, code?: string | undefined } | undefined,
+  nowMs: number,
+): QoderWebQuotaExhaustion | undefined {
+  if (kind !== 'quota-exhausted') return undefined
+  return {
+    ...(context?.code === undefined || context.code === '' ? {} : { code: context.code }),
+    message: redactUpstreamText(message),
+    atMs: nowMs,
   }
 }
 

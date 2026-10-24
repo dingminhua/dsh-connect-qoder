@@ -45,6 +45,7 @@ import {
   transferActionOf,
   type QoderWebRegion,
   type QoderCreditPosition,
+  type QoderWebQuotaExhaustion,
   type QoderWebUsage,
   type QoderWebAccount,
   type QoderWebAccountCredit,
@@ -234,6 +235,14 @@ export interface QoderWebRouteDeps {
    * Optional, and absent reads as `false` —— opt-in，默认不显示。
    */
   creditsForeign?(region: QoderRegion): boolean
+  /**
+   * The last upstream-asserted quota exhaustion on this region's chat path,
+   * or undefined when upstream never said so (see `QoderWebQuotaExhaustion`).
+   *
+   * Optional and absent reads as "nothing to carry" —— the doc field is
+   * omitted, not `null`.
+   */
+  lastQuotaExhaustion?(region: QoderRegion): QoderWebQuotaExhaustion | undefined
   regionUsable?(region: QoderRegion, usable: boolean): void
   store(region: QoderRegion): QoderAccountDeps
   credentialSources(region: QoderRegion): { settingsPat?: string | undefined, envPat?: string | undefined }
@@ -849,6 +858,7 @@ export async function buildWebUsage(
     const pool = deps.pool === undefined
       ? undefined
       : await buildPoolView(deps, region, accounts, deps.catalogs[region].current(), undefined, fast)
+    const lastQuotaExhaustion = deps.lastQuotaExhaustion?.(region)
     return {
       status: 'signed-out',
       accounts: accounts.map(webAccountOf(deps, region)),
@@ -856,6 +866,7 @@ export async function buildWebUsage(
       showCreditsInMainUi: deps.regionCreditsShown(region),
       creditPosition: deps.creditPosition?.(region) ?? 'composer',
       showCreditsForForeignModels: deps.creditsForeign?.(region) ?? false,
+      ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
       message: selectionLost
         ? '所选账号已不存在，请重新选择或填写 PAT'
         : '请填写 Qoder PAT（或设置环境变量）',
@@ -923,6 +934,7 @@ export async function buildWebUsage(
     pool = await buildPoolView(deps, region, accounts, catalog, serving.id, fast)
   }
 
+  const lastQuotaExhaustion = deps.lastQuotaExhaustion?.(region)
   return {
     status: 'signed-in',
     accountId: serving.id,
@@ -932,6 +944,7 @@ export async function buildWebUsage(
     showCreditsInMainUi: deps.regionCreditsShown(region),
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
     showCreditsForForeignModels: deps.creditsForeign?.(region) ?? false,
+    ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
     accounts: accounts.map(webAccountOf(deps, region)),

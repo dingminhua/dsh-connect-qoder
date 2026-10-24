@@ -996,6 +996,52 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
 })
 
 // ==========================================================================
+// 区域级「上游报额度耗尽」通知（liveQuotaExhaustion）
+//
+// 为什么存在：逐账号的 out-of-credit 只活在账号池视图里，而池的记账有两道门
+// （池关不记盘、非成员不记）——池关着时一次 code 110 的失败在任何 UI 上都无处
+// 可看。0.7.x 的「今日额度疑似已用尽」胶囊拆掉后留下的缺口，由这条按区域、与
+// 池开关无关的记录补上。措辞是「上游报」（业务码命中配额族才产生），不是旧版
+// 的「疑似（本地统计）」——上游明说过，就别再说疑似。
+// ==========================================================================
+describe('liveQuotaExhaustion：区域级的上游额度耗尽通知', () => {
+
+  // 与 liveRequestProbe 的 describe 共用同一次实拍原文。
+  const CAPTURED = '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}'
+
+  it('quota-exhausted 才记；其他 kind 一律不记（限流不是额度耗尽）', () => {
+    const record = Qoder.liveQuotaExhaustion('quota-exhausted', CAPTURED, { status: 403, code: '110' }, 1_000)
+    expect(record?.code).toBe('110')
+    // 限流（rate-limited）在这条路上**不得**产生通知：它映射的是池的短冷却，
+    // 标成耗尽会把一个还有额度的号误判成今天没救了。
+    expect(Qoder.liveQuotaExhaustion('rate-limited', '429', { status: 429 }, 1_000)).toBeUndefined()
+    expect(Qoder.liveQuotaExhaustion('auth', '401', { status: 401 }, 1_000)).toBeUndefined()
+    expect(Qoder.liveQuotaExhaustion('network', 'boom', undefined, 1_000)).toBeUndefined()
+  })
+
+  it('原文脱敏后带上：业务码是这条通知唯一的可溯源依据', () => {
+    const record = Qoder.liveQuotaExhaustion('quota-exhausted', CAPTURED, { code: '110' }, 1_000)
+    expect(record?.message).toContain('110')
+    expect(record?.message).toContain('Billing daily count exceeded')
+    expect(record?.atMs).toBe(1_000)
+    // 业务码缺席时字段整个不写（卡片显示「—」），而不是写个空串。
+    const bare = Qoder.liveQuotaExhaustion('quota-exhausted', CAPTURED, undefined, 1_000)
+    expect('code' in bare!).toBe(false)
+  })
+
+  it('PAT 绝不能进通知原文（与探针同一条红线）', () => {
+    const record = Qoder.liveQuotaExhaustion(
+      'quota-exhausted',
+      'rejected credential pt-ABCDEFGHIJ0123456789 quota over',
+      { code: '118' },
+      1_000,
+    )
+    expect(record?.message).not.toContain('pt-ABCDEFGHIJ0123456789')
+    expect(record?.message).toContain('[redacted credential]')
+  })
+})
+
+// ==========================================================================
 // 「凭据被拒」也得有凭据（issue #6 的第二半）
 //
 // `auth` 这个 kind 只说「像凭据问题」，不说「凭什么」。两种来源必须分开处置：

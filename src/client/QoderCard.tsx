@@ -48,6 +48,7 @@ import type {
   QoderWebModel,
   QoderWebProbeOutcome,
   QoderWebProbeResult,
+  QoderWebQuotaExhaustion,
   QoderWebRegion,
   QoderWebUsage,
 } from '../status-paths.ts'
@@ -600,6 +601,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
           {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
           {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}
+          {renderQuotaNotice()}
           {usage?.status === 'signed-in' && usage.refreshError !== undefined
             ? <p className="dsm-qoder-hint">{t('row.requestFailedHint', { message: usage.refreshError })}</p>
             : null}
@@ -738,6 +740,37 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     void writeRegionCreditsForeign(scope, activeRegion, on, slotWith(scope, activeRegion, { showCreditsForForeignModels: on })).finally(() => {
       if (mounted.current) setSiblingBusy(false)
     })
+  }
+
+  function renderQuotaNotice(): ReactElement | null {
+    const record = lastQuotaExhaustionOf(usage)
+    if (record === undefined) return null
+    return renderQuotaExhausted(record)
+  }
+
+  /**
+   * 「上游报额度耗尽」通知：区域级、事实性（上游业务码命中配额族才产生），
+   * 口径是「最近一次 + 时刻」——上游恢复不会主动通知，时间戳就是它的时效。
+   *
+   * 池开着且命中号是成员时，逐账号明细在账号池表格里（红点 + 原因）；这条
+   * 区域级通知存在的意义是**池关着/非成员**的那个缺口：此前一次 code 110 的
+   * 失败在任何 UI 上都无处可看（0.7.x「今日额度疑似已用尽」胶囊拆掉后留下的）。
+   */
+  function renderQuotaExhausted(record: QoderWebQuotaExhaustion): ReactElement {
+    const time = new Date(record.atMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    return (
+      <section
+        className="dsm-qoder-usage-error dsm-qoder-quota-exhausted"
+        role="status"
+        {...record.message === '' ? {} : { title: record.message }}
+      >
+        <strong>{t('row.quotaExhaustedTitle')}</strong>
+        <p>{t('row.quotaExhaustedDetail', {
+          time,
+          code: record.code ?? '—',
+        })}</p>
+      </section>
+    )
   }
 
   function renderRejected(usage: Extract<QoderWebUsage, { status: 'signed-in' }>): ReactElement | null {
@@ -1345,6 +1378,13 @@ function creditsForeignOf(usage: QoderWebUsage | undefined): boolean {
   if (usage === undefined) return false
   if (usage.status === 'error') return false
   return usage.showCreditsForForeignModels === true
+}
+
+/** The region's last upstream-asserted quota exhaustion, on either variant. */
+function lastQuotaExhaustionOf(usage: QoderWebUsage | undefined): QoderWebQuotaExhaustion | undefined {
+  if (usage === undefined) return undefined
+  if (usage.status === 'error') return undefined
+  return usage.lastQuotaExhaustion
 }
 
 function cloneDraft(draft: QoderDraft): QoderDraft {
