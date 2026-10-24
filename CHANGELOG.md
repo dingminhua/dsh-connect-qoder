@@ -2,6 +2,31 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.13.0 (2026-10-24)
+
+### Changed
+
+- **上下文档位的 400K 一律按 500K 呈现与保存**（用户要求）：上游 `context_config`
+  今天仍声明 `[200000, 400000, 1000000]`（两个区域、实时刷新均核实），卡片与设置里的
+  档位下拉现在显示 `200K / 500K / 1M`。改写在**解析边界**（`catalog.ts` 新增
+  `QODER_CONTEXT_TIER_OVERRIDES` / `mapContextTier` / `mapContextTiers`）：档位表
+  只有一个写点（`parseUpstreamModel`）与一个存档读点（`modelFromStored`），在那里
+  改写，卡片下拉、usage 投影、落盘往返、运行期预算四处拿到的是同一份表；上游哪天
+  真改口发 500K，这张表自动变成恒等映射。默认档（`is_default` 在 400K 上时）同步
+  改写，避免「选中值不在选项里」的下拉。
+- **旧存档迁移**：`contextBudgetsOf` 读回的保存预算过同一张表——升级前勾了 400K
+  的人读回即 500K，不会留下一个命中不了任何 option 的选中值；`modelFromStored` 读回
+  的快照 `contextWindow` / `contextTiers` 同样过表。
+- 档位是**插件本地的上下文预算**：聊天请求体（`createChatBodyTemplate`）里没有任何
+  上下文字段，改写只影响 DSH 侧的预算选择与显示，不替上游承诺它没声明的窗口。
+
+### Tests
+
+- `tests/catalog.spec.ts` 新增「档位改写表」一组：单值改写、整表去重升序（上游同时
+  发 400K 与 500K 不出重项）、保存预算迁移、默认档改写、表外值不受影响。
+- `tests/index.spec.ts` 新增端到端一条：存档里留改写前的预算 400K 与旧快照，读一次
+  `/usage`，文档里的档位表、生效窗口、回显预算三处必须都是 500K。
+
 ## 1.12.0 (2026-10-24)
 
 > 版本号取 **minor**：移除一个**用户可见能力**（跨连接器余额对比，1.10.0 的
