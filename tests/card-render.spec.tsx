@@ -1012,4 +1012,44 @@ describe('账号工具区：添加 PAT 与导出 / 导入共用一行', () => {
       await unmount()
     }
   })
+
+  // 「上游报额度耗尽」通知：池关着时一次 code 110 的失败唯一可见的 UI 出口。
+  // key-preserving t 让文案键以字面量出现在 DOM 里，可直接断言。
+  it('usage 文档带 lastQuotaExhaustion 时渲染区域级通知，不带时什么都不画', async () => {
+    const stubUsageDoc = (doc: Record<string, unknown>): void => {
+      vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 200, json: async () => doc } as Response)))
+    }
+    stubUsageDoc({
+      ...usageDoc('cn'),
+      lastQuotaExhaustion: {
+        code: '110',
+        message: '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}',
+        // 用本地时间分量构造（而非带时区的 ISO 串）：通知按查看者的本地钟渲染
+        // 时刻，断言 14:32 才能在任何时区的 CI 上都成立。
+        atMs: new Date(2026, 9, 24, 14, 32, 0).getTime(),
+      },
+    })
+    const { container, unmount } = await mountCard()
+    try {
+      const notices = container.querySelectorAll('.dsm-qoder-quota-exhausted')
+      expect(notices.length).toBeGreaterThan(0)
+      const text = notices[0]!.textContent ?? ''
+      expect(text).toContain('row.quotaExhaustedTitle')
+      expect(text).toContain('110')
+      expect(text).toContain('14:32')
+      // 脱敏原文挂在悬停上，不占版面。
+      expect(notices[0]!.getAttribute('title')).toContain('Billing daily count exceeded')
+    } finally {
+      await unmount()
+    }
+
+    // 不带字段（上游从没说过）→ 一条通知都没有。
+    stubUsageDoc(usageDoc('cn'))
+    const plain = await mountCard()
+    try {
+      expect(plain.container.querySelector('.dsm-qoder-quota-exhausted')).toBeNull()
+    } finally {
+      await plain.unmount()
+    }
+  })
 })

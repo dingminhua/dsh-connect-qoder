@@ -1110,6 +1110,8 @@ export type QoderWebUsage =
      * `showCreditsInMainUi`; absent reads as `false` (opt-in).
      */
     showCreditsForForeignModels?: boolean
+    /** See the signed-in variant: the last upstream-asserted quota exhaustion. */
+    lastQuotaExhaustion?: QoderWebQuotaExhaustion
     message?: string
     /** The persisted account id matches no stored credential. */
     selectionLost?: boolean
@@ -1141,6 +1143,12 @@ export type QoderWebUsage =
     creditPosition?: QoderCreditPosition
     /** See the signed-out variant: cross-connector compare mode. */
     showCreditsForForeignModels?: boolean
+    /**
+     * The last upstream-asserted quota exhaustion on the chat path, or absent
+     * when upstream never said so this process. Region-level on purpose —
+     * see {@link QoderWebQuotaExhaustion} for why it exists beside the pool.
+     */
+    lastQuotaExhaustion?: QoderWebQuotaExhaustion
     source?: 'settings' | 'env' | 'vault'
     /** A saved per-region choice is in effect (false = following the default). */
     selectionExplicit: boolean
@@ -1400,13 +1408,34 @@ export function nextRegionCreditsShown(
 
 /**
  * Whether one region's credit line should ALSO render while the session's
- * selected model belongs to ANOTHER connector —— 跨连接器余额对比（issue #14）。
+ * selected model belongs to ANOTHER connector —— 跨连接器余额对比（issue #14）.
  *
  * Opt-IN：只有显式 `true` 才开。与 `regionCreditsShownOf` 的 `!== false` 相反：
  * 默认多渲染一个胶囊是所有人都会注意到的行为变化，必须用户亲手要。
  */
 export function regionCreditsForeignOf(value: unknown, region: QoderWebRegion): boolean {
   return regionSlotOf(value, region)['showCreditsForForeignModels'] === true
+}
+
+/**
+ * 最近一次**上游明说**的额度耗尽（对话路径上 `quota-exhausted` 的那次失败）。
+ *
+ * 为什么需要它：逐账号的 `out-of-credit` 只活在账号池的视图里，而池的记账有
+ * 两道门（池关不记盘、非成员不记）——池关着时一次 code 110 的失败在任何 UI 上
+ * 都无处可看（0.7.x 时代的「今日额度疑似已用尽」胶囊就是干这个的，后来随本地
+ * 计数器一起被拆掉了）。这份记录按**区域**存、与池开关无关，是那条信息现在的
+ * 出口。
+ *
+ * 注意它是**事实**不是推断：只有上游的业务码命中配额族（110/113/118/…）才产生
+ * 它，措辞用「上游报」，不用旧版的「疑似（本地统计）」。
+ */
+export interface QoderWebQuotaExhaustion {
+  /** 上游业务码（如 `110` 当日用量 / `118` 个人 Credits 耗尽），读不到则缺席。 */
+  code?: string
+  /** 脱敏后的上游原文（与探针 message 同一处理，pt- 形态绝不落盘）。 */
+  message: string
+  /** 上游报出这件事的时刻；展示口径是「最近一次」。 */
+  atMs: number
 }
 
 /**
