@@ -2,6 +2,40 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.12.0 (2026-10-24)
+
+> 版本号取 **minor**：移除一个**用户可见能力**（跨连接器余额对比，1.10.0 的
+> issue #14）。默认行为不变——它本来就 opt-in 且默认关；配置键
+> `regions.*.showCreditsForForeignModels` 不再读取，旧配置里留着它**不报错、
+> 只是被忽略**（zod 对象多余键照旧丢弃），usage 文档不再带该字段（客户端与 host
+> 同包发布，不存在新旧混跑）。移除的理由写进了
+> [docs/DESIGN.md](docs/DESIGN.md)「一、边界：不做什么」：本插件不做插件之间的
+> 联动。
+
+### Removed
+
+- **跨连接器余额对比**（issue #14，1.10.0 引入）：别的连接器的模型被选中时，本区域
+  不再画积分胶囊，卡片积分区那一行「其他连接器的模型选中时也显示」一并删除。读数
+  回到单一口径——会话模型属于本插件的 provider 才显示，显示的也只可能是本插件自己
+  账号的余额；属于别的连接器时这里什么都不画（gate 的第一道判断）。
+  **这不是修缺陷，是定边界**：这个功能要求本插件去解释另一个插件的存在，而读数出现
+  在一个根本不经过 Qoder 计费的会话里，本身就容易被读成「这个号在给本会话付钱」。
+  要对比两边余额，切一下模型即可。
+- 随功能删除的接口与文案：`regions.*.showCreditsForForeignModels`（配置 schema）、
+  usage 文档的 `showCreditsForForeignModels`（`QoderWebUsage` 两个变体）、
+  `regionCreditsForeignOf` / `nextRegionCreditsForeign` / `writeRegionCreditsForeign`、
+  `row.creditsForeignLabel` / `row.creditsForeignHint` /
+  `composer.compareBillingAccount`，以及 `tests/composer-foreign-credits.spec.tsx`
+  （18 条）。README 双语把 1.10.0 加进去的那段描述回退。
+
+### Docs
+
+- `docs/DESIGN.md` 新增第一节「边界：不做什么」：不做插件之间的联动（凭据边界 /
+  故障归因 / 版本耦合三条理由），并写明不算联动的相邻能力——读宿主的公开投影
+  （`modelSelection`）、同族源码级借鉴，以及**唯一的例外**：模型选择器标签槽的委托
+  渲染（single 槽只容一个占位者，占槽者把别家 provider 的行还给它的标签组件，只经
+  宿主公开的槽位账本与 ownerProps）。原一至七节顺延为二至八节（含 6.x 小节编号）。
+
 ## 1.11.0 (2026-10-24)
 
 > 版本号取 **minor**：新增一个**用户可见能力**（区域级「上游报额度耗尽」通知）。

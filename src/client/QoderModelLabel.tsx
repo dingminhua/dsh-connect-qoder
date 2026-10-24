@@ -254,6 +254,9 @@ export function createQoderModelLabel(
       return () => { alive = false; unsubscribe() }
     }, [region])
 
+    // 唯一一处跨插件调用，也是「不做插件联动」的唯一例外（见 docs/DESIGN.md
+    // 「一、边界：不做什么」）：single 槽只容一个占位者，占了槽就得把别家 provider
+    // 的行还给它的标签组件——只经过宿主公开的槽位账本与 ownerProps，不按名字找人。
     const foreign = region === undefined
     if (foreign) {
       const other = slots.entries(QODER_MODEL_LABEL_SLOT)

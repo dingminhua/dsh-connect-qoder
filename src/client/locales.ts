@@ -384,8 +384,6 @@ export const en = {
   'row.creditPositionComposer': 'In the composer toolbar',
   'row.creditPositionStats': 'Below the composer',
   'row.creditPositionHint': 'Where the credit readout sits. "In the composer toolbar" is the closer spot, but that row is a shared list slot — if another plugin parks something there and the readout disappears, choose "Below the composer" (the ambient row next to the session token counts).',
-  'row.creditsForeignLabel': 'Also show for other connectors\' models',
-  'row.creditsForeignHint': 'Cross-connector compare (issue #14): keep this region\'s readout on screen even while the session\'s selected model belongs to another connector, so both balances sit side by side. Off by default — the capsule normally follows the selected provider.',
   'row.quotaExhaustedTitle': 'Upstream reported quota exhausted',
   'row.quotaExhaustedDetail': 'Last seen at {time} (business code {code}). Per-account detail lives in the pool table when the pool is on; this notice is the only surface when it is off.',
   'composer.pointsCn': 'QD CN',
@@ -409,9 +407,6 @@ export const en = {
   // 胶囊悬停：这个数字是**哪个号**的。池接管时胶囊与「选中」不是同一个号，
   // 不说清就会读成「我还有 773」而面板说在用 100 的那个（issue 截图的同款困惑）。
   'composer.billingAccount': 'Balance of the account billing right now: {name}',
-  // 对比态的悬停（issue #14）：会话用的是别家连接器，「billing right now」会
-  // 误导读者以为这个号在给本会话付钱 —— 换成明确「Qoder 侧」的归属说法。
-  'composer.compareBillingAccount': 'Balance of Qoder-side billing account {name}',
   'composer.panelTitle': 'Qoder credits',
   // 机器读的一条：卡片用它问「宿主现在按哪种语言渲染」，好去上游的中英文案里挑
   // 对的那一条（见 `promo-badge.ts` 的 `hostLanguage`）。人不会看到它。
@@ -768,8 +763,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.creditPositionComposer': '输入框工具栏',
   'row.creditPositionStats': '输入框下方',
   'row.creditPositionHint': '积分读数放在哪里。「输入框工具栏」位置更近，但那一行是共享的 list 插槽——若另一个插件也把东西停在那里、读数消失，就选「输入框下方」（会话 token 统计旁边那行常驻栏）。',
-  'row.creditsForeignLabel': '其他连接器的模型选中时也显示',
-  'row.creditsForeignHint': '跨连接器对比（issue #14）：会话当前模型属于别的连接器时，本区域的积分读数仍显示在原位，与对方读数并排，方便对比两边余额再决定切哪家。默认关闭——胶囊本来跟着选中的 provider 走。',
   'row.quotaExhaustedTitle': '上游报额度耗尽',
   'row.quotaExhaustedDetail': '最近一次 {time}（业务码 {code}）。逐账号明细在账号池表格里（池开着时）；池关着时这里是唯一能看到它的地方。',
   'composer.pointsCn': 'QD CN',
@@ -792,8 +785,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.currentPick': '当前选用',
   // 胶囊悬停：这个数字是**哪个号**的，见 en 侧同名注释。
   'composer.billingAccount': '当前计费的账号：{name}',
-  // 对比态的悬停（issue #14），见 en 侧同名注释。
-  'composer.compareBillingAccount': 'Qoder 侧计费账号 {name} 的余额',
   'composer.panelTitle': 'Qoder 积分',
   // 机器读的一条，见 en 侧同名的注释。
   'promo.locale': 'zh-CN',

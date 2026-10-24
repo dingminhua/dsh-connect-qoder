@@ -229,13 +229,6 @@ export interface QoderWebRouteDeps {
    */
   creditPosition?(region: QoderRegion): QoderCreditPosition
   /**
-   * Whether this region's credit line ALSO renders for another connector's
-   * models (cross-connector compare, issue #14).
-   *
-   * Optional, and absent reads as `false` —— opt-in，默认不显示。
-   */
-  creditsForeign?(region: QoderRegion): boolean
-  /**
    * The last upstream-asserted quota exhaustion on this region's chat path,
    * or undefined when upstream never said so (see `QoderWebQuotaExhaustion`).
    *
@@ -865,7 +858,6 @@ export async function buildWebUsage(
       enabled: deps.regionEnabled(region),
       showCreditsInMainUi: deps.regionCreditsShown(region),
       creditPosition: deps.creditPosition?.(region) ?? 'composer',
-      showCreditsForForeignModels: deps.creditsForeign?.(region) ?? false,
       ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
       message: selectionLost
         ? '所选账号已不存在，请重新选择或填写 PAT'
@@ -943,7 +935,6 @@ export async function buildWebUsage(
     enabled: deps.regionEnabled(region),
     showCreditsInMainUi: deps.regionCreditsShown(region),
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
-    showCreditsForForeignModels: deps.creditsForeign?.(region) ?? false,
     ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
