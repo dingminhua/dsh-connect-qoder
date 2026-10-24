@@ -1473,3 +1473,93 @@ describe('shouldRecordPoolFailure —— 不该记的失败一条都不记', () 
     expect(Qoder.shouldRecordPoolFailure({ enabled: true, memberAccountIds: [''] }, '')).toBe(false)
   })
 })
+
+// ==========================================================================
+// 档位改写表：存档与上游的 400K 在 /usage 文档里都读成 500K
+//
+// 用户要求（2026-10-24）：上下文档位下拉里的 400K 改成 500K。改写在解析边界
+// （`catalog.ts` 的 `QODER_CONTEXT_TIER_OVERRIDES`），这里钉的是**端到端**：
+// 存档里留着改写前的预算 400K 与旧快照窗口 400K，读一次 /usage，文档里的
+// 档位表、生效窗口、回显预算三处必须都是改写后的 500K —— 任何一处漏过改写
+// 表，下拉就会出现「选中值不在选项里」。
+// ==========================================================================
+
+describe('档位改写表：400K 在 /usage 文档里读成 500K', () => {
+  it('档位表、生效窗口、回显预算三处一致改写', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        return new Response(JSON.stringify({
+          chat: [{
+            key: 'qfmodel', display_name: 'Qwen3.8-Flash',
+            price_factor: 0, is_vl: true, is_reasoning: true, is_free: true,
+            context_config: {
+              c200k: { token_count: 200_000 },
+              c400k: { token_count: 400_000, is_default: true },
+              c1m: { token_count: 1_000_000 },
+            },
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 10, origin: 10, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+
+    const routes: CapturedRoute[] = []
+    try {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(MemorySettings)
+      ctx.provide('webServer', {
+        register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+      } as never)
+      // 存档里是**改写前**的值：预算 400K、快照窗口 400K、快照档位含 400K。
+      await mountQoder(ctx, {
+        regions: {
+          cn: {
+            pat: 'pt-tiermap', enabledModelKeys: ['qfmodel'],
+            contextBudgets: { qfmodel: 400_000 },
+            lastCatalog: [{
+              key: 'qfmodel', displayName: 'Qwen3.8-Flash', priceFactor: 0,
+              contextWindow: 400_000, maxOutputTokens: 32_768,
+              supportsImages: true, supportsThinking: true, canDisableThinking: false,
+              isDefault: false, isFree: true, isNew: false,
+              contextTiers: [200_000, 400_000, 1_000_000],
+            }],
+          },
+          global: { pat: '' },
+        },
+      })
+      await waitFor(() => routes.some(r => r.path.includes('/usage')))
+      const usage = routes.find(r => r.path.includes('/usage'))!
+      let doc: { models: Array<Record<string, unknown>>, contextBudgets: Record<string, number> } | undefined
+      for (let i = 0; i < 40; i++) {
+        const res = fakeResponse()
+        await usage.handler({ method: 'GET', url: `${usage.path}?region=cn`, headers: {} }, res.node)
+        const parsed = JSON.parse(String(res.body())) as NonNullable<typeof doc>
+        doc = parsed
+        const tiers = (parsed.models.find(m => m.key === 'qfmodel')?.contextTiers ?? []) as number[]
+        if (tiers.includes(500_000)) break
+        await new Promise(resolve => setTimeout(resolve, 50))
+      }
+      const row = doc?.models.find(m => m.key === 'qfmodel')
+      expect(row?.contextTiers).toEqual([200_000, 500_000, 1_000_000])
+      expect(row?.contextWindow).toBe(500_000)
+      expect(doc?.contextBudgets).toEqual({ qfmodel: 500_000 })
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})

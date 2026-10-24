@@ -1051,10 +1051,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     const tiers = model.contextTiers ?? []
     if (tiers.length === 0) return <span />
     const current = draft.contextBudgets[model.key] ?? model.contextWindow
-    // 选项**只**来自上游声明的档位。此前额外前置了一个「原生窗口」选项，
-    // 而上游的 contextTiers 本身就以原生窗口开头（实测 `[200000, 400000,
-    // 1000000]`），于是 200K 出现两次——用户一眼就看出来了。
-    // 无标签：这一列就挨着模型的上下文信息，下拉里的 200K / 400K / 1M
+    // 选项**只**来自上游声明的档位（过 `catalog.ts` 的档位改写表：400K 一律按
+    // 500K 呈现）。此前额外前置了一个「原生窗口」选项，而上游的 contextTiers
+    // 本身就以原生窗口开头（实测 `[200000, 400000, 1000000]`，改写后
+    // `[200000, 500000, 1000000]`），于是 200K 出现两次——用户一眼就看出来了。
+    // 无标签：这一列就挨着模型的上下文信息，下拉里的 200K / 500K / 1M
     // 本身已经说明它在选什么（只留下拉，与旁边的思考强度选择器对齐）。
     return (
       <div className="dsm-qoder-context-budget" title={t('row.contextBudget')}>

@@ -98,6 +98,46 @@ export function contextTiersOf(raw: QoderUpstreamModel): number[] | undefined {
   return [...new Set(counts)].sort((a, b) => a - b)
 }
 
+/**
+ * 档位改写表：上游声明的 400K 档一律按 **500K** 呈现与保存（用户要求，2026-10-24）。
+ *
+ * 为什么改在解析边界：档位表只有一个写点（`parseUpstreamModel`）与一个存档读点
+ * （`modelFromStored`），在这里改写，卡片下拉、usage 投影、落盘往返、运行期预算
+ * 四处拿到的就是同一份改写后的表——在渲染层改只会让「下拉里的选项」与「保存后
+ * 生效的窗口」重新变成两张表。上游哪天真的改口发 500K，这张表变成恒等映射，
+ * 不需要再动任何读点。
+ *
+ * 档位是**插件本地的上下文预算**（聊天请求体里没有任何上下文字段，实测
+ * `createChatBodyTemplate`），所以改写只影响 DSH 侧的预算选择与显示，不替上游
+ * 承诺它没声明的窗口。
+ */
+export const QODER_CONTEXT_TIER_OVERRIDES: ReadonlyMap<number, number> = new Map([
+  [400_000, 500_000],
+])
+
+/** 单个档位值过改写表；表里没有的原样返回。 */
+export function mapContextTier(value: number): number {
+  return QODER_CONTEXT_TIER_OVERRIDES.get(value) ?? value
+}
+
+/** 整张档位表过改写表（去重 + 升序，防止上游同时声明 400K 与 500K 时出现重项）。 */
+export function mapContextTiers(tiers: readonly number[]): number[] {
+  return [...new Set(tiers.map(mapContextTier))].sort((a, b) => a - b)
+}
+
+/**
+ * 已保存的预算过改写表：旧存档里的 400K 选择读回时就是 500K。
+ *
+ * 不做这一步，升级前勾了 400K 的人会在下拉里看到一个「不在选项里的选中值」——
+ * `<select>` 的 value 命中不了任何 option，界面只会显示成空白或第一项，比没迁移
+ * 更糟。
+ */
+export function migrateContextBudgets(budgets: Readonly<Record<string, number>>): Record<string, number> {
+  const out: Record<string, number> = {}
+  for (const [key, value] of Object.entries(budgets)) out[key] = mapContextTier(value)
+  return out
+}
+
 /** 强度语义排序用的序表（`max` 与 `xhigh` 同属"最强"档，都排最后）。 */
 const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 
@@ -200,7 +240,10 @@ export function canDisableThinkingOf(raw: QoderUpstreamModel, supportsThinking: 
 
 /** 把上游 snake_case 条目解析成 DSH 侧模型信息。 */
 export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
-  const contextWindow = pickDefaultContextWindow(raw) ?? raw.max_input_tokens ?? QODER_DEFAULT_CONTEXT
+  // 默认档与档位表都过改写表（400K→500K）：只改表不改默认档，会出现「选中值不在
+  // 选项里」的下拉（`<select>` 的 value 命中不了任何 option）。
+  const contextWindow = mapContextTier(pickDefaultContextWindow(raw) ?? raw.max_input_tokens ?? QODER_DEFAULT_CONTEXT)
+  const tiers = contextTiersOf(raw)
   const reasoning = thinkingOf(raw.thinking_config)
   const supportsThinking = supportsThinkingOf(raw)
   const promotion = parseQoderPromotion(raw.raw['promotion'])
@@ -220,7 +263,7 @@ export function parseUpstreamModel(raw: QoderUpstreamModel): QoderModelInfo {
     isDefault: raw.is_default,
     isFree: raw.is_free === true,
     isNew: false,
-    ...tiersField(contextTiersOf(raw)),
+    ...tiersField(tiers === undefined ? undefined : mapContextTiers(tiers)),
     ...promotion === undefined ? {} : { promotion },
   }
 }

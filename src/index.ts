@@ -30,7 +30,7 @@ import { failoverNoticeText } from './failover-notice.ts'
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters } from './catalog.ts'
+import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters, mapContextTier, mapContextTiers, migrateContextBudgets } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
 import { readPromotion, type QoderPromotion } from './promo.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
@@ -365,7 +365,7 @@ function selectedAccountId(config: { regions?: Record<string, unknown> | null },
   return typeof id === 'string' && id !== '' ? id : undefined
 }
 
-/** 某区域保存的 contextBudgets。 */
+/** 某区域保存的 contextBudgets（过档位改写表：旧存档的 400K 读回即 500K）。 */
 function contextBudgetsOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): Record<string, number> {
   const state = regionStateOf(config, region)
   const raw = state.contextBudgets
@@ -374,7 +374,7 @@ function contextBudgetsOf(config: { regions?: Record<string, unknown> | null }, 
   for (const [key, value] of Object.entries(raw)) {
     if (typeof value === 'number' && Number.isFinite(value)) out[key] = value
   }
-  return out
+  return migrateContextBudgets(out)
 }
 
 /** 某区域保存的 offModelKeys。 */
@@ -497,7 +497,9 @@ function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefin
     key: raw.key,
     displayName: raw.displayName,
     priceFactor: typeof raw.priceFactor === 'number' ? raw.priceFactor : 1,
-    contextWindow: typeof raw.contextWindow === 'number' ? raw.contextWindow : 200_000,
+    // 存档里的 contextWindow 是保存那一刻的生效窗口（可能正是被改写的 400K 档），
+    // 读回同样过改写表，否则旧快照会在实时目录缺席时把 400K 又显示回来。
+    contextWindow: typeof raw.contextWindow === 'number' ? mapContextTier(raw.contextWindow) : 200_000,
     maxOutputTokens: typeof raw.maxOutputTokens === 'number' ? raw.maxOutputTokens : 32_768,
     supportsImages: raw.supportsImages === true,
     supportsThinking: raw.supportsThinking === true,
@@ -505,7 +507,7 @@ function modelFromStored(raw: Record<string, unknown>): QoderModelInfo | undefin
     isDefault: raw.isDefault === true,
     isFree: raw.isFree === true,
     isNew: raw.isNew === true,
-    ...Array.isArray(raw.contextTiers) ? { contextTiers: (raw.contextTiers as unknown[]).filter((v): v is number => typeof v === 'number') } : {},
+    ...Array.isArray(raw.contextTiers) ? { contextTiers: mapContextTiers((raw.contextTiers as unknown[]).filter((v): v is number => typeof v === 'number')) } : {},
     // 思考强度档位：从保存的目录里读回来，否则重启后模型行不再显示档位选择器。
     ...Array.isArray(raw.thinkingEfforts) && raw.thinkingEfforts.length > 0
       ? { thinkingEfforts: (raw.thinkingEfforts as unknown[]).filter((v): v is string => typeof v === 'string') }
