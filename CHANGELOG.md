@@ -2,6 +2,53 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.9.2 (2026-10-24)
+
+> **只改文档与测试，不改运行时代码。** 宿主从 `0.2.1-rc.2` 升到 `0.2.1-rc.3`
+> （app 目录名同时从 `DSH NEXT.app` 变为 `DeepSeek Harness.app`）。逐包比对后确认：
+> 插件用到的宿主包与 rc.2 **逐字节相同**，rc.3 的客户端改动全部是**增量**且不碰本插件
+> 用到的槽位与 owner props —— 因此**没有运行时代码要改**。
+
+### 宿主 0.2.1-rc.3 实测（无需改代码）
+
+| 检查项 | rc.2 | rc.3（本次） |
+|---|---|---|
+| 宿主 app | `DeepSeek Harness.app`（壳版本同） | 同；`CFBundleShortVersionString = 0.2.1-rc.3` |
+| 全部 `@deepseek-ai/dsh-*` | `0.2.1-rc.2` | `0.2.1-rc.3`（实测 279+ 个包） |
+| 插件依赖的宿主包 | —— | 与 rc.2 **逐字节相同**（仅 `package.json` 版本号不同） |
+| 宿主内置 pi-ai | `1.1.0` | `1.1.0`（未变） |
+| `peer` 范围放行 rc.3 | —— | ✅ npm 标准语义与宿主门禁语义都放行 |
+| 插件在宿主里的加载 | —— | ✅ `Config` 目录 `include:dsh-connect-qoder` 状态 `schema`；`conversation.input.model.label` 由 `dsh-connect-qoder-client`（priority `-1`）占据；`conversation.input.left` 有 `dsh-connect-qoder-composer-credits` |
+| `dsh plugin list` 兼容性告警 | —— | 本插件**无**告警 |
+| 回归 | —— | `pnpm run typecheck` ✅；`pnpm test` 948 passed / 8 skipped ✅ |
+
+rc.3 的客户端改动全部是增量的，且都落在本插件用不到的地方：
+
+- **View 标签页置顶**：新增 `conversation.session.header.views.actions` 槽位、
+  `setPinned` / `entryPins` / `entryActions` 投影（会话头多出一个「More」菜单）。
+- **草稿接管**：`adopt` 增加 `whenDraftExists`（`replace` / `append` / `keep`），
+  旧的 `clearPreviousDraft` 语义保留。
+- **primitives**：`Tooltip` 支持 `left` 侧并会按视口自动翻转；`Menu` 新增 `current`
+  与 `minWidthFromAnchor`；新增两个 `IconAppsAddOutline*` 图标。
+
+### Fixed
+
+- **宿主换代留下的 `dsh` CLI 失效**（环境问题，不是插件代码）：宿主 app 目录名从
+  `DSH NEXT.app` 变为 `DeepSeek Harness.app`，`~/.local/bin/dsh` 仍指向被移除的旧路径，
+  于是任何 `dsh …` 命令都报 `Cannot find module .../DSH NEXT.app/...` —— 插件 README
+  里的 `dsh plugin --profile desktop add @dmh2002/dsh-connect-qoder` 因此也跑不通。
+  本机已把 shim 改指新宿主自带的 CLI 入口
+  （`DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`，内部以
+  `ELECTRON_RUN_AS_NODE` 跑 `app.asar` 里的 `dsh/lib/bin.js`），并把这条写进
+  `README.md` / `README.en.md` 的安装一节。
+
+### Added
+
+- **`tests/dsh-line.spec.ts` 把 `0.2.1-rc.2` / `0.2.1-rc.3` 补进
+  `ADMITTED_PRERELEASES`**，并在 host gate 用例的放行清单里加上 `0.2.1-rc.3`。
+  同一元组 `0.2.1` 上的 rc 由既有的 `>=0.2.1-rc.1` 分支放行，**peer 范围一个字没改**；
+  这条用例只是把「当前宿主版本确实在范围内」钉住，防止下次宿主再推进 rc 时静默失配。
+
 ## 1.9.1 (2026-10-24)
 
 > 版本号取 **patch**：修正一处「显示的是错的号的余额」。判据、请求形状、落盘格式、

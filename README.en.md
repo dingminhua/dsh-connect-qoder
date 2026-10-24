@@ -86,6 +86,14 @@ dsh plugin --profile web add @dmh2002/dsh-connect-qoder       # Web
 
 Then **restart that profile's DSH process** (the host half of a bundle loads at startup). You can also search for `dsh-connect-qoder` in DSH's "Plugin market / Bundles" and install it in one click.
 
+> **Does `dsh` fail with `Cannot find module .../DSH NEXT.app/...`?** That is a stale shim left over from the host's app rename: the app directory moved from `DSH NEXT.app` to `DeepSeek Harness.app`, and `~/.local/bin/dsh` still points at the removed path. Repoint the shim at the CLI entry the new host ships:
+>
+> ```bash
+> exec "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" "$@"
+> ```
+>
+> That entry runs `dsh/lib/bin.js` inside `app.asar` via `ELECTRON_RUN_AS_NODE`; the profile is still chosen with `--profile`.
+
 > The npm package name carries the `@dmh2002/` scope. The plugin's **configuration identity inside DSH does not** — the settings namespace, the `/plugins/dsh-connect-qoder/…` routes and the CLI program name all stay `dsh-connect-qoder`, so anyone upgrading from 0.2.0 keeps their saved configuration with no need to re-enter PATs. But the **browser bundle's module id and the settings card's slot keys are both keyed by the scoped package name** (`plugins.bundle.config` takes the bare package name, `plugins.row.config` takes `<package name>#<row id>`, and the row id stays unscoped); these are injected from `package.json` at build time, so a rename cannot leave them behind.
 
 ### From source (development)
@@ -226,6 +234,20 @@ pnpm exec dsh-connect-qoder doctor --json        # machine-readable output
 > **Two semver readings coexist** (corrected by measurement in 1.1.2): **npm / pnpm installation** uses node-semver's **standard** reading, so a new patch line's rc (`0.2.2-rc.1`) really does still need a hand-added branch — that is what `UNGATED_PRERELEASES` tracks. But the **host's plugin-compatibility gate does not use the standard reading**: `dsh-app-boot` calls `semver.satisfies(v, range, { includePrerelease: true })`, under which `>=0.2.1-rc.1 <0.3.0-0` alone covers the **whole `0.2.x` line** (`0.2.2-rc.1`, `0.2.9` all pass) while `0.3.0-rc.1` is still blocked by the ceiling. 1.1.0/1.1.1 claimed "no static range can cover any `0.2.x` prerelease" — true for npm, false for the host gate, now corrected.
 >
 > **pi-ai gets its own row** because it changed major: Desktop 0.2.1-rc.1 moved pi-ai from 0.85 to 1.x, and the two generations consume different context shapes (1.x normalizes in its Models layer). The declaration and the runtime detection must agree — otherwise you get the silent tool-loss bug fixed in 1.1.0. See [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md).
+
+### Current host baseline: 0.2.1-rc.3 (measured 2026-10-24)
+
+The host moved to `0.2.1-rc.3` (`DeepSeek Harness.app`, nightly channel; every `@deepseek-ai/dsh-*` package inside `app.asar` is `0.2.1-rc.3`, bundled pi-ai is `1.1.0`). **This plugin needs no runtime code change.** The reasoning, item by item:
+
+| Check | Result |
+| --- | --- |
+| Host packages the plugin depends on (`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings` / `dsh-atomic-write` / `dsh-attachment` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-ui-slots` / `dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-renderer` / `dsh-client-locale`) | Byte-identical to rc.2 (only the `package.json` version differs) |
+| rc.3's client-side changes | All **additive**: view-tab pinning plus the new `conversation.session.header.views.actions` slot, draft adoption gaining `whenDraftExists` (`replace` / `append` / `keep`), primitives' `Tooltip` gaining `left` and automatic flipping, `Menu` gaining `current` and `minWidthFromAnchor`, two new icons. **No** slot or owner prop the plugin uses was changed |
+| Peer range | `>=0.2.1-rc.1 <0.3.0-0` admits `0.2.1-rc.3` under both the npm-standard reading and the host gate's `includePrerelease: true` reading (the latter covers the whole `0.2.x` line) |
+| Actual load on rc.3 | The `Config` directory shows `include:dsh-connect-qoder` with status `schema`; the client slot `conversation.input.model.label` is occupied by `dsh-connect-qoder-client` (priority `-1`), and `conversation.input.left` carries `dsh-connect-qoder-composer-credits` — `dsh plugin list` raises no compatibility warning for this plugin |
+| Regression | `pnpm run typecheck` and `pnpm test` (948 passed / 8 skipped) are green |
+
+> The **environment** change that came with rc.3 (not a plugin problem): the host app directory was renamed from `DSH NEXT.app` to `DeepSeek Harness.app`, which breaks a `dsh` shim still pointing at the old path — see the note under [Installation](#installation).
 
 ## Security notes
 

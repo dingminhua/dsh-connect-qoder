@@ -86,6 +86,14 @@ dsh plugin --profile web add @dmh2002/dsh-connect-qoder       # Web
 
 装完**重启该 profile 的 DSH 进程**（bundle 的 host 半边在启动时加载）。也可以在 DSH 的「插件市场 / Bundles」里搜 `dsh-connect-qoder` 一键安装。
 
+> **`dsh` 命令报 `Cannot find module .../DSH NEXT.app/...`？** 那是宿主换代留下的旧 shim：宿主 app 目录名已从 `DSH NEXT.app` 变为 `DeepSeek Harness.app`，而 `~/.local/bin/dsh` 仍指向被移除的旧路径。把 shim 改指新宿主自带的 CLI 入口即可：
+>
+> ```bash
+> exec "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" "$@"
+> ```
+>
+> 新入口内部以 `ELECTRON_RUN_AS_NODE` 运行 `app.asar` 里的 `dsh/lib/bin.js`，profile 仍由 `--profile` 决定。
+
 > npm 包名带 `@dmh2002/` 作用域。插件在 DSH 内的**配置标识不带作用域**——设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与命令行程序名都仍是 `dsh-connect-qoder`，所以 0.2.0 之前装过的用户升级后配置照旧生效，不用重填 PAT。但**浏览器 bundle 的模块 id、以及设置卡片两个槽位的 key 都按带作用域的包名建**（`plugins.bundle.config` 用裸包名，`plugins.row.config` 用 `<包名>#<行 id>`，行 id 仍不带作用域），这几处由构建期从 `package.json` 注入，改包名不会漏下它们。
 
 ### 从源码构建（开发）
@@ -226,6 +234,20 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 > **两套语义并存**（1.1.2 实测更正）：npm / pnpm 安装走 node-semver **标准**语义，新补丁号的 rc（如 `0.2.2-rc.1`）**确实**仍需手工追加一条分支 —— `UNGATED_PRERELEASES` 就是这份可见的待办表。但**宿主的插件兼容门禁不是标准语义**：`dsh-app-boot` 用 `semver.satisfies(v, range, { includePrerelease: true })`，在这个语义下 `>=0.2.1-rc.1 <0.3.0-0` 一支就覆盖**整条 `0.2.x` 线**（`0.2.2-rc.1`、`0.2.9` 都放行），`0.3.0-rc.1` 仍被上界拦住。1.1.0/1.1.1 曾断言「没有任何静态范围能覆盖任意 `0.2.x` 预发布」，那句话只对 npm 成立，对宿主门禁不成立，已更正。GA 版本（如 `0.2.1`）对既有分支本来就判 true。
 >
 > **pi-ai 单独列一行**是因为它换了主版本：0.2.1-rc.1 宿主把 pi-ai 从 0.85 换到 1.x，而两代的上下文契约不同（1.x 在 Models 层归一化）。声明与检测必须一致，否则就是 1.1.0 修掉的那个静默丢工具缺陷 —— 详见 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)。
+
+### 当前宿主基线：0.2.1-rc.3（2026-10-24 实测）
+
+宿主升到 `0.2.1-rc.3`（`DeepSeek Harness.app`，nightly 通道；`app.asar` 内全部 `@deepseek-ai/dsh-*` 均为 `0.2.1-rc.3`，内置 pi-ai `1.1.0`）。**本插件不需要任何运行时代码改动**，理由逐条如下：
+
+| 检查项 | 结论 |
+| --- | --- |
+| 插件依赖的宿主包（`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings` / `dsh-atomic-write` / `dsh-attachment` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-ui-slots` / `dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-renderer` / `dsh-client-locale`） | 与 rc.2 逐字节相同（仅 `package.json` 的版本号不同） |
+| rc.3 的客户端改动 | 全部**增量**：View 标签页置顶与 `conversation.session.header.views.actions` 新槽位、草稿接管新增 `whenDraftExists`（`replace` / `append` / `keep`）、primitives 的 `Tooltip` 支持 `left` 与自动翻转、`Menu` 新增 `current` 与 `minWidthFromAnchor`、新增两个图标。插件用到的槽位与 owner props **没有一条被改动** |
+| peer 范围 | `>=0.2.1-rc.1 <0.3.0-0` 在 npm 标准语义与宿主门禁语义下都放行 `0.2.1-rc.3`（宿主门禁用 `includePrerelease: true`，覆盖整条 `0.2.x` 线） |
+| 插件在 rc.3 上的实际加载 | `Config` 目录里 `include:dsh-connect-qoder` 状态 `schema`；客户端 `conversation.input.model.label` 槽位由 `dsh-connect-qoder-client`（priority `-1`）占据，`conversation.input.left` 槽位有 `dsh-connect-qoder-composer-credits` —— 宿主 `dsh plugin list` 不再对本插件报兼容性告警 |
+| 回归 | `pnpm run typecheck` 与 `pnpm test`（948 passed / 8 skipped）全绿 |
+
+> rc.3 带来的**环境**变化（不是插件的问题）：宿主 app 目录名从 `DSH NEXT.app` 变为 `DeepSeek Harness.app`，旧路径上的 `dsh` shim 会失效 —— 见[安装](#安装)一节的说明。
 
 ## 安全说明
 
