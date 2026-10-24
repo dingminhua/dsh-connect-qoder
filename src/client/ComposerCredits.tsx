@@ -66,11 +66,7 @@ export interface ComposerCreditsProps extends Partial<ComposerCreditsInjected> {
    * projection has not landed.
    */
   provider?: string
-  /**
-   * Which region's credits to read. The gate always passes it; a foreign
-   * provider together with an explicit region is cross-connector compare
-   * mode (issue #14) — the readout renders off the region, off the provider.
-   */
+  /** Which region's credits to read when the provider is this plugin's. */
   region?: QoderWebRegion
   /**
    * Settings scope from the configForms mirror. Present whenever a row click
@@ -110,12 +106,6 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   if (t === undefined) throw new Error('Composer credits readout requires its translation function')
   const owned = provider === undefined ? undefined : QODER_COMPOSER_PROVIDERS[provider]
   const activeRegion = region ?? owned
-  /**
-   * 跨连接器对比态（issue #14）：region 是 gate 在 provider 不属于本插件时
-   * 选出来的。此时本会话根本不经 Qoder 计费，悬停文案必须说「Qoder 侧」，
-   * 不能沿用「当前计费账号」——那会让读者以为这个号在给本会话付钱。
-   */
-  const foreign = owned === undefined
 
   const [usage, setUsage] = useState<QoderWebUsage | undefined>(undefined)
   const [accountCredits, setAccountCredits] = useState<QoderWebAccountCredit[] | undefined>(undefined)
@@ -195,10 +185,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   }, [activeRegion])
 
   // Fetch usage on mount and when the region changes; a timer starts only after
-  // the first fetch settles. 对比模式（issue #14）下 provider 是外来的而 region
-  // 由 gate 给定，所以守卫与依赖都挂 activeRegion——fetch 真正用的那个值。
+  // the first fetch settles.
   useEffect(() => {
-    if (activeRegion === undefined) return undefined
+    if (owned === undefined) return undefined
     let cancelled = false
     let timer: number | undefined
     const controller = new AbortController()
@@ -211,7 +200,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       if (timer !== undefined) window.clearInterval(timer)
       controller.abort()
     }
-  }, [activeRegion, fetchUsage])
+  }, [owned, fetchUsage])
 
   // Per-account figures are read on OPEN, not on the 5-minute cycle.
   useEffect(() => {
@@ -306,9 +295,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     }
   }
 
-  // 没有任何区域可读才整体不画：provider 不是本插件的、但 gate 给了显式
-  // region（对比模式）照常渲染 —— 一切判定都挂在 activeRegion 上。
-  if (owned === undefined && region === undefined) return null
+  // Not this plugin's model: render nothing at all. 插件之间不做联动，所以别的
+  // 连接器当家时这里没有该显示的读数（见 docs/DESIGN.md「边界：不做什么」）。
+  if (owned === undefined) return null
 
   const signedIn = usage?.status === 'signed-in' ? usage : undefined
   /**
@@ -352,9 +341,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const total = billingCredits ?? (billingId === signedIn?.accountId ? docTotal : undefined)
   const valueText = total === undefined ? '—' : formatCredits(total)
   /** 悬停说清这个数字是谁的：接管发生时，光看「QD AI · 100」不知道 100 归谁。 */
-  const billingTitle = billingName === undefined
-    ? undefined
-    : t(foreign ? 'composer.compareBillingAccount' : 'composer.billingAccount', { name: billingName })
+  const billingTitle = billingName === undefined ? undefined : t('composer.billingAccount', { name: billingName })
   const sourceRows: QoderWebAccountCredit[] = accountCredits
     ?? (signedIn === undefined
       ? []

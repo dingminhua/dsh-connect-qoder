@@ -8,13 +8,68 @@
 
 ---
 
-## 一、与 workbuddy 的分工
+## 一、边界：不做什么
+
+**不做插件之间的联动。** 本插件只对 DSH 宿主负责：自己的 provider、自己的凭据、
+自己的账号池、自己的读数。它不探测、不读写其他插件的配置 / 落盘 / 内存状态，不
+订阅或替别的插件发事件，也不参与需要两方约定协议的协作——「联合面板」「统一账号池」
+「跨插件的会话路由」这类活一律不做。
+
+理由不是能力问题，而是三条边界一旦跨过就回不来：
+
+- **凭据边界**：账号池里的 PAT 是本插件保管的东西。任何跨插件共享都意味着它要离开
+  这个边界，而对方怎么存、怎么落盘、会不会写进日志，不在本插件的控制里。
+- **故障归因**：联动出问题时，用户看到的是「装了这个就不对」，两边日志各说各话。
+  不联动，每次失败就只有一个可能的责任方。
+- **版本耦合**：联动的两端必须一起发版、一起测、一起修，而两个插件的宿主基线、
+  发版节奏本来就不必相同。
+
+第一个被这条边界裁掉的功能，是 1.10.0 引入、1.12.0 移除的**跨连接器余额对比**
+（issue #14）：别的连接器的模型被选中时，本区域也把积分胶囊画出来。它让本插件去
+解释另一个插件的存在，读数还出现在一个根本不经过 Qoder 计费的会话里；要对比两边
+余额，切一下模型即可，不需要两个插件就「同时显示」达成一致。
+
+**共享插槽**上的占位冲突同理：`conversation.input.left` 是 list 插槽，另一个插件
+停在那里可能把读数挤到看不见。本插件的回答是给自己多留一个可选席位
+（`creditPosition`：输入框工具栏 / 输入框下方），由用户换位置，而不是去和对方协商
+谁先谁后。
+
+与「不联动」不矛盾的三件事，划在这里免得被读成同一类：
+
+- **读宿主的公开投影**（`modelSelection`）不算联动——那是宿主对所有插件公开的契约，
+  不是插件之间的私约。本插件据此判断「当前会话是不是在用我的模型」，仅此而已。
+- **同族借鉴**（卡片外观、已修缺陷的教训，见第二节）是**源码级**的，不是运行期
+  的：两个插件装在同一台机器上也互不感知、互不调用。
+- **单槽的委托渲染**——宿主槽位机制下的降级策略，见下一段。它不读对方状态、不约定
+  私有事件，换谁来当邻居都一样。
+
+### 唯一的例外：模型选择器标签槽的委托
+
+会调用到别的插件代码的地方只有一处：宿主的模型选择器标签槽
+（`conversation.input.model.label`，见 `src/client/QoderModelLabel.tsx`）。
+
+它是 **single 槽**——priority 升序、最低者渲染，一个槽只容一个占位者。本插件用
+`-1` 占住它之后，**所有** provider 的模型行都交给它来画。对不属于本插件的行，
+`foreign` 分支从槽位账本里取下一个注册项（跳过自己），把宿主的 ownerProps 四项原样
+转给它、并渲染成**子元素**；账本里没有别人，就画 `model.name`。
+
+这不是「联动」，而是**不抢占**：single 槽只有一个占位者，本插件占了槽却只画自己的
+东西，别家插件的徽标就会在用户眼前消失——那比「不合作」更糟。委托只经过宿主公开的
+槽位账本与 ownerProps 契约：不按名字找某个插件，不读它的配置 / 落盘 / 内存，也不与它
+约定事件。账本里是谁就委托给谁。
+
+`tests/model-label.spec.tsx` 的「外来 provider 的委托」一节把这条钉住：被委托的组件
+必须作为子元素渲染（它有自己的 hooks；直接函数调用会把两边的 hook 序列混在一起）。
+
+---
+
+## 二、与 workbuddy 的分工
 
 | 层 | 来源 | 取什么 |
 |---|---|---|
 | 插件外壳 / 外观 | `dsh-connect-workbuddy` | 卡片结构、`dsm-*` CSS、`settingsScope` 配置回写、路由形态、发布工程、CI |
 | 连接内核 | 自行实现（`src/cosy.ts` / `src/upstream.ts`） | Qoder 的 cosy 协议：自定义 Base64、MD5 签名、RSA/AES 会话、指纹派生、jobToken 交换、SSE 增量解析 |
-| 已修缺陷的教训 | `dsh-connect-workbuddy` | 「平台标记 ≠ 模型原生能力」「声明可关闭思考不等于真的能关」等已踩过的坑（见第五节） |
+| 已修缺陷的教训 | `dsh-connect-workbuddy` | 「平台标记 ≠ 模型原生能力」「声明可关闭思考不等于真的能关」等已踩过的坑（见第六节） |
 
 关键差异（**合理**差异，非缺口）：
 
@@ -31,7 +86,7 @@
 
 ---
 
-## 二、模块结构
+## 三、模块结构
 
 ```text
 DSH PiAiAdapter（qoder / qoder-global 各一套）
@@ -50,8 +105,8 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 | `credentials.ts` | PAT 校验、`qoderAccountId`（sha256 前 16 位）、掩码 |
 | `accounts.ts` | 本地 vault（`$DSH_HOME/.qoder-accounts.<region>.json`，0600），三源去重合并 |
 | `account-pool.ts` / `-store.ts` / `-run.ts` | 账号池排序（`rankPool`）、测量落盘、批量测试 |
-| `off-thinking.ts` | 「可关闭思考」的校正表与种子（见第五节） |
-| `native-modality.ts` | 模型原生多模态表与图片默认值（见第五节） |
+| `off-thinking.ts` | 「可关闭思考」的校正表与种子（见第六节） |
+| `native-modality.ts` | 模型原生多模态表与图片默认值（见第六节） |
 | `shim.ts` | loopback 服务：入站校验、SSE 翻译、首字节前故障转移 |
 | `adapter.ts` | pi-ai 装配：代际门控、思考档位映射、模型描述符 |
 | `web-status.ts` | 浏览器路由：usage / account-credits / accounts / pool / transfer / probe / `__save` |
@@ -60,7 +115,7 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 
 ---
 
-## 三、凭据与账号池
+## 四、凭据与账号池
 
 三源按 **settings → env → vault** 优先级去重合并（同一个 PAT 只在最高优先级
 来源里列出一次，id 由 PAT 本身派生，故重复项必然精确相同）：
@@ -82,7 +137,7 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 
 ---
 
-## 四、推理与上下文
+## 五、推理与上下文
 
 - **推理**：Qoder 的推理线上量是**布尔** `model_config.is_reasoning`，不是 effort
   档位。所以 `qoderThinkingLevelMap` 只能表达 `off`（且仅
@@ -93,13 +148,13 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 
 ---
 
-## 五、从 workbuddy 继承的「已修缺陷」教训（重点）
+## 六、从 workbuddy 继承的「已修缺陷」教训（重点）
 
 这三条是同一个形状的问题：**上游的声明字段不可全信**。解法也相同：按**精确
 model id** 键控的人工核对表 + 只在有依据时才给默认值，其余留 `unknown`（宁可
 少给，也不要每次都失败/撒谎）。
 
-### 5.1 平台标记 ≠ 模型原生能力（`native-modality.ts`）
+### 6.1 平台标记 ≠ 模型原生能力（`native-modality.ts`）
 
 上游目录的 `supportsImages`（Qoder 的 `is_vl`）是**平台**的图片输入声明，不是
 **模型**的原生能力：它在内置目录里几乎对每个模型都是 `true`，连纯文本模型
@@ -111,7 +166,7 @@ model id** 键控的人工核对表 + 只在有依据时才给默认值，其余
 对方面向已核对过的数据源，本项目**没有**同等来源，故不虚构条目，只登记少数可从
 厂商命名确认的项，其余保持 `unknown`（= 不预勾选）——比信任平台标记严格更安全。
 
-### 5.2 声明「可关闭思考」≠ 真的能关（`off-thinking.ts`）
+### 6.2 声明「可关闭思考」≠ 真的能关（`off-thinking.ts`）
 
 workbuddy 实测：声明可关闭的模型里有一部分对 `reasoning_effort:"off"` 回 400，
 且错误体不点名参数。由于该档位写进运行时描述符，失败会在**此后每一次请求**上
@@ -123,7 +178,7 @@ workbuddy 实测：声明可关闭的模型里有一部分对 `reasoning_effort:
 加一行即可开始隐藏。代价不对称是这里的取舍依据：提供一个必然失败的档位，代价是
 用户该模型的每一次请求；藏起一个本可用的档位，代价只是一个选项。
 
-### 5.3 图片勾选必须独立持久（`imageModelKeys`）
+### 6.3 图片勾选必须独立持久（`imageModelKeys`）
 
 workbuddy 用独立的 `imageModelIds`；本项目早期把图片勾选**耦合进** `lastCatalog`
 快照，目录一被重写就可能连带改变某个模型的图像答案。现改为独立集合
@@ -131,7 +186,7 @@ workbuddy 用独立的 `imageModelIds`；本项目早期把图片勾选**耦合�
 
 ---
 
-## 六、安全
+## 七、安全
 
 - **PAT 不出进程**：pi-ai 只与本地 shim 对话；shim 用 cosy 会话做上游请求。
 - **shim 入站校验**：先查 Host / Origin（仅接受 `127.0.0.1`）/ Content-Type，
@@ -144,7 +199,7 @@ workbuddy 用独立的 `imageModelIds`；本项目早期把图片勾选**耦合�
 
 ---
 
-## 七、源头与致谢
+## 八、源头与致谢
 
 - 外观与工程骨架：[`dsh-connect-workbuddy`](https://github.com/dingminhua/dsh-connect-workbuddy)（MIT）—— 各源文件头部均带标注。
 - cosy 协议行为参照：[`qoder2api`](https://github.com/Zhengyuuuui/qoder2api) / `QCCG`（其声明为 GPL-3.0）。

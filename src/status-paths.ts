@@ -1103,13 +1103,6 @@ export type QoderWebUsage =
     showCreditsInMainUi?: boolean
     /** WHERE this region's readout sits; absent means `composer`. */
     creditPosition?: QoderCreditPosition
-    /**
-     * Whether this region's credit line ALSO renders while the session's
-     * model belongs to another connector (cross-connector compare, issue
-     * #14). Carried on the Host's answer for the same reason as
-     * `showCreditsInMainUi`; absent reads as `false` (opt-in).
-     */
-    showCreditsForForeignModels?: boolean
     /** See the signed-in variant: the last upstream-asserted quota exhaustion. */
     lastQuotaExhaustion?: QoderWebQuotaExhaustion
     message?: string
@@ -1141,8 +1134,6 @@ export type QoderWebUsage =
     showCreditsInMainUi?: boolean
     /** See the signed-out variant: WHERE this region's readout sits. */
     creditPosition?: QoderCreditPosition
-    /** See the signed-out variant: cross-connector compare mode. */
-    showCreditsForForeignModels?: boolean
     /**
      * The last upstream-asserted quota exhaustion on the chat path, or absent
      * when upstream never said so this process. Region-level on purpose —
@@ -1407,17 +1398,6 @@ export function nextRegionCreditsShown(
 }
 
 /**
- * Whether one region's credit line should ALSO render while the session's
- * selected model belongs to ANOTHER connector —— 跨连接器余额对比（issue #14）.
- *
- * Opt-IN：只有显式 `true` 才开。与 `regionCreditsShownOf` 的 `!== false` 相反：
- * 默认多渲染一个胶囊是所有人都会注意到的行为变化，必须用户亲手要。
- */
-export function regionCreditsForeignOf(value: unknown, region: QoderWebRegion): boolean {
-  return regionSlotOf(value, region)['showCreditsForForeignModels'] === true
-}
-
-/**
  * 最近一次**上游明说**的额度耗尽（对话路径上 `quota-exhausted` 的那次失败）。
  *
  * 为什么需要它：逐账号的 `out-of-credit` 只活在账号池的视图里，而池的记账有
@@ -1436,21 +1416,6 @@ export interface QoderWebQuotaExhaustion {
   message: string
   /** 上游报出这件事的时刻；展示口径是「最近一次」。 */
   atMs: number
-}
-
-/**
- * Build the next `regions` settings value for the cross-connector compare
- * toggle. Same merge rule as {@link nextRegionCreditsShown}.
- */
-export function nextRegionCreditsForeign(
-  value: unknown,
-  region: QoderWebRegion,
-  foreign: boolean,
-): Record<string, unknown> {
-  return nextRegionSlots(regionsMapOf(value), region, {
-    ...regionSlotOf(value, region),
-    showCreditsForForeignModels: foreign,
-  })
 }
 
 /**
