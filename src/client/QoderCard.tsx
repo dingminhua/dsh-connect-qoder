@@ -55,6 +55,7 @@ import type { QoderAccountScope } from './account-selection.ts'
 import {
   writeAccountSlot,
   writeRegionCreditPosition,
+  writeRegionCreditsForeign,
   writeRegionCreditsShown,
   writeRegionEnabled,
   writeRegionModels,
@@ -724,6 +725,21 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     })
   }
 
+  /**
+   * Cross-connector compare toggle (issue #14): keep this region's readout
+   * on screen while the session's model belongs to another connector.
+   *
+   * Same settings-write shape as the two toggles above; the gate picks the
+   * change up on its next scope notification.
+   */
+  function toggleCreditsForeign(on: boolean): void {
+    if (scope === undefined) return
+    setSiblingBusy(true)
+    void writeRegionCreditsForeign(scope, activeRegion, on, slotWith(scope, activeRegion, { showCreditsForForeignModels: on })).finally(() => {
+      if (mounted.current) setSiblingBusy(false)
+    })
+  }
+
   function renderRejected(usage: Extract<QoderWebUsage, { status: 'signed-in' }>): ReactElement | null {
     const recovery = usage.recovery
     // 与 workbuddy 同构：usage-error 容器 + strong/p，三态说明互斥
@@ -1194,6 +1210,21 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               <span className="dsm-qoder-pref-hint">{t('row.creditPositionHint')}</span>
             </span>
           </label>
+          {/* 跨连接器对比（issue #14）：会话模型属于别的连接器时仍显示本区域读数。
+              与位置行一样随总开关置灰——读数整个关掉时，对比与否无从谈起。 */}
+          <label className="dsm-qoder-pref dsm-qoder-credit-foreign-pref" title={t('row.creditsForeignHint')}>
+            <input
+              type="checkbox"
+              className="dsm-qoder-pref-check"
+              checked={regionOn && creditsShownOf(usage) ? creditsForeignOf(usage) : false}
+              disabled={!regionOn || !creditsShownOf(usage) || !canWrite(scope) || siblingBusy || poolBusy}
+              onChange={(event) => { toggleCreditsForeign(event.target.checked) }}
+            />
+            <span className="dsm-qoder-pref-copy">
+              <span className="dsm-qoder-pref-label">{t('row.creditsForeignLabel')}</span>
+              <span className="dsm-qoder-pref-hint">{t('row.creditsForeignHint')}</span>
+            </span>
+          </label>
     </div>
     )
   }
@@ -1304,6 +1335,16 @@ function creditsPositionOf(usage: QoderWebUsage | undefined): QoderCreditPositio
   if (usage === undefined) return 'composer'
   if (usage.status === 'error') return 'composer'
   return usage.creditPosition === 'stats' ? 'stats' : 'composer'
+}
+
+/**
+ * Cross-connector compare (issue #14), read from the HOST's answer for the
+ * same reason as the two readers above. Opt-in: absent reads as off.
+ */
+function creditsForeignOf(usage: QoderWebUsage | undefined): boolean {
+  if (usage === undefined) return false
+  if (usage.status === 'error') return false
+  return usage.showCreditsForForeignModels === true
 }
 
 function cloneDraft(draft: QoderDraft): QoderDraft {

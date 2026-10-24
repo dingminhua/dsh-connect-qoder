@@ -2,6 +2,35 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.10.0 (2026-10-24)
+
+> 版本号取 **minor**：新增一个**用户可见能力**（跨连接器余额对比，issue #14）。
+> 默认行为逐字不变——新开关 opt-in 且默认关，判据、请求形状、落盘格式、CLI、
+> peer 范围都不动；配置新增一个可选键（`regions.*.showCreditsForForeignModels`，
+> 默认 false），旧配置读出即关。
+
+### Added
+
+- **跨连接器余额对比**（issue #14）：同时装多个连接器（如 workbuddy）时，积分
+  胶囊默认只跟着会话选中的 provider 走——两张 provider 映射表不相交，选了谁家
+  的模型，另一家的胶囊立刻消失，位置设置救不了（provider 判断在前）。现在每个
+  区域多一个 opt-in 开关「其他连接器的模型选中时也显示」（卡片积分区第三行，
+  `showCreditsForForeignModels`，默认 false）：勾选后，会话模型属于别的连接器
+  （或投影尚未落地）时，第一个开了开关的区域照常渲染，与对方读数并排常驻
+  （标签 `QD CN` / `WB CN` 天然可区分）；区域自己的显示/启用开关与席位选择照旧
+  把关；两个区域都开时取国内版（区域顺序）。对比态下悬停写明「Qoder 侧计费账号
+  的余额」——此时本会话不经 Qoder 计费，不说「当前计费」。
+- 配套：usage 文档每区域新增 `showCreditsForForeignModels` 字段（卡片从宿主的
+  回答读开关状态，不读浏览器设置镜像，理由同 `showCreditsInMainUi`）；设置写入
+  走既有 Host 端点路径（`writeField`，服务端合并不会删隔壁区域）。
+
+### Fixed
+
+- **`ComposerCredits` 的取数守卫挂错了判据**：挂载取数的 effect 以 `owned`
+  （provider 是否本插件）作守卫，而请求真正用的是 `activeRegion`。对比模式下
+  provider 是外来的，effect 整个不跑——胶囊画出来但永远显示「—」。守卫改为
+  `activeRegion === undefined`（#14 实现过程中被新增测试钉住，随本版一并落地）。
+
 ## 1.9.2 (2026-10-24)
 
 > **只改文档与测试，不改运行时代码。** 宿主从 `0.2.1-rc.2` 升到 `0.2.1-rc.3`
