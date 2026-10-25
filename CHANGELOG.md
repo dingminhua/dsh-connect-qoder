@@ -2,9 +2,7 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
-## Unreleased
-
-> 版本号待定（预计 **minor**：新增一个用户可见能力——活动面整份读取）。
+## 1.14.0 (2026-10-25)
 
 ### Added
 
