@@ -21,6 +21,7 @@ import {
   QODER_ACCOUNT_CREDITS_PATH,
   QODER_ACCOUNTS_PATH,
   QODER_ACCOUNTS_REFRESH_PATH,
+  QODER_CAMPAIGNS_PATH,
   QODER_MODELS_REFRESH_PATH,
   QODER_POOL_PATH,
   QODER_PROBE_PATH,
@@ -220,11 +221,12 @@ function response(): {
 }
 
 describe('registerQoderWebRoutes registration', () => {
-  it('mounts the usage, account-credits, model-refresh, accounts-refresh, accounts, probe, pool, transfer, and save routes', async () => {
+  it('mounts the usage, account-credits, campaigns, model-refresh, accounts-refresh, accounts, probe, pool, transfer, and save routes', async () => {
     const captured = await mountRoutes()
     expect(captured.map(entry => entry.path)).toEqual([
       QODER_USAGE_PATH,
       QODER_ACCOUNT_CREDITS_PATH,
+      QODER_CAMPAIGNS_PATH,
       QODER_MODELS_REFRESH_PATH,
       QODER_ACCOUNTS_REFRESH_PATH,
       QODER_ACCOUNTS_PATH,
@@ -384,6 +386,60 @@ describe('account-credits route', () => {
     await handler(request('GET', undefined, `${QODER_ACCOUNT_CREDITS_PATH}?region=cn`), res)
     expect(status()).toBe(502)
     expect(body()).toMatchObject({ error: 'upstream down' })
+  })
+})
+describe('campaigns route (活动面)', () => {
+  const FEED = {
+    campaigns: [{ campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED', amount: 100 }],
+    campaignUrl: 'https://openapi.qoder.com.cn/growth-page/activity-iframe',
+    showCampaign: true,
+    claimable: false,
+  }
+
+  it('answers the whole feed for the requested region', async () => {
+    const captured = await mountRoutes(deps({ campaigns: async () => FEED }))
+    const handler = findHandler(captured, QODER_CAMPAIGNS_PATH)
+    const { res, status, body } = response()
+    await handler(request('GET', undefined, `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
+    expect(status()).toBe(200)
+    expect(body()).toEqual(FEED)
+  })
+
+  it('answers 503 when campaigns is not provided', async () => {
+    const captured = await mountRoutes(deps())
+    const handler = findHandler(captured, QODER_CAMPAIGNS_PATH)
+    const { res, status, body } = response()
+    await handler(request('GET', undefined, `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
+    expect(status()).toBe(503)
+    expect(body()).toMatchObject({ reason: 'campaigns-unavailable' })
+  })
+
+  it('answers 502 when the read throws', async () => {
+    const captured = await mountRoutes(deps({ campaigns: async () => { throw new Error('upstream down') } }))
+    const handler = findHandler(captured, QODER_CAMPAIGNS_PATH)
+    const { res, status, body } = response()
+    await handler(request('GET', undefined, `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
+    expect(status()).toBe(502)
+    expect(body()).toMatchObject({ error: 'upstream down' })
+  })
+
+  it('refuses POST with 405', async () => {
+    const captured = await mountRoutes(deps({ campaigns: async () => FEED }))
+    const handler = findHandler(captured, QODER_CAMPAIGNS_PATH)
+    const { res, status } = response()
+    await handler(request('POST', undefined, `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
+    expect(status()).toBe(405)
+  })
+
+  it('读路由不设来源门（与 account-credits 同款：只读、同源策略由浏览器保证）', async () => {
+    // 与 account-credits 保持一致：只读 GET 不带 loopbackOrigin 检查，跨源请求由
+    // 浏览器 CORS / 同源策略挡住；这条钉住「不要给活动读单独加门」以免日后分叉。
+    const captured = await mountRoutes(deps({ campaigns: async () => FEED }))
+    const handler = findHandler(captured, QODER_CAMPAIGNS_PATH)
+    const { res, status, body } = response()
+    await handler(request('GET', 'https://evil.example', `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
+    expect(status()).toBe(200)
+    expect(body()).toEqual(FEED)
   })
 })
 

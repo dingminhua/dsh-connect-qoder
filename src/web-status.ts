@@ -28,6 +28,7 @@ import {
   QODER_ACCOUNT_CREDITS_PATH,
   QODER_ACCOUNTS_PATH,
   QODER_ACCOUNTS_REFRESH_PATH,
+  QODER_CAMPAIGNS_PATH,
   QODER_MODELS_REFRESH_PATH,
   QODER_POOL_PATH,
   QODER_PROBE_PATH,
@@ -61,7 +62,7 @@ import {
   type QoderWebRecovery,
   type QoderTransferRecord,
 } from './status-paths.ts'
-import type { QoderRegion } from './upstream.ts'
+import type { QoderCampaignFeed, QoderRegion } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { resolveTargetModel, exclusionOf, rankPool } from './account-pool.ts'
 import type { QoderPoolCredits, QoderPoolProbe } from './account-pool.ts'
@@ -295,6 +296,14 @@ export interface QoderWebRouteDeps {
   /** Fetch one region's per-account credit balances fresh (composer panel). */
   accountCredits?(region: QoderRegion, signal?: AbortSignal): Promise<QoderWebAccountCredit[]>
   /**
+   * One region's campaign feed (daily check-in + every `VIEW_DETAILS` banner).
+   *
+   * The card's activity area reads this while the panel is open. Optional so a
+   * host that does not wire it simply shows no activity section — the card is
+   * still a complete card, just without the upstream's current promotions.
+   */
+  campaigns?(region: QoderRegion, signal?: AbortSignal): Promise<QoderCampaignFeed>
+  /**
    * What to tell the user after the upstream refused this region's credential.
    *
    * Probes the OTHER stored accounts and promises a switch only to one that
@@ -460,6 +469,22 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     try {
       const credits = await deps.accountCredits(region)
       return json(res, 200, credits)
+    } catch (error: unknown) {
+      return json(res, 502, { error: safeMessage(error) })
+    }
+  })
+
+  // -------------------------------------------------------------------------
+  // GET /campaigns — one region's activity feed (check-in + VIEW_DETAILS banners).
+  // -------------------------------------------------------------------------
+  mount(QODER_CAMPAIGNS_PATH, async (req, res) => {
+    if (req.method !== 'GET') return json(res, 405, { error: 'method not allowed' })
+    const region = regionOf(res, req.url ?? '')
+    if (region === undefined) return
+    if (deps.campaigns === undefined) return json(res, 503, { reason: 'campaigns-unavailable', error: 'campaigns unavailable' })
+    try {
+      const feed = await deps.campaigns(region)
+      return json(res, 200, feed)
     } catch (error: unknown) {
       return json(res, 502, { error: safeMessage(error) })
     }

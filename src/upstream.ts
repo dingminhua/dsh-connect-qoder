@@ -75,10 +75,10 @@ export interface QoderRegionConfig {
   requiresDeviceRisk: boolean
 }
 
-/** 一条签到活动（`GET /sash/api/v1/me/campaigns` 的条目，只取用得到的字段）。 */
+/** 一条活动（`GET /sash/api/v1/me/campaigns` 的条目，只取用得到的字段）。 */
 export interface QoderCampaign {
   campaignId: string
-  /** `CLAIM_BENEFIT` = 可领权益；`VIEW_DETAILS` = 纯展示，跳过。 */
+  /** `CLAIM_BENEFIT` = 可领权益；`VIEW_DETAILS` = 纯展示（banner / 集结）。 */
   actionType: string
   /** `CLAIMABLE` = 今天可领；`CLAIMED` = 已领。 */
   claimStatus: string
@@ -97,6 +97,36 @@ export interface QoderCampaign {
   startAt?: number
   /** 这条活动**关窗**的时刻（epoch 秒），即下一次刷新的时刻。 */
   endAt?: number
+  /** 上游的活动键（如 `act-20261021-587`），只作展示用。 */
+  campaignKey?: string
+  /** 这条活动的落地页：`placements[*].campaignUrl` 的第一个，缺则顶层 `campaignUrl`。 */
+  campaignUrl?: string
+  /**
+   * `placements[*].content` 按语言收拢后的**卡片文案**（`zh` / `en` 各一份，可能都缺）。
+   *
+   * 「1024 创造力集结」「首月订阅 Credits 翻倍」这类 banner 的标题、描述与
+   * 「查看详情」链接就在这儿 —— 上游只下发它有的语言，这里不做翻译、不编造。
+   */
+  content?: Record<string, QoderCampaignContent>
+}
+
+/** 一条活动卡片文案（某一语言）。 */
+export interface QoderCampaignContent {
+  title?: string
+  description?: string
+  detailUrl?: string
+  buttonText?: string
+}
+
+/** `GET /sash/api/v1/me/campaigns` 的整份响应（含活动列表之外的顶层字段）。 */
+export interface QoderCampaignFeed {
+  campaigns: QoderCampaign[]
+  /** 顶层活动落地页（成长页 iframe）；某条活动缺 `detailUrl` 时的兜底链接。 */
+  campaignUrl?: string
+  /** 上游显式说「这次不下发活动」（开关 / 非目标人群）。 */
+  showCampaign?: boolean
+  /** 上游显式说「本次不可领」。 */
+  claimable?: boolean
 }
 
 /** 一次签到尝试的结果。 */
@@ -761,7 +791,7 @@ export class QoderUpstreamClient {
   }
 
   /**
-   * 拉当日的签到活动列表。
+   * 活动列表（`GET /sash/api/v1/me/campaigns?forceRefresh=true`）。
    *
    * 协议来自社区参考实现（L0NE-6/Qoder-Daily），已在本机 CN 账号实测通过：
    * `GET {openapi}/sash/api/v1/me/campaigns?forceRefresh=true`，认证用与用量
@@ -770,8 +800,28 @@ export class QoderUpstreamClient {
    * 注意路径里**没有**「签到」二字——它叫 campaigns（活动/权益）。这也是我早期
    * 把 `checkinSupported` 写死成 false 的原因：照着 checkin / signin / reward
    * 猜路径一律 404（实测猜了 13 个），于是误判成「Qoder 没有签到」。
+   *
+   * 旧语义（签到挑用的那一小片）保留在这里：它就是 `fetchCampaignFeed` 的
+   * `campaigns` 投影，免得签到路径与卡片展示路径各写一份解析、日后漂移。
    */
   async fetchCampaigns(credential: string, signal?: AbortSignal): Promise<QoderCampaign[]> {
+    return (await this.fetchCampaignFeed(credential, signal)).campaigns
+  }
+
+  /**
+   * 完整活动面（含 `VIEW_DETAILS` banner 与顶层字段），给卡片「活动」区用。
+   *
+   * 实测（CN，2026-10-25）返回的整份形状：
+   * `{ uid, showCampaign, claimable, campaignUrl, campaigns:[{ campaignId, campaignKey,
+   *   actionType, startAt, endAt, claimStatus, benefit:{...},
+   *   placements:[{ type, campaignUrl, content:{ zh:{title,description,detailUrl},
+   *   en:{...} } }] }] }`。标题 / 描述 / 「查看详情」链接都在 `placements[*].content`
+   * 里，按语言各一份；上游只下发它有的语言，所以这里原样收拢，不做翻译。
+   *
+   * 解析对字段缺席是**宽容**的：活动形状常按节日变（1024 集结、首月翻倍这类只在
+   * 当期下发），缺字段就少渲染一点，绝不替上游编标题或链接。
+   */
+  async fetchCampaignFeed(credential: string, signal?: AbortSignal): Promise<QoderCampaignFeed> {
     const holder = await this.ensureSession(credential)
     const url = `${this.region.openapi}${this.region.campaignsPath}${CAMPAIGNS_QUERY}`
     const data = await this.sashRequest('GET', holder, url, undefined, signal)
@@ -780,27 +830,16 @@ export class QoderUpstreamClient {
       : Array.isArray((data.data as Record<string, unknown> | undefined)?.campaigns)
         ? ((data.data as Record<string, unknown>).campaigns as unknown[])
         : []
-    return rows
-      .map((entry): QoderCampaign | undefined => {
-        if (!entry || typeof entry !== 'object') return undefined
-        const raw = entry as Record<string, unknown>
-        const campaignId = typeof raw.campaignId === 'string' ? raw.campaignId : ''
-        if (campaignId === '') return undefined
-        const benefit = (typeof raw.benefit === 'object' && raw.benefit !== null ? raw.benefit : {}) as Record<string, unknown>
-        const validity = (typeof benefit.validity === 'object' && benefit.validity !== null ? benefit.validity : {}) as Record<string, unknown>
-        return {
-          campaignId,
-          actionType: typeof raw.actionType === 'string' ? raw.actionType : '',
-          claimStatus: typeof raw.claimStatus === 'string' ? raw.claimStatus : '',
-          ...(typeof benefit.amount === 'number' ? { amount: benefit.amount } : {}),
-          ...(typeof validity.days === 'number' ? { validityDays: validity.days } : {}),
-          // 活动窗：秒 → 毫秒之外的**原值也留着**，倒计时由 UI 按 region 的时区算。
-          // 这里保留秒，因为 `endAt` 与 `startAt` 同源同单位，混着传才容易错。
-          ...(typeof raw.startAt === 'number' ? { startAt: raw.startAt } : {}),
-          ...(typeof raw.endAt === 'number' ? { endAt: raw.endAt } : {}),
-        }
-      })
-      .filter((c): c is QoderCampaign => c !== undefined)
+    return {
+      campaigns: rows
+        .map((entry): QoderCampaign | undefined => projectCampaignEntry(entry))
+        .filter((c): c is QoderCampaign => c !== undefined),
+      ...(typeof data.campaignUrl === 'string' && data.campaignUrl !== ''
+        ? { campaignUrl: data.campaignUrl }
+        : {}),
+      ...(typeof data.showCampaign === 'boolean' ? { showCampaign: data.showCampaign } : {}),
+      ...(typeof data.claimable === 'boolean' ? { claimable: data.claimable } : {}),
+    }
   }
 
   /**
@@ -993,6 +1032,60 @@ export class QoderUpstreamClient {
 // ---------------------------------------------------------------------------
 // 纯函数（导出供测试）
 // ---------------------------------------------------------------------------
+
+/**
+ * 把上游的一条 campaign 投影成 `QoderCampaign`（宽容：缺字段就少渲染，不编造）。
+ *
+ * `placements` 是数组，每个元素带 `content: { zh?: {…}, en?: {…} }`（POPUP / USAGE
+ * 各一份）。同一语言的文案取**第一份非空**：同一活动通常多份完全相同，重复渲染
+ * 只会让卡片上出现两行一样的东西。
+ */
+export function projectCampaignEntry(entry: unknown): QoderCampaign | undefined {
+  if (!entry || typeof entry !== 'object') return undefined
+  const raw = entry as Record<string, unknown>
+  const campaignId = typeof raw.campaignId === 'string' ? raw.campaignId : ''
+  if (campaignId === '') return undefined
+  const benefit = (typeof raw.benefit === 'object' && raw.benefit !== null ? raw.benefit : {}) as Record<string, unknown>
+  const validity = (typeof benefit.validity === 'object' && benefit.validity !== null ? benefit.validity : {}) as Record<string, unknown>
+  const placements = Array.isArray(raw.placements) ? (raw.placements as unknown[]) : []
+  let campaignUrl = ''
+  const content: Record<string, QoderCampaignContent> = {}
+  for (const p of placements) {
+    if (!p || typeof p !== 'object') continue
+    const slot = p as Record<string, unknown>
+    if (campaignUrl === '' && typeof slot.campaignUrl === 'string') campaignUrl = slot.campaignUrl
+    const slotContent = slot.content
+    if (!slotContent || typeof slotContent !== 'object') continue
+    for (const [lang, text] of Object.entries(slotContent as Record<string, unknown>)) {
+      if (!text || typeof text !== 'object') continue
+      const t = text as Record<string, unknown>
+      const row: QoderCampaignContent = {
+        ...(typeof t.title === 'string' ? { title: t.title } : {}),
+        ...(typeof t.description === 'string' ? { description: t.description } : {}),
+        ...(typeof t.detailUrl === 'string' ? { detailUrl: t.detailUrl } : {}),
+        ...(typeof t.buttonText === 'string' ? { buttonText: t.buttonText } : {}),
+      }
+      const prior = content[lang]
+      if (prior === undefined || (Object.keys(prior).length === 0 && Object.keys(row).length > 0)) {
+        content[lang] = row
+      }
+    }
+  }
+  return {
+    campaignId,
+    actionType: typeof raw.actionType === 'string' ? raw.actionType : '',
+    claimStatus: typeof raw.claimStatus === 'string' ? raw.claimStatus : '',
+    ...(typeof raw.campaignKey === 'string' && raw.campaignKey !== '' ? { campaignKey: raw.campaignKey } : {}),
+    ...(campaignUrl !== '' ? { campaignUrl } : {}),
+    ...(typeof benefit.amount === 'number' ? { amount: benefit.amount } : {}),
+    ...(typeof validity.days === 'number' ? { validityDays: validity.days } : {}),
+    // 活动窗：秒 → 毫秒之外的**原值也留着**，倒计时由 UI 按 region 的时区算。
+    // 这里保留秒，因为 `endAt` 与 `startAt` 同源同单位，混着传才容易错。
+    ...(typeof raw.startAt === 'number' ? { startAt: raw.startAt } : {}),
+    ...(typeof raw.endAt === 'number' ? { endAt: raw.endAt } : {}),
+    ...(Object.keys(content).length > 0 ? { content } : {}),
+  }
+}
 
 /** jobToken 交换请求体。PAT 或 `drt-` refreshToken 二选一。 */
 export function jobTokenBody(credential: string): string {

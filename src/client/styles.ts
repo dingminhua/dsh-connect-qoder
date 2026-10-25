@@ -729,5 +729,21 @@ export const QODER_COMPOSER_CSS = `
   font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,GrayText);
 }
 .dsm-qoder-composer-panel-empty{margin:0;color:var(--dsw-alias-label-tertiary,GrayText)}
-.dsm-qoder-composer-panel-error{margin:8px 0 0;color:var(--dsw-alias-state-error-primary,#d92d20);font-size:11px;line-height:16px}
+/* 活动（Campaigns.tsx）：卡在区域作用域内、额度读数之下的一条列表。
+   与模型区同款分隔线 + 标题；每行 = 标题 · 额度 · 状态 · 查看详情。
+   空列表只显示一行淡字「当前没有活动」——不凭空造 banner；读不到则红字原因。 */
+.dsm-qoder-campaigns{display:flex;flex-direction:column;gap:10px;margin-top:6px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+.dsm-qoder-campaigns-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
+.dsm-qoder-campaigns-empty{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+.dsm-qoder-campaigns-error{margin:0;color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
+.dsm-qoder-campaign-row{display:flex;flex-direction:column;gap:2px;min-width:0}
+.dsm-qoder-campaign-row-head{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
+.dsm-qoder-campaign-row-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;line-height:20px;font-weight:500}
+.dsm-qoder-campaign-row-amount{padding:1px 6px;border-radius:6px;background:var(--dsw-alias-state-success-primary,#22a06b);color:#0f1418;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
+.dsm-qoder-campaign-row-status{padding:1px 6px;border-radius:6px;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
+.dsm-qoder-campaign-row-status-claimable{background:var(--dsw-alias-state-success-primary,#22a06b);color:#0f1418}
+.dsm-qoder-campaign-row-status-claimed{background:var(--dsw-alias-label-tertiary,#9aa0a8);color:#1b1d22}
+.dsm-qoder-campaign-row-desc{margin:0;color:var(--dsw-alias-label-secondary,#b8b8b8);font-size:12px;line-height:18px}
+.dsm-qoder-campaign-row-link{margin-top:2px;align-self:flex-start;font-size:12px;line-height:18px;color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
+.dsm-qoder-campaign-row-link:hover{text-decoration:underline}
 `

@@ -9,6 +9,7 @@ import {
   deepestBusinessCode,
   isContentPolicy,
   parseUsage,
+  projectCampaignEntry,
   QoderUpstreamError,
   QoderUpstreamClient,
   QODER_REGIONS,
@@ -1017,5 +1018,138 @@ describe('嵌套业务码下钻（issue #6）', () => {
     expect(deepestBusinessCode('{"code":1.5}')).toBeUndefined()
     expect(deepestBusinessCode('{"message":"no code here"}')).toBeUndefined()
     expect(deepestBusinessCode('')).toBeUndefined()
+  })
+})
+
+// ==========================================================================
+// 活动面（feed）：banner 与顶层字段。
+//
+// 用户实拍（2026-10-25，CN）：旧版能读「每天领 100 Credits / 1024 创造力集结 /
+// 首月翻倍」，本版此前把 `VIEW_DETAILS` 的活动行**跳过了**。这里测的是卡片「活动」
+// 区真正消费的那份 feed——`fetchCampaigns` 只是它的窄投影，两者不许漂移。
+// ==========================================================================
+
+describe('campaign feed (活动面)', () => {
+  /** 一个「交换令牌 + 指定活动响应」的桩，记录每次请求的 url 与 authorization。 */
+  function feedStub(body: unknown): {
+    client: QoderUpstreamClient
+    calls: Array<{ url: string, auth: string | undefined }>
+  } {
+    const calls: Array<{ url: string, auth: string | undefined }> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      calls.push({ url: u, auth: new Headers(init?.headers ?? {}).get('authorization') ?? undefined })
+      if (u.includes('/api/v1/jobToken/exchange')) {
+        return new Response(JSON.stringify({ token: 'jt-SASH-TOKEN', expires_at: new Date(Date.now() + 86_400_000).toISOString() }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({ id: 'u1', name: 'n', expireTime: Date.now() + 1e6, securityOauthToken: 'jt-CHAT-TOKEN', refreshToken: 'jrt-x' }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as unknown as typeof fetch
+    return { client: new QoderUpstreamClient('cn', { fetch: fetchImpl }), calls }
+  }
+
+  /** 2026-10-25 CN 实测形状（两条 placement 的文案重复，见 `projectCampaignEntry`）。 */
+  const PLACED = {
+    campaignId: 'c1', campaignKey: 'act-20261021-587', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE',
+    startAt: 1792893600, endAt: 1792979940,
+    benefit: { kind: 'CREDITS', amount: 100, validity: { mode: 'RELATIVE_DAYS', days: 30 } },
+    placements: [
+      {
+        type: 'POPUP', campaignUrl: 'https://openapi.qoder.com.cn/growth-page/activity-iframe',
+        content: {
+          zh: { title: '每天领 100 Credits', description: '每日 10:00（UTC+8）刷新，领取后 30 天有效', detailUrl: 'https://docs.qoder.cn/events/100credits' },
+          en: { title: 'Claim 100 Credits Daily', description: 'Daily reset: 10:00 (UTC+8). Valid for 30 days after claiming.', detailUrl: 'https://docs.qoder.cn/en/events/100credits' },
+        },
+      },
+      {
+        type: 'USAGE', campaignUrl: 'https://openapi.qoder.com.cn/growth-page/activity-iframe',
+        content: { zh: { title: '每天领 100 Credits', description: '每日 10:00（UTC+8）刷新，领取后 30 天有效', detailUrl: 'https://docs.qoder.cn/events/100credits' } },
+      },
+    ],
+  }
+
+  it('把 placements 里的中英文案与 detailUrl 收进条目', async () => {
+    const { client } = feedStub({ uid: 'u1', showCampaign: true, claimable: false, campaignUrl: 'https://openapi.qoder.com.cn/growth-page/activity-iframe', campaigns: [PLACED] })
+    const feed = await client.fetchCampaignFeed('pt-x')
+    expect(feed.campaigns).toHaveLength(1)
+    const row = feed.campaigns[0]
+    expect(row?.content?.zh?.title).toBe('每天领 100 Credits')
+    expect(row?.content?.zh?.description).toContain('每日 10:00')
+    expect(row?.content?.zh?.detailUrl).toBe('https://docs.qoder.cn/events/100credits')
+    expect(row?.content?.en?.title).toBe('Claim 100 Credits Daily')
+    expect(row?.amount).toBe(100)
+    expect(row?.validityDays).toBe(30)
+    expect(row?.campaignKey).toBe('act-20261021-587')
+  })
+
+  it('透出顶层的 campaignUrl / showCampaign / claimable', async () => {
+    const { client } = feedStub({ showCampaign: true, claimable: false, campaignUrl: 'https://openapi.qoder.com.cn/growth-page/activity-iframe', campaigns: [PLACED] })
+    const feed = await client.fetchCampaignFeed('pt-x')
+    expect(feed.campaignUrl).toBe('https://openapi.qoder.com.cn/growth-page/activity-iframe')
+    expect(feed.showCampaign).toBe(true)
+    expect(feed.claimable).toBe(false)
+  })
+
+  it('顶层字段缺席时不造（宽容解析）', async () => {
+    const { client } = feedStub({ campaigns: [{ campaignId: 'c1', actionType: 'VIEW_DETAILS', claimStatus: 'CLAIMED' }] })
+    const feed = await client.fetchCampaignFeed('pt-x')
+    expect(feed.campaignUrl).toBeUndefined()
+    expect(feed.showCampaign).toBeUndefined()
+    expect(feed.claimable).toBeUndefined()
+    expect(feed.campaigns[0]?.campaignUrl).toBeUndefined()
+    expect(feed.campaigns[0]?.content).toBeUndefined()
+  })
+
+  it('VIEW_DETAILS banner 也被收进 feed（不只是挑 CLAIM_BENEFIT）', async () => {
+    const { client } = feedStub({ campaigns: [PLACED, { campaignId: 'c2', actionType: 'VIEW_DETAILS', claimStatus: 'CLAIMED', placements: [{ type: 'POPUP', content: { zh: { title: '1024 创造力集结' } } }] }] })
+    const feed = await client.fetchCampaignFeed('pt-x')
+    expect(feed.campaigns.map(c => c.campaignId)).toEqual(['c1', 'c2'])
+    expect(feed.campaigns[1]?.content?.zh?.title).toBe('1024 创造力集结')
+  })
+
+  it('fetchCampaigns 仍是 feed 的窄投影（不带顶层字段）', async () => {
+    const { client } = feedStub({ campaignUrl: 'https://x/y', showCampaign: true, campaigns: [{ campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED' }] })
+    const list = await client.fetchCampaigns('pt-x')
+    expect(list).toHaveLength(1)
+    // QoderCampaign 没有索引签名，先过 unknown 再断言「feed 投影里不该有的字段」。
+    const only = list[0] as unknown as Record<string, unknown>
+    expect(only.campaignUrl).toBeUndefined()
+    expect(only.content).toBeUndefined()
+  })
+
+  it('读取走 sash 令牌，打的还是同一路径与 forceRefresh', async () => {
+    const { client, calls } = feedStub({ campaigns: [] })
+    await client.fetchCampaignFeed('pt-x')
+    const hit = calls.find(c => c.url.includes('/sash/api/v1/me/campaigns'))
+    expect(hit?.auth).toBe('Bearer jt-SASH-TOKEN')
+    expect(hit?.url).toContain('?forceRefresh=true')
+  })
+})
+
+describe('projectCampaignEntry', () => {
+  it('非对象 / 无 campaignId 不产出条目', () => {
+    expect(projectCampaignEntry(undefined)).toBeUndefined()
+    expect(projectCampaignEntry('x')).toBeUndefined()
+    expect(projectCampaignEntry({ actionType: 'CLAIM_BENEFIT' })).toBeUndefined()
+  })
+
+  it('多份 placements 取第一份非空（不重复渲染）', () => {
+    const row = projectCampaignEntry({
+      campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMED',
+      placements: [
+        { type: 'POPUP', content: { zh: { title: 'A' } } },
+        { type: 'USAGE', content: { zh: { title: 'B', description: 'dup' } } },
+      ],
+    })
+    expect(row?.content?.zh?.title).toBe('A')
+    expect(row?.content?.zh?.description).toBeUndefined()
+  })
+
+  it('actionType / claimStatus 缺失时留空串（宽容解析，未知状态不画状态词）', () => {
+    const row = projectCampaignEntry({ campaignId: 'c1' })
+    expect(row?.actionType).toBe('')
+    expect(row?.claimStatus).toBe('')
   })
 })

@@ -27,7 +27,7 @@ import z from '@deepseek-ai/schemastery'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { QoderUpstreamClient } from './upstream.ts'
 import { failoverNoticeText } from './failover-notice.ts'
-import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind } from './upstream.ts'
+import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind, QoderCampaignFeed } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters, mapContextTier, mapContextTiers, migrateContextBudgets } from './catalog.ts'
@@ -1672,6 +1672,18 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   }
 
   /**
+   * 一个区域的活动面：签到 + `VIEW_DETAILS` banner，供卡片「活动」区读。
+   *
+   * 复用 `resolveServing` 的同一份判定（settings → env → vault / 选中号），所以
+   * 卡片上看到的「这一区有哪些活动」和用量面板读到的是同一个账号的活动。
+   */
+  async function campaignsOf(region: QoderRegion, signal?: AbortSignal): Promise<QoderCampaignFeed> {
+    const serving = await resolveServing(region)
+    if (!serving) throw new Error('未配置凭据')
+    return stacks[region].upstream.fetchCampaignFeed(serving.pat, signal)
+  }
+
+  /**
    * 凭据被拒后的恢复建议：逐个探测本区域其余账号，只把**真正答过话**的那个
    * 承诺给用户（`credential-recovery.ts` 的实现早就写好了，此前从未接线——
    * 卡片一直用「账号数 ≤ 1」猜，于是对着一条同样过期的记录说「可以切换试试」）。
@@ -1733,6 +1745,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       refreshUsage: refreshUsageCoalesced,
       probeModel: probeModelOf,
       accountCredits: accountCreditsOf,
+      campaigns: campaignsOf,
       pool: buildPoolDeps(),
       transfer: transferDeps,
       accountValidation: accountValidationDeps,
