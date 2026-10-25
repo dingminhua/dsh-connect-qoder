@@ -729,6 +729,7 @@ export const QODER_COMPOSER_CSS = `
   font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,GrayText);
 }
 .dsm-qoder-composer-panel-empty{margin:0;color:var(--dsw-alias-label-tertiary,GrayText)}
+.dsm-qoder-composer-panel-error{margin:8px 0 0;color:var(--dsw-alias-state-error-primary,#d92d20);font-size:11px;line-height:16px}
 /* 活动（Campaigns.tsx）：卡在区域作用域内、额度读数之下的一条列表。
    与模型区同款分隔线 + 标题；每行 = 标题 · 额度 · 状态 · 查看详情。
    空列表只显示一行淡字「当前没有活动」——不凭空造 banner；读不到则红字原因。 */

@@ -7,8 +7,10 @@
  * 用法：node scripts/probe-campaigns.mjs [cn|global]
  */
 
-// 分块名随构建变（tsdown 的 hash）；改完 build 若报错就对照 lib/ 下的新名。
-import { y as QoderUpstreamClient } from '../lib/host-heartbeat-BBvAw9Jj.js'
+// 与 scripts/probe-cosy.mjs / probe-cache-usage.mjs 同款：直接从源码导入。
+// 绝不 import lib/ 下的分块——tsdown 的 hash 随每次构建变，写死就是必然的
+// ERR_MODULE_NOT_FOUND（本脚本初版正是这么写的）。
+import { QoderUpstreamClient } from '../src/upstream.ts'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 
