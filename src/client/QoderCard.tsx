@@ -63,6 +63,7 @@ import {
 import { AccountPool } from './AccountPool.tsx'
 import { AddAccount } from './AddAccount.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
+import { QoderCampaigns } from './Campaigns.tsx'
 import { inlineProbeReason } from './probe-reason.ts'
 import { probeResultView, formatProbeMoment } from './probe-label.ts'
 import { QODER_PAT_ENV_VARS } from '../credentials.ts'
@@ -597,6 +598,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               </p>
             )}
           </div>
+
+          {/* 活动：区域作用域内、额度读数之下的一条只读列表（上游下发了才渲染）。
+              放在  面板分栏之外，因为它是**当前区域**的读法，不是同一份文档的分栏；
+              区域开关关掉时整块不渲染，与 tabOffNotice 保持一致。 */}
+          {regionOn ? <QoderCampaigns region={activeRegion} t={t} /> : null}
 
           {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
           {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}

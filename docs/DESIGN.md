@@ -101,7 +101,7 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 |---|---|
 | `status-paths.ts` | node-free 契约中心：路由常量、DTO、区域/动作 helper |
 | `cosy.ts` | 协议层：自定义 Base64、`n/3` 重排、签名、RSA/AES 会话、指纹 |
-| `upstream.ts` | `exchangeJobToken` / `fetchModels` / `chatStream` / `fetchUsage`；错误分类 |
+| `upstream.ts` | `exchangeJobToken` / `fetchModels` / `chatStream` / `fetchUsage` / `fetchCampaignFeed`；错误分类 |
 | `credentials.ts` | PAT 校验、`qoderAccountId`（sha256 前 16 位）、掩码 |
 | `accounts.ts` | 本地 vault（`$DSH_HOME/.qoder-accounts.<region>.json`，0600），三源去重合并 |
 | `account-pool.ts` / `-store.ts` / `-run.ts` | 账号池排序（`rankPool`）、测量落盘、批量测试 |
@@ -109,7 +109,7 @@ DSH PiAiAdapter（qoder / qoder-global 各一套）
 | `native-modality.ts` | 模型原生多模态表与图片默认值（见第六节） |
 | `shim.ts` | loopback 服务：入站校验、SSE 翻译、首字节前故障转移 |
 | `adapter.ts` | pi-ai 装配：代际门控、思考档位映射、模型描述符 |
-| `web-status.ts` | 浏览器路由：usage / account-credits / accounts / pool / transfer / probe / `__save` |
+| `web-status.ts` | 浏览器路由：usage / account-credits / campaigns / accounts / pool / transfer / probe / `__save` |
 | `index.ts` | 装配中枢：双区域栈、配置 schema、目录管注册 |
 | `bin.ts` | CLI：`doctor` / `status` / `logout` |
 

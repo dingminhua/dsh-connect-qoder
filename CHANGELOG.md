@@ -2,6 +2,19 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## Unreleased
+
+> 版本号待定（预计 **minor**：新增一个用户可见能力——活动面整份读取）。
+
+### Added
+
+- **活动（只读）**：卡片在区域作用域内、额度读数之下新增一条「活动」列表，逐条列出上游当前下发的活动。此前只读签到用的那一小片（`fetchCampaigns` 只挑 `CLAIM_BENEFIT`），`VIEW_DETAILS` 的活动行被整行**跳过**（用户实拍 2026-10-25，截图里的「1024 创造力集结」「首月订阅 Credits 翻倍」都不出现）；现在整份读取。
+  - 新增 `QoderCampaignFeed` / `QoderCampaignContent` 与 `fetchCampaignFeed()`（`src/upstream.ts`），`fetchCampaigns()` 改为它的窄投影（签到路径与卡片展示路径共用同一份解析，不许漂移）；纯函数 `projectCampaignEntry()` 把 `placements[*].content.{zh,en}` 收拢成标题 / 描述 / `detailUrl` / `buttonText`，缺字段宽容处理。
+  - 新增只读路由 `GET /plugins/dsh-connect-qoder/campaigns`（`src/status-paths.ts` 的 `QODER_CAMPAIGNS_PATH` + `src/web-status.ts`），与 `/account-credits` 同款形状：非 GET 405、未接线 503、读失败 502。
+  - 新增客户端组件 `src/client/Campaigns.tsx`（`QoderCampaigns`）与一组 `dsm-qoder-campaign*` 样式；标题 / 描述**原样来自上游**（按界面语言取 `zh` / `en`，缺哪边用另一边），「查看详情」是真链接（`detailUrl` → 活动落地页）。**只读**，不签到、不改账号。
+  - 空列表显示「当前没有活动。」，读不到显示原因（不是装作没有）；不发明标题与链接。
+  - 新增测试：`tests/upstream.spec.ts`（feed 解析 / 窄投影 / 幂等）、`tests/campaigns.spec.tsx`（客户端渲染）、`tests/web-status.spec.ts`（路由 200/503/502/405）。
+
 ## 1.13.0 (2026-10-24)
 
 ### Changed

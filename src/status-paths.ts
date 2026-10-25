@@ -30,6 +30,17 @@ import type { QoderPromotion } from './promo.ts'
 export const QODER_USAGE_PATH = '/plugins/dsh-connect-qoder/usage'
 
 /**
+ * Plugin-owned campaign feed endpoint for one region.
+ *
+ * Answers the card's activity area: the daily 100-Credits check-in row plus every
+ * `VIEW_DETAILS` banner upstream currently serves (集结 / 首月翻倍 / …), each with
+ * its title, description and detail link. Read-only and lazy like the credits
+ * endpoint — the activities live next to the usage readout and are only worth one
+ * upstream read while the panel is open.
+ */
+export const QODER_CAMPAIGNS_PATH = '/plugins/dsh-connect-qoder/campaigns'
+
+/**
  * Per-account credit balances for one region, read ONLY while the composer
  * panel is open.
  *
