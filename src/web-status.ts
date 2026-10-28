@@ -260,6 +260,13 @@ export interface QoderWebRouteDeps {
   offModelKeys(region: QoderRegion): readonly string[]
   /** Model keys the user explicitly enabled image input for (independent set). */
   imageModelKeys(region: QoderRegion): readonly string[]
+  /**
+   * Whether the user ever saved an image selection (independent of its content).
+   *
+   * Optional so an older Host still wires up: without it the card falls back to
+   * `imageModelKeys.length > 0`, which is the pre-#22 behaviour.
+   */
+  imageSelectionSaved?(region: QoderRegion): boolean
   enabledModelKeys(region: QoderRegion): readonly string[]
   discoverModels?(region: QoderRegion, signal?: AbortSignal): Promise<QoderModelInfo[]>
   /**
@@ -968,6 +975,10 @@ export async function buildWebUsage(
     enabledModelKeys: models.filter(m => enabledKeys.has(m.key)).map(m => m.key),
     offModelKeys,
     imageModelKeys: deps.imageModelKeys(region).filter(key => catalog.some(m => m.key === key)),
+    // 「保存过图片选择」与集合内容无关地透传：卡片要靠它区分「从未选过」
+    // （套厂商表种子）与「选成了空集」（尊重全关）。见 issue #22 的次因。
+    imageSelectionSaved: deps.imageSelectionSaved?.(region)
+      ?? deps.imageModelKeys(region).length > 0,
     ...(usageEntry?.usage?.credits === undefined ? {} : { credits: usageEntry.usage.credits }),
     ...(usageEntry?.error !== undefined ? { creditsError: redactQoderText(usageEntry.error) } : {}),
     // 上次**重读**失败、但快照完好：卡片/composer 显示旧数字并说明它旧，而不是

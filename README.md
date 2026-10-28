@@ -277,7 +277,7 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 
 - 依赖 Qoder 的 cosy 网关与 `sash` 接口（**非官方开放 API**），上游变动后插件可能需要随之调整。协议行为参照 [Zhengyuuuui/qoder2api](https://github.com/Zhengyuuuui/qoder2api)，本项目独立实现，不复制其源码。
 - **每日签到**是 Qoder 面向**个人用户**的运营活动（企业版账号不参与），规则与额度以官方为准；国际版的签到活动要求请求带本机 Qoder 客户端的设备身份，因此**未安装 Qoder 客户端的机器上国际版签到不可用**（插件如实报错，不静默降级）。
-- 图片输入与「可关闭思考」按**已核实**的清单给出：上游没有明确公布的能力一律不预勾选，因此某些其实可用的模型可能需要你手动勾一次。
+- 图片输入与「可关闭思考」按**已核实**的清单给出：清单外的模型一律不预勾选，因此某些其实可用的模型可能需要你手动勾一次。**图片开关是白名单**——保存过一次选择后，未勾的模型就是关着的；把勾全部取消再保存，它们会保持关闭，不会被默认值重新打开。
 - 模型可用性测试与批量测试**都会发出真实请求**，会消耗少量上游额度；没有「测试已勾选」这类批量按钮，批量动作只作用于你显式勾选进池的账号。
 - **独立 CLI 依赖宿主提供的 peer 包**（`@deepseek-ai/dsh-atomic-write` / `dsh-home-paths`）。本机实测：pnpm 会随包把它们装进 profile 的依赖树，`pnpm exec dsh-connect-qoder …` 与 npm 装的 tarball 都跑得通；但这取决于 pnpm 版本与 `auto-install-peers` 配置，若报 `Cannot find package '@deepseek-ai/dsh-atomic-write'` 就是这一层没装上。provider 注册、设置卡片与对话**都不受影响**（它们在宿主进程内，宿主负责解析这些名字）。同族 workbuddy 的修复方案（宿主优先、按需回落自带实现）适用于本项目，尚未移植。
 

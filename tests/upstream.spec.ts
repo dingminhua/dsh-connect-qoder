@@ -1153,3 +1153,128 @@ describe('projectCampaignEntry', () => {
     expect(row?.claimStatus).toBe('')
   })
 })
+
+/**
+ * **cosy 面（chat + models）的协议版本**（issue #21）。
+ *
+ * 上游按 `cosy-clienttype` / `cosy-version` 决定下发哪一套模型目录。旧值
+ * `5` / `0.1.43` 让国际版静默少 3 个模型（`smodel` / `cmodel` / `fast`）、
+ * 国内版少 `fast` —— 目录照常返回、对话照常能跑，没有任何报错指向那里，所以
+ * 只能靠测试钉住，不能靠「跑起来看着没问题」。
+ *
+ * 实测矩阵（2026-10-29，两个区域各一枚真实 PAT，只读目录）：
+ *
+ * | 区域   | `5` / `0.1.43` | `10` / `1.1.69`                  |
+ * | ------ | -------------- | -------------------------------- |
+ * | cn     | 9 条           | 10 条（+`fast`）                 |
+ * | global | 11 条          | 14 条（+`smodel`/`cmodel`/`fast`）|
+ *
+ * 两个值**成对**生效：国内版只提 clienttype、version 留旧值时目录不变，且
+ * chat 报 `HTTP 403 code 112`。所以这里同时断言两者，不许只改一个。
+ */
+describe('cosy 面协议版本（issue #21）', () => {
+  /** 捕获每个请求实际发出的头，并应答 jobToken / models / chat。 */
+  function capture(): { calls: Array<{ url: string, headers: Record<string, string> }>, client: QoderUpstreamClient } {
+    const calls: Array<{ url: string, headers: Record<string, string> }> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const target = String(url)
+      calls.push({ url: target, headers: Object.fromEntries(new Headers(init?.headers ?? {}).entries()) })
+      if (target.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u', name: 'n', expireTime: Date.now() + 1_000_000,
+          securityOauthToken: 'jt-TEST', refreshToken: 'r', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (target.includes('/model/list')) {
+        return new Response(JSON.stringify({ chat: [{ key: 'qfmodel', display_name: 'Qwen3.8-Flash' }] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      // sash 的 campaigns：sashRequest 要求 JSON 响应，空串会被判「不是 JSON」。
+      if (target.includes('/campaigns')) {
+        return new Response(JSON.stringify({ campaigns: [] }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      // chat：一个空 SSE 帧就够——这条用例只关心请求头。
+      return new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as unknown as typeof fetch
+    return { calls, client: new QoderUpstreamClient('cn', { fetch: fetchImpl }) }
+  }
+
+  it('模型目录请求带 clienttype 10 + version 1.1.69', async () => {
+    const { calls, client } = capture()
+    await client.fetchModels('pt-x')
+    const models = calls.find(c => c.url.includes('/model/list'))
+    expect(models).toBeDefined()
+    expect(models!.headers['cosy-clienttype']).toBe('10')
+    expect(models!.headers['cosy-version']).toBe('1.1.69')
+  })
+
+  it('对话请求带同一对协议版本（两条路径不许各说一套）', async () => {
+    const { calls, client } = capture()
+    await client.chatStream('pt-x', 'qfmodel', [{ role: 'user', content: 'hi' }], { onDelta: () => {} })
+    const chat = calls.find(c => c.url.includes('agent_chat_generation'))
+    expect(chat).toBeDefined()
+    expect(chat!.headers['cosy-clienttype']).toBe('10')
+    expect(chat!.headers['cosy-version']).toBe('1.1.69')
+  })
+
+  it('jobToken 交换也带同一对版本（否则 chat 拿到的是半改的会话）', async () => {
+    const { calls, client } = capture()
+    await client.exchangeJobToken('pt-x')
+    const exchange = calls.find(c => c.url.includes('jobToken'))
+    expect(exchange).toBeDefined()
+    expect(exchange!.headers['cosy-clienttype']).toBe('10')
+    expect(exchange!.headers['cosy-version']).toBe('1.1.69')
+  })
+
+  it('sash 面不受影响：不带 cosy-version，clienttype 仍是 sash 自己的 10', async () => {
+    // 两条路径互不干扰是本改动的**前提**：sash 逐条手写请求头，不展开
+    // DEFAULT_HEADERS。这里钉住这一点——若哪天有人把 DEFAULT_HEADERS 展开进
+    // sash，签到与用量会被 cosy 协议头污染（`:928` 的注释警告的正是这个）。
+    const { calls, client } = capture()
+    await client.fetchCampaigns('pt-x')
+    const sash = calls.find(c => c.url.includes('/campaigns'))
+    expect(sash).toBeDefined()
+    expect(sash!.headers['cosy-clienttype']).toBe('10')
+    expect(sash!.headers['cosy-version']).toBeUndefined()
+  })
+})
+
+describe('parseStreamDelta 对空帧的宽容（实测回归）', () => {
+  /**
+   * 实测（2026-10-29，cn，`mmodel` / MiniMax-M3.1-Flash）：上游在一个正常的
+   * role-only 首帧之后，会投递一帧 `body: "null"`。
+   *
+   * `JSON.parse('null')` **合法**返回 `null`，于是 `inner.code` 抛
+   * `TypeError: Cannot read properties of null` —— 整个流被打断，用户看到的是
+   * 「这个模型坏了」，而模型完全正常（同一个 key 用 64×64 的图问颜色答得对）。
+   *
+   * 空帧的语义是「本帧无可消费内容」，与解析失败同义：跳过，不报错。
+   */
+  it('body 为 "null" 的帧返回 undefined，而不是抛 TypeError', () => {
+    const frame = JSON.stringify({ headers: {}, body: 'null', statusCodeValue: 200 })
+    expect(() => parseStreamDelta(frame)).not.toThrow()
+    expect(parseStreamDelta(frame)).toBeUndefined()
+  })
+
+  it('body 为其他非对象 JSON（字符串 / 数组 / 数字）同样跳过', () => {
+    for (const body of ['"hello"', '[1,2]', '42', 'true']) {
+      const frame = JSON.stringify({ headers: {}, body, statusCodeValue: 200 })
+      expect(() => parseStreamDelta(frame)).not.toThrow()
+      expect(parseStreamDelta(frame)).toBeUndefined()
+    }
+  })
+
+  it('空帧之后的正常帧仍然解析（跳过不等于中断）', () => {
+    const empty = JSON.stringify({ headers: {}, body: 'null', statusCodeValue: 200 })
+    const good = JSON.stringify({
+      headers: {},
+      body: JSON.stringify({ choices: [{ delta: { role: 'assistant', content: '收到' } }] }),
+      statusCodeValue: 200,
+    })
+    expect(parseStreamDelta(empty)).toBeUndefined()
+    expect(parseStreamDelta(good)?.content).toBe('收到')
+  })
+})

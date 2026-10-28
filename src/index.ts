@@ -246,8 +246,25 @@ const regionConfig = z.object({
    * 图像能力只来自这里，绝不从上游的 `is_vl` 平台标记推断（见
    * src/native-modality.ts：平台标记几乎对每个模型都是 true，含纯文本模型）。
    * 与 lastCatalog 分开存储，使勾选状态不随目录重写而耦合丢失。
+   *
+   * **它是白名单，不是追加清单**：列出的才开图，未列出的一律关。所以「用户
+   * 把全部勾都取消」与「用户从未保存过」在**数据上**都表现为空数组，而两者的
+   * 正确行为相反（前者应保持全关，后者应套用厂商表种子）。空集无法区分它们，
+   * 因此判据是下面那个显式标记 {@link imageSelectionSaved}，不是 `length > 0`。
    */
   imageModelKeys: z.array(z.string()).default([]),
+  /**
+   * 用户是否**保存过**图片选择（与集合内容无关）。
+   *
+   * 存在的唯一理由是把「从未选过」与「选成了空集」分开：`imageModelKeys` 是
+   * 白名单，两种情况都是 `[]`，但前者要套厂商表种子、后者要尊重「全关」。
+   * 靠 `imageModelKeys.length > 0` 推断会把后一种误判成前一种，用户取消全部
+   * 勾选后一刷新图又回来了（issue #22 的次因）。
+   *
+   * 缺省 `false` = 从未保存过（含升级上来的旧配置）：旧配置里 `imageModelKeys`
+   * 非空时另有兜底判据，见 `imageSelectionSavedOf`。
+   */
+  imageSelectionSaved: z.boolean().default(false),
   /** 用户关闭的模型 key 集合（独立于硬性关闭）。 */
   offModelKeys: z.array(z.string()).default([]),
   /** 每个模型的显式上下文预算（必须是模型声明的 tier，否则用原生值）。 */
@@ -402,13 +419,38 @@ function imageModelKeysOf(config: { regions?: Record<string, unknown> | null }, 
 }
 
 /**
+ * 用户是否**保存过**图片选择（决定要不要套厂商表种子）。
+ *
+ * 主判据是显式标记 `imageSelectionSaved`（见配置 schema 里那段：空集既是
+ * 「从未选过」也是「选成空集」，只有标记能把它们分开）。
+ *
+ * 旧配置兜底：`imageSelectionSaved` 是本版新增的键，升级上来的配置里没有它。
+ * 那种配置只要有**非空**的 `imageModelKeys`，就说明用户当时确实保存过选择
+ * （旧代码只会在保存时写这个集合），按「已保存」处理；空集则无从判断，按
+ * 「从未保存」套种子——这正是升级前的行为，不倒退。
+ */
+function imageSelectionSavedOf(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+  const state = regionStateOf(config, region)
+  if (state.imageSelectionSaved === true) return true
+  return imageModelKeysOf(config, region).length > 0
+}
+
+/**
  * 把用户的**显式**图片 opt-in 盖印到模型列表上——这是 `supportsImages`
  * 在运行时的**唯一**来源，上游的 `is_vl` 平台标记一律不采信。
  *
  * 与 workbuddy 的 `withImageSelection` 同构：所有运行时目录路径（启动种子、
  * 刷新、保存）都经过它，保证同一模型在三条路径上得到一致的图像能力答案。
- * 用户从未保存过（集合为空）时，用 `imageDefaultFor` 的厂商表结论作种子，
- * 使首次打开就能显示正确默认，而不必先保存一次。
+ * 用户从未保存过时，用 `imageDefaultFor` 的厂商表结论作种子，使首次打开就能
+ * 显示正确默认，而不必先保存一次。
+ *
+ * `seeded` 的含义是「用户保存过选择」，由 {@link imageSelectionSavedOf} 判定，
+ * **不是** `images.size > 0`：那是把「白名单为空」当成「没选过」，于是用户把
+ * 勾全部取消后一刷新，种子又把图全打开了（issue #22 的次因）。
+ *
+ * `model.displayName` 必须一起交给查表：这张表的键是厂商模型名，而目录里的
+ * `key` 是 Qoder 内部短 id（`qmodel_latest`），只传 key 则表永远查不中
+ * （issue #22 的主因）。
  */
 function withImageSelection(
   models: QoderModelInfo[],
@@ -421,7 +463,11 @@ function withImageSelection(
       ? true
       : seeded
         ? false
-        : imageDefaultFor({ id: model.key, ...(model.supportsImages === undefined ? {} : { supportsImages: model.supportsImages }) }),
+        : imageDefaultFor({
+            id: model.key,
+            name: model.displayName,
+            ...(model.supportsImages === undefined ? {} : { supportsImages: model.supportsImages }),
+          }),
   }))
 }
 
@@ -458,7 +504,7 @@ function stampRuntimeCatalog(
   models: QoderModelInfo[],
 ): QoderModelInfo[] {
   const images = new Set(imageModelKeysOf(config, region))
-  const withImages = withImageSelection(models, images, images.size > 0)
+  const withImages = withImageSelection(models, images, imageSelectionSavedOf(config, region))
   return stampOffSelection(config, region, withImages)
 }
 
@@ -1734,6 +1780,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       thinkingEfforts: region => thinkingEffortsOf(config, region),
       offModelKeys: region => offModelKeysOf(config, region),
       imageModelKeys: region => imageModelKeysOf(config, region),
+      imageSelectionSaved: region => imageSelectionSavedOf(config, region),
       enabledModelKeys: region => enabledModelKeysOf(config, region),
       discoverModels,
       refreshModels: refreshRegionForRoute,

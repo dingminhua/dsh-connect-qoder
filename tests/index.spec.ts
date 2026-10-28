@@ -1563,3 +1563,139 @@ describe('档位改写表：400K 在 /usage 文档里读成 500K', () => {
     }
   })
 })
+
+/**
+ * **图片默认种子真的接上线了**（issue #22）。
+ *
+ * 缺陷形状：`NATIVE_MODALITY_BY_MODEL_ID` 的键是厂商模型名，而目录里的 `key`
+ * 是内部短 id，`withImageSelection` 只传了 `key` ⇒ 每次 seed 都落到
+ * `undefined` ⇒ 整张表是死代码，**每个模型都默认关图**，连表里明写
+ * `multimodal` 的也不例外。用户看到的是 `read_image` 报
+ * 「model does not declare image input」。
+ *
+ * 这条测试走**真实的 /usage 路由**（与卡片同一条读路径），用上游真实目录的
+ * 形状（`key` = 短 id、`display_name` = 厂商名）断言 seed 命中。
+ */
+describe('图片默认种子（issue #22）', () => {
+  /** 上游真实目录形状（2026-10-29 实测）：短 id + 厂商显示名。 */
+  const LIVE_CHAT = [
+    { key: 'qmodel_38max', display_name: 'Qwen3.8-Max', is_vl: true, price_factor: 0.2 },
+    { key: 'qfmodel', display_name: 'Qwen3.8-Flash', is_vl: true, price_factor: 0 },
+    { key: 'kmodel', display_name: 'Kimi-K2.8-Preview', is_vl: true, price_factor: 0.8 },
+  ]
+
+  function stub(chat: unknown[]): () => void {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        return new Response(JSON.stringify({ chat }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ userQuota: { total: 100, used: 10, remaining: 90 } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+    return () => { globalThis.fetch = realFetch }
+  }
+
+  /** 挂载一次并读 /usage，返回该区域的模型行（含运行时 supportsImages）。 */
+  async function readModels(regionConfig: Record<string, unknown>): Promise<{
+    models: Array<{ key: string, name: string, supportsImages?: boolean }>
+    imageModelKeys: string[]
+    imageSelectionSaved: boolean
+  }> {
+    const routes: CapturedRoute[] = []
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('webServer', {
+      register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+    } as never)
+    await mountQoder(ctx, { regions: { cn: regionConfig, global: { pat: '' } } })
+    await waitFor(() => routes.some(r => r.path.includes('/usage')))
+    const usage = routes.find(r => r.path.includes('/usage'))!
+    const res = fakeResponse()
+    await usage.handler({ method: 'GET', url: `${usage.path}?region=cn`, headers: {} }, res.node)
+    const doc = JSON.parse(String(res.body())) as {
+      models: Array<{ key: string, name: string, supportsImages?: boolean }>
+      imageModelKeys: string[]
+      imageSelectionSaved: boolean
+    }
+    return doc
+  }
+
+  it('从未保存过选择时，真实目录里的模型默认勾上图片（表不再死代码）', async () => {
+    const restore = stub(LIVE_CHAT)
+    try {
+      const doc = await readModels({ pat: 'pt-seed' })
+      // 关键断言：三条都是 multimodal（短 id 直查命中）。
+      expect(doc.models.map(m => [m.key, m.supportsImages])).toEqual([
+        ['qmodel_38max', true],
+        ['qfmodel', true],
+        ['kmodel', true],
+      ])
+      // 宿主如实报告「没保存过」——卡片据此套种子。
+      expect(doc.imageSelectionSaved).toBe(false)
+      expect(doc.imageModelKeys).toEqual([])
+    } finally {
+      restore()
+    }
+  })
+
+  it('保存过「全关」之后，刷新不会把种子又打开（白名单语义）', async () => {
+    // 次因回归：旧判据是 `imageModelKeys.length > 0`，空集被当成「没选过」，
+    // 于是用户取消全部勾选后一刷新图又回来了。显式标记把两者分开。
+    const restore = stub(LIVE_CHAT)
+    try {
+      const doc = await readModels({ pat: 'pt-seed', imageModelKeys: [], imageSelectionSaved: true })
+      expect(doc.imageSelectionSaved).toBe(true)
+      // `false` 在投影里被省略（`undefined` 就是「关」），所以断言「没有一条是 true」。
+      expect(doc.models.some(m => m.supportsImages === true)).toBe(false)
+    } finally {
+      restore()
+    }
+  })
+
+  it('保存过部分选择时，只开列出的那些（白名单不是追加清单）', async () => {
+    const restore = stub(LIVE_CHAT)
+    try {
+      const doc = await readModels({ pat: 'pt-seed', imageModelKeys: ['qfmodel'], imageSelectionSaved: true })
+      expect(doc.models.map(m => [m.key, m.supportsImages === true])).toEqual([
+        ['qmodel_38max', false],
+        ['qfmodel', true],
+        ['kmodel', false],
+      ])
+    } finally {
+      restore()
+    }
+  })
+
+  it('旧配置（无标记、集合非空）按「已保存」处理，不被种子覆盖', async () => {
+    // 升级上来的配置没有 imageSelectionSaved 这个键：非空集合只能来自一次保存，
+    // 所以必须尊重它，而不是当成「没选过」。
+    const restore = stub(LIVE_CHAT)
+    try {
+      const doc = await readModels({ pat: 'pt-seed', imageModelKeys: ['kmodel'] })
+      expect(doc.imageSelectionSaved).toBe(true)
+      expect(doc.models.map(m => [m.key, m.supportsImages === true])).toEqual([
+        ['qmodel_38max', false],
+        ['qfmodel', false],
+        ['kmodel', true],
+      ])
+    } finally {
+      restore()
+    }
+  })
+})

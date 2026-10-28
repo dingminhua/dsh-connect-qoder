@@ -2,6 +2,63 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.15.0 (2026-10-29)
+
+### Fixed
+
+- **模型目录停在旧协议**（issue #21）：`cosy-clienttype: 5` / `cosy-version: 0.1.43`
+  让上游只下发旧目录——国际版静默少 `Sonus` / `Cantus` / `Fast`，国内版少 `Fast`，
+  而目录照常返回、对话照常能跑，没有任何报错指向这里。现按区域**成对**提到
+  `10` / `1.1.69`（5 处：`DEFAULT_HEADERS`、`exchangeJobToken`、chat、`bearerGet`）。
+  两个值必须成对改：国内版只提 clienttype、version 留旧值时目录不变，且 chat 报
+  `HTTP 403 code 112`。`src/cosy.ts` 的 `COSY_VERSION`（进 bearer **载荷**的那个）
+  刻意不动——实测保持 `0.1.43` 时目录、对话、用量、活动全部正常。
+  - 实测（2026-10-29，两区域各一枚真实 PAT，只读目录 + 一次对话）：cn 9 → 10 条、
+    global 11 → 14 条；`qfmodel` / `dfmodel` 与新增的 `fast` / `smodel` 全部 200 且
+    真吐字；sash 面（用量、签到活动）不受影响——那三条路径逐条手写请求头，没有
+    展开 `DEFAULT_HEADERS`。
+  - 新增 `tests/upstream.spec.ts`「cosy 面协议版本」一组：目录 / 对话 / jobToken
+    三条路径必须带同一对版本，且 sash 面**不**带 `cosy-version`（两条路径互不干扰
+    是本改动的前提）。
+- **图片能力默认种子永远查不中**（issue #22）：`NATIVE_MODALITY_BY_MODEL_ID` 按
+  厂商模型名键控，而 `withImageSelection` 只传了 Qoder 的内部短 id
+  （`model.key`），两边结构上不可能相等 ⇒ 每次 seed 查表都落到 `undefined` ⇒
+  整张表是死代码，**所有模型默认关图**（`read_image` 报「model does not declare
+  image input」、附件报 `MODEL_DOES_NOT_SUPPORT_IMAGES`）。
+  - `imageDefaultFor` 现在接受 `name`（显示名）作为第二个候选键，`index.ts` 与
+    卡片两处调用点都同时传 `key` + `displayName`；仍是**精确**匹配，不做模糊匹配。
+  - 卡片 tooltip 同样改走 `modalityKeyOf(key, name)`，否则每条都落进 `unknown`、
+    一律显示「未经核实」。
+  - **顺带把表本身重做了**：旧表的键（`qwen3.7-max` 等）已与当前目录完全脱节，
+    且结论过期（把 Kimi-K2.7-Code 标成 `text`）。现在按**稳定的内部短 id** 键控、
+    厂商名作别名，并保留旧目录条目供升级存档使用。
+  - 实测（2026-10-29，两区域 14 个模型逐个跑）：给每个模型发一张画着数字 `7` 的
+    160×160 PNG 问「图片里是哪一个数字」，**全部答对**（另用「左红右蓝」双色图与
+    纯色图交叉复核）。所以当前目录里没有纯文本模型——`is_vl` 在这份目录上恰好
+    准确。旧表把 `kimi-k2.7-code` 判成 `text` 是错的，已改回 `multimodal`。
+- **`imageModelKeys` 的白名单语义被 `seeded` 误判**（issue #22 次因）：
+  `stampRuntimeCatalog` 用 `images.size > 0` 推断「用户是否保存过」，于是「用户把
+  勾全部取消」与「从未选过」在数据上都是空数组、行为却相反——前者一刷新就被种子
+  重新打开。新增显式标记 `regions.<region>.imageSelectionSaved`（保存时置 `true`，
+  与集合内容无关），运行时与卡片都以它为准；旧配置（无该键、集合非空）按「已保存」
+  处理，不倒退。
+- **上游 `body: "null"` 空帧打断整个流**：实测 cn 的 `mmodel`（MiniMax-M3.1-Flash）
+  在正常首帧后投递一帧 `body: "null"`，`JSON.parse('null')` 合法返回 `null`，于是
+  `inner.code` 抛 `TypeError: Cannot read properties of null` —— 用户看到「这个模型
+  坏了」，而它完全正常（同一 key 用图问颜色答得对）。`parseStreamDelta` 现在把非
+  对象帧当「本帧无可消费内容」跳过。
+
+### Tests
+
+- `tests/native-modality.spec.ts`：新增「图片默认种子能命中真实目录」一组——拿
+  **真实目录形状**（短 id + 厂商名）断言每个条目都命中，另用
+  `QODER_FALLBACK_MODELS` 全量遍历，表一旦落后于内置目录就变红。
+- `tests/index.spec.ts`：新增「图片默认种子」一组，走**真实 `/usage` 路由**断言
+  从未保存时默认勾上、保存过全关后不复活、白名单只开列出的那些、旧配置按已保存处理。
+- `tests/upstream.spec.ts`：新增 `parseStreamDelta` 空帧宽容一组。
+- `scripts/probe-promo.mjs` 的请求头同步到新协议（否则探针看到的是比插件真实运行
+  更旧的名单）。
+
 ## 1.14.0 (2026-10-25)
 
 ### Added

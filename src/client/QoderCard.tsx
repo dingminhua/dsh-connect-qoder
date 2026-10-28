@@ -70,7 +70,7 @@ import { QODER_PAT_ENV_VARS } from '../credentials.ts'
 import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
 import { QODER_CARD_CSS } from './styles.ts'
-import { imageDefaultFor, nativeModalityOf } from '../native-modality.ts'
+import { imageDefaultFor, modalityKeyOf, nativeModalityOf } from '../native-modality.ts'
 import { promoDisplayAt } from '../promo.ts'
 import { promoBadgeLabel, promoBadgeTooltip, hostLanguage } from './promo-badge.ts'
 import type { Translate } from './locales.ts'
@@ -140,14 +140,16 @@ function dotStyle(status: QoderWebUsage['status']): Record<string, string> {
 /**
  * 某个模型图片开关的说明文字。
  *
- * 复选框只对**厂商文档确认原生 multimodal** 的模型默认勾选，所以另外两种
- * 结果必须说清「为什么没勾」——否则一个文档上纯文本的模型和一个未核实的
- * 模型，在已经勾选的兄弟旁边看起来是一样地「坏了」。三种状态各给一句不同
- * 的 tooltip，或直接不显示开关（`router`/`unknown` 的模型该不该勾没有依据，
- * 但用户仍可手动勾）。
+ * 复选框只对**核对表确认 multimodal** 的模型默认勾选，所以另外两种结果必须
+ * 说清「为什么没勾」——否则一个确认纯文本的模型和一个未核实的模型，在已经
+ * 勾选的兄弟旁边看起来是一样地「坏了」。三种状态各给一句不同的 tooltip。
+ *
+ * 查表要同时看 `key`（短 id）与 `name`（厂商名）：表的主键是短 id，但别名键
+ * 是厂商名，两处都可能命中。只传 `key` 会让每一条都落进 `unknown`，于是每个
+ * 开关都写着「未经核实」——那正是 issue #22 的表征之一。
  */
-function imageCheckboxHint(modelKey: string, t: Translate): string {
-  switch (nativeModalityOf(modelKey)) {
+function imageCheckboxHint(modelKey: string, modelName: string, t: Translate): string {
+  switch (nativeModalityOf(modalityKeyOf(modelKey, modelName))) {
     case 'multimodal': return t('row.modelImage')
     case 'text': return t('row.modelImageText')
     default: return t('row.modelImageUnverified')
@@ -368,6 +370,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const enabledModelKeys = usage?.status === 'signed-in' ? usage.enabledModelKeys : []
   const offModelKeys = usage?.status === 'signed-in' ? usage.offModelKeys : []
   const imageModelKeys = usage?.status === 'signed-in' ? usage.imageModelKeys : []
+  const imageSelectionSaved = usage?.status === 'signed-in' ? usage.imageSelectionSaved : false
   const savedBudgets = usage?.status === 'signed-in' ? (usage.contextBudgets ?? {}) : {}
   const savedEfforts = usage?.status === 'signed-in' ? (usage.thinkingEfforts ?? {}) : {}
 
@@ -375,12 +378,23 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     enabledModelKeys: new Set(enabledModelKeys),
     offModelKeys: new Set(offModelKeys),
     // 图片勾选以**宿主保存的独立集合**为准（与运行时同一份事实）。用户从未
-    // 保存过（集合为空）时，才回落到厂商核对表 `imageDefaultFor` 的默认值——
-    // 绝不采信平台的 `is_vl` 标记：它几乎对每个模型都是 true（含纯文本模型），
-    // 拿它当能力答案会在纯文本模型上默认开出图片输入。见 src/native-modality.ts。
-    supportsImages: imageModelKeys.length > 0
+    // 保存过时才回落到厂商核对表 `imageDefaultFor` 的默认值——绝不采信平台的
+    // `is_vl` 标记：它几乎对每个模型都是 true，拿它当能力答案会在纯文本模型上
+    // 默认开出图片输入。见 src/native-modality.ts。
+    //
+    // 判据是显式的 `imageSelectionSaved`，**不是** `imageModelKeys.length > 0`：
+    // 后者把「选成了空集」（用户取消全部勾选）当成「从未选过」，一刷新种子又
+    // 把图全打开（issue #22 的次因）。
+    //
+    // 查表要同时传 `key` 与 `name`：表的键是厂商模型名，而目录里的 `key` 是
+    // Qoder 内部短 id，只传 key 则永远查不中（issue #22 的主因）。
+    supportsImages: imageSelectionSaved
       ? new Set(imageModelKeys)
-      : new Set(cartesianModels.filter(m => imageDefaultFor({ id: m.key, ...(m.supportsImages === undefined ? {} : { supportsImages: m.supportsImages }) })).map(m => m.key)),
+      : new Set(cartesianModels.filter(m => imageDefaultFor({
+          id: m.key,
+          name: m.name,
+          ...(m.supportsImages === undefined ? {} : { supportsImages: m.supportsImages }),
+        })).map(m => m.key)),
     contextBudgets: { ...savedBudgets },
     thinkingEfforts: { ...savedEfforts },
   }
@@ -905,7 +919,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                   {/* image/off 两个复选框与 workbuddy 同规：恒渲染、是否可用只看
                       写权限——不按上游字段有无隐藏（隐藏会让能力未知的模型行缺控件，
                       行与行控件数量不一，视觉抖动）。 */}
-                  <label className="dsm-qoder-model-image" title={imageCheckboxHint(model.key, t)}>
+                  <label className="dsm-qoder-model-image" title={imageCheckboxHint(model.key, model.name, t)}>
                     <input
                       type="checkbox"
                       checked={draft.supportsImages.has(model.key)}
@@ -1393,6 +1407,9 @@ export function buildModelsPayload(draft: QoderDraft, models: readonly QoderWebM
     // 图片勾选以**独立集合**持久化（workbuddy 的 `imageModelIds` 语义）：它不随
     // lastCatalog 一起被重写，运行时也只从它派生图像能力，不从上游 `is_vl`。
     imageModelKeys: [...draft.supportsImages],
+    // 这一次保存本身就是「用户选过了」的证据——与集合是否为空无关。没有这个
+    // 标记，取消全部勾选后一刷新就会被厂商表种子重新打开（issue #22 的次因）。
+    imageSelectionSaved: true,
     offModelKeys: [...draft.offModelKeys],
     contextBudgets: draft.contextBudgets,
     thinkingEfforts: draft.thinkingEfforts,

@@ -80,7 +80,10 @@ const response = await fetch(url, {
   headers: {
     'cosy-data-policy': 'agree',
     'content-type': 'application/json',
-    'cosy-clienttype': '5',
+    // 与 src/upstream.ts 的 COSY_CLIENT_TYPE / COSY_VERSION_HEADER 同步：
+    // 旧值 5 / 0.1.43 会让上游只下发旧目录（拿不到 Sonus/Cantus/Fast），
+    // 探针就会看到一份比插件真实运行更旧的名单。见 issue #21。
+    'cosy-clienttype': '10',
     'login-version': 'v2',
     'user-agent': 'Go-http-client/2.0',
     'cosy-scene': 'assistant',
@@ -92,7 +95,7 @@ const response = await fetch(url, {
     'cosy-key': session.cosyKey,
     accept: 'application/json',
     authorization: composeBearer(payloadB64, sig),
-    'cosy-version': '0.1.43',
+    'cosy-version': '1.1.69',
     'cosy-machineid': session.machineId,
     'cosy-machinetoken': session.machineToken,
   },

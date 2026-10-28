@@ -1168,8 +1168,22 @@ export type QoderWebUsage =
      * of image capability, never the upstream's platform `is_vl` flag (see
      * `native-modality.ts`). Stored independently of `lastCatalog` so a
      * directory rewrite cannot silently change a model's image answer.
+     *
+     * It is a WHITELIST: an empty array means "no model has image input", which
+     * is also what a never-saved region looks like. {@link imageSelectionSaved}
+     * is what tells those two apart — see below.
      */
     imageModelKeys: readonly string[]
+    /**
+     * Whether the user ever SAVED an image selection for this region.
+     *
+     * Needed because `imageModelKeys` is a whitelist: "never chosen" and "chose
+     * nothing" are both `[]`, but the correct behaviour is opposite — the first
+     * seeds from the vendor table, the second must stay all-off. Without this
+     * flag the card cannot tell them apart, so unchecking every model and
+     * refreshing would re-check the seeded ones (issue #22).
+     */
+    imageSelectionSaved: boolean
     credits?: QoderWebCredits
     creditsError?: string
     /**

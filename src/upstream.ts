@@ -167,6 +167,36 @@ const CAMPAIGNS_QUERY = '?forceRefresh=true'
 /** sash 接口要求的客户端标识（参考实现如此，缺了会被拒）。 */
 const SASH_CLIENT_TYPE = '10'
 const SASH_USER_AGENT = 'Qoder'
+/**
+ * **cosy 面**（chat + models）的客户端身份：`cosy-clienttype` 与 `cosy-version`。
+ *
+ * 上游按这两个头决定下发哪一套模型目录。旧值 `5` / `0.1.43` 是 2026-10-11 写下
+ * 时正确的身份，那时上游还没有 Sonus/Cantus/Fast；上游后来把新模型只发给新
+ * 协议，于是旧身份拿到的是**静默的旧目录**——目录照常返回、对话照常能跑，只是
+ * 少几个模型，没有任何报错指向这里（issue #21）。
+ *
+ * 实测（2026-10-29，两个区域各一枚真实 PAT，只读目录 + 一次对话）：
+ *
+ * | 区域   | `5` / `0.1.43` | `10` / `1.1.69`        |
+ * | ------ | -------------- | ---------------------- |
+ * | cn     | 9 条           | 10 条（+`fast`）       |
+ * | global | 11 条          | 14 条（+`smodel`/`cmodel`/`fast`） |
+ *
+ * 两个值必须**成对**改：国内版只把 clienttype 提到 `10`、version 留在 `0.1.43`
+ * 时，目录仍只有 9 条（拿不到 `fast`），而 chat 直接报
+ * `HTTP 403 code 112`（「协议半改」的坏状态）。成对改之后 chat 两个区域都正常
+ * 吐字，`qfmodel` / `dfmodel` 与新增的 `fast` / `smodel` 都实测通过。
+ *
+ * 与 sash 面**无关**：`sashRequest` / `fetchUsageDirect` / `jobTokenGet` 是逐条
+ * 手写请求头，没有展开 {@link DEFAULT_HEADERS}，所以这条改动碰不到签到与用量
+ * （实测改完两个区域的用量与活动列表照常 200）。
+ *
+ * `COSY_VERSION`（`src/cosy.ts`，进 bearer **载荷**的那个）刻意**不**跟着改：
+ * 它只参与签名与身份声明，实测在头为 `10` / `1.1.69` 时保持 `0.1.43` 两个区域
+ * 的目录、对话、用量、活动全部正常。改它是另一件事，没有收益，不做。
+ */
+const COSY_CLIENT_TYPE = '10'
+const COSY_VERSION_HEADER = '1.1.69'
 const MODELS_PATH = '/algo/api/v2/model/list?Encode=1'
 const JOB_TOKEN_PATH = '/algo/api/v3/user/jobToken?Encode=1'
 
@@ -338,10 +368,16 @@ export interface QoderSessionHolder {
   sashExpireAtMs?: number
 }
 
+/**
+ * cosy 面（chat + models）的公共请求头。
+ *
+ * 协议版本见 {@link COSY_CLIENT_TYPE} / {@link COSY_VERSION_HEADER}：这两个值
+ * 决定上游下发哪套模型目录，改之前先读那段注释（issue #21 的实测表）。
+ */
 const DEFAULT_HEADERS: Record<string, string> = {
   'cosy-data-policy': 'agree',
   'content-type': 'application/json',
-  'cosy-clienttype': '5',
+  'cosy-clienttype': COSY_CLIENT_TYPE,
   'login-version': 'v2',
   'user-agent': 'Go-http-client/2.0',
   'cosy-scene': 'assistant',
@@ -414,8 +450,8 @@ export class QoderUpstreamClient {
       appcode: 'cosy',
       accept: 'application/json',
       'accept-encoding': 'identity',
-      'cosy-version': '0.1.43',
-      'cosy-clienttype': '5',
+      'cosy-version': COSY_VERSION_HEADER,
+      'cosy-clienttype': COSY_CLIENT_TYPE,
       date,
       signature: sig,
       'content-type': 'application/json',
@@ -659,7 +695,7 @@ export class QoderUpstreamClient {
       'cache-control': 'no-cache',
       accept: 'text/event-stream',
       authorization: bearer,
-      'cosy-version': '0.1.43',
+      'cosy-version': COSY_VERSION_HEADER,
       'cosy-machineid': holder.session.machineId,
       'cosy-machinetoken': holder.session.machineToken,
       'x-model-key': modelKey,
@@ -896,6 +932,11 @@ export class QoderUpstreamClient {
    * 但那两个接口需要 `cosy-clienttype: 10` 与 `user-agent: Qoder`——参考实现
    * 如此，缺了会被拒；而夹带 cosy 协议头（chat/models 那套）反而不认。
    *
+   * 这里的 `10` 与 cosy 面的 {@link COSY_CLIENT_TYPE} **恰好同值但不同源**：
+   * 这条是 sash 面自己的客户端标识（`SASH_CLIENT_TYPE`，逐条手写请求头），
+   * 改 cosy 面的协议版本不该顺手动它，反之亦然。两个数字各自独立被测。sash 面
+   * 也**不**发 `cosy-version`：它本来就不带那套协议头。
+   *
    * **国际版额外需要设备风控头**（`Cosy-MachineToken/Code/Type`，见 device-risk.ts）：
    * 签到活动只下发给带这些头的请求，缺了就拿不到活动列表。国内版不需要，所以按
    * region 条件附加 —— 不要无条件发，多余的头在另一侧是噪音。
@@ -1009,7 +1050,7 @@ export class QoderUpstreamClient {
       'cosy-key': holder.session.cosyKey,
       accept: 'application/json',
       authorization: bearer,
-      'cosy-version': '0.1.43',
+      'cosy-version': COSY_VERSION_HEADER,
       'cosy-machineid': holder.session.machineId,
       'cosy-machinetoken': holder.session.machineToken,
     }
@@ -1136,6 +1177,12 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
   } catch {
     return undefined
   }
+  // 上游会投递 `body: "null"` 的**空帧**（实测 2026-10-29，cn 的 `mmodel`：
+  // 首帧 role-only 之后紧接一帧 `"null"`）。`JSON.parse('null')` 合法返回
+  // `null`，于是下一行 `inner.code` 直接 TypeError —— 整个流被这条空帧打断，
+  // 用户看到的是「这个模型坏了」，而模型本身完全正常。空帧就是「本帧无可消费
+  // 内容」，与解析失败同义：返回 undefined，让调用方跳过它。
+  if (inner === null || typeof inner !== 'object') return undefined
 
   // 业务错误：{"code":"115","message":"..."}
   if (typeof inner.code === 'string' && inner.code !== '' && inner.code !== '0') {
