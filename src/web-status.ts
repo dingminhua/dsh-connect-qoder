@@ -976,7 +976,7 @@ export async function buildWebUsage(
     offModelKeys,
     imageModelKeys: deps.imageModelKeys(region).filter(key => catalog.some(m => m.key === key)),
     // 「保存过图片选择」与集合内容无关地透传：卡片要靠它区分「从未选过」
-    // （套厂商表种子）与「选成了空集」（尊重全关）。见 issue #22 的次因。
+    // （套核对表种子）与「选成了空集」（尊重全关）。见 issue #22 的次因。
     imageSelectionSaved: deps.imageSelectionSaved?.(region)
       ?? deps.imageModelKeys(region).length > 0,
     ...(usageEntry?.usage?.credits === undefined ? {} : { credits: usageEntry.usage.credits }),

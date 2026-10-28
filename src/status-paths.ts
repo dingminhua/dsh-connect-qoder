@@ -1179,7 +1179,7 @@ export type QoderWebUsage =
      *
      * Needed because `imageModelKeys` is a whitelist: "never chosen" and "chose
      * nothing" are both `[]`, but the correct behaviour is opposite — the first
-     * seeds from the vendor table, the second must stay all-off. Without this
+     * seeds from the reviewed table, the second must stay all-off. Without this
      * flag the card cannot tell them apart, so unchecking every model and
      * refreshing would re-check the seeded ones (issue #22).
      */

@@ -378,7 +378,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     enabledModelKeys: new Set(enabledModelKeys),
     offModelKeys: new Set(offModelKeys),
     // 图片勾选以**宿主保存的独立集合**为准（与运行时同一份事实）。用户从未
-    // 保存过时才回落到厂商核对表 `imageDefaultFor` 的默认值——绝不采信平台的
+    // 保存过时才回落到核对表 `imageDefaultFor` 的默认值——绝不采信平台的
     // `is_vl` 标记：它几乎对每个模型都是 true，拿它当能力答案会在纯文本模型上
     // 默认开出图片输入。见 src/native-modality.ts。
     //
@@ -1408,7 +1408,7 @@ export function buildModelsPayload(draft: QoderDraft, models: readonly QoderWebM
     // lastCatalog 一起被重写，运行时也只从它派生图像能力，不从上游 `is_vl`。
     imageModelKeys: [...draft.supportsImages],
     // 这一次保存本身就是「用户选过了」的证据——与集合是否为空无关。没有这个
-    // 标记，取消全部勾选后一刷新就会被厂商表种子重新打开（issue #22 的次因）。
+    // 标记，取消全部勾选后一刷新就会被核对表种子重新打开（issue #22 的次因）。
     imageSelectionSaved: true,
     offModelKeys: [...draft.offModelKeys],
     contextBudgets: draft.contextBudgets,

@@ -243,13 +243,14 @@ const regionConfig = z.object({
   /**
    * 用户**显式**开启图片输入的模型 key 集合。
    *
-   * 图像能力只来自这里，绝不从上游的 `is_vl` 平台标记推断（见
-   * src/native-modality.ts：平台标记几乎对每个模型都是 true，含纯文本模型）。
+   * 图像能力只来自这里，绝不从上游的 `is_vl` 平台标记推断——那是**平台**的
+   * 声明，不该替本插件下逐模型的能力结论（见 src/native-modality.ts：为什么
+   * 不采信、核对表现在按什么键控、结论是从哪来的）。
    * 与 lastCatalog 分开存储，使勾选状态不随目录重写而耦合丢失。
    *
    * **它是白名单，不是追加清单**：列出的才开图，未列出的一律关。所以「用户
    * 把全部勾都取消」与「用户从未保存过」在**数据上**都表现为空数组，而两者的
-   * 正确行为相反（前者应保持全关，后者应套用厂商表种子）。空集无法区分它们，
+   * 正确行为相反（前者应保持全关，后者应套用核对表种子）。空集无法区分它们，
    * 因此判据是下面那个显式标记 {@link imageSelectionSaved}，不是 `length > 0`。
    */
   imageModelKeys: z.array(z.string()).default([]),
@@ -257,7 +258,7 @@ const regionConfig = z.object({
    * 用户是否**保存过**图片选择（与集合内容无关）。
    *
    * 存在的唯一理由是把「从未选过」与「选成了空集」分开：`imageModelKeys` 是
-   * 白名单，两种情况都是 `[]`，但前者要套厂商表种子、后者要尊重「全关」。
+   * 白名单，两种情况都是 `[]`，但前者要套核对表种子、后者要尊重「全关」。
    * 靠 `imageModelKeys.length > 0` 推断会把后一种误判成前一种，用户取消全部
    * 勾选后一刷新图又回来了（issue #22 的次因）。
    *
@@ -419,7 +420,7 @@ function imageModelKeysOf(config: { regions?: Record<string, unknown> | null }, 
 }
 
 /**
- * 用户是否**保存过**图片选择（决定要不要套厂商表种子）。
+ * 用户是否**保存过**图片选择（决定要不要套核对表种子）。
  *
  * 主判据是显式标记 `imageSelectionSaved`（见配置 schema 里那段：空集既是
  * 「从未选过」也是「选成空集」，只有标记能把它们分开）。
@@ -441,16 +442,16 @@ function imageSelectionSavedOf(config: { regions?: Record<string, unknown> | nul
  *
  * 与 workbuddy 的 `withImageSelection` 同构：所有运行时目录路径（启动种子、
  * 刷新、保存）都经过它，保证同一模型在三条路径上得到一致的图像能力答案。
- * 用户从未保存过时，用 `imageDefaultFor` 的厂商表结论作种子，使首次打开就能
+ * 用户从未保存过时，用 `imageDefaultFor` 的核对表结论作种子，使首次打开就能
  * 显示正确默认，而不必先保存一次。
  *
  * `seeded` 的含义是「用户保存过选择」，由 {@link imageSelectionSavedOf} 判定，
  * **不是** `images.size > 0`：那是把「白名单为空」当成「没选过」，于是用户把
  * 勾全部取消后一刷新，种子又把图全打开了（issue #22 的次因）。
  *
- * `model.displayName` 必须一起交给查表：这张表的键是厂商模型名，而目录里的
- * `key` 是 Qoder 内部短 id（`qmodel_latest`），只传 key 则表永远查不中
- * （issue #22 的主因）。
+ * `model.key` 与 `model.displayName` 都要交给查表：核对表的主键是内部短 id、
+ * 厂商名是别名键，两个候选键覆盖两种来源（旧存档与外部选择器只拿得到显示名）。
+ * issue #22 的主因就是这里只传了一个键、而表的键形与它不同，于是每次都查不中。
  */
 function withImageSelection(
   models: QoderModelInfo[],
@@ -494,7 +495,7 @@ function stampOffSelection(
 /**
  * 把用户的两项显式选择（图片输入、可关闭思考）盖印到运行时目录上。
  *
- * 两者机制相同：上游声明不可全信，用户的选择是唯一权威；未保存过时用厂商表/
+ * 两者机制相同：上游声明不可全信，用户的选择是唯一权威；未保存过时用核对表/
  * 内置规则作种子。合在一处便于所有运行时目录路径（启动、刷新、保存）一次盖齐，
  * 避免漏盖导致「某条路径上模型能力与另一条不一致」。
  */
