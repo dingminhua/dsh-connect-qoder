@@ -189,7 +189,13 @@ export function apply(ctx: QoderClientContext): void {
      */
     const registerModelLabel = (): (() => void) | undefined => {
       try {
-        const label = createQoderModelLabel(ctx.slots as unknown as QoderModelLabelSlots)
+        const label = createQoderModelLabel({
+          entries: key => (ctx.slots as unknown as QoderModelLabelSlots).entries(key),
+          // 委托时按**对方 entry 自己的 locale** 绑 t（issue #23）。宿主用
+          // `ctx.locale.bind(ns)` 给每个 entry 注入同一套座位；我们绕过框架渲染
+          // 别家的组件，就得用同一个入口替它绑——绝不能转发我们自己的 t。
+          bindLocale: ns => ctx.locale.bind(ns),
+        })
         return ctx.slots.inject(QODER_MODEL_LABEL_SLOT as never, () => (ctx.slots as unknown as {
           register(options: { name: string; priority: number; locale: string }, component: unknown): () => void
         }).register({

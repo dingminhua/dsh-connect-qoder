@@ -2,6 +2,65 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.16.0 (2026-10-29)
+
+### Fixed
+
+- **模型选择器徽标静默消失**（issue #23）：委托渲染时只转了 ownerProps 那四项，
+  **没给被委托组件它自己的 `t`**。宿主内置的 `DeepSeekModelLabel`
+  （`locale: deepseek-model-label-1017`）会无条件调用 `t("badge.label")`，于是
+  抛 `TypeError: t is not a function`；宿主错误边界把**整片** label 槽弃权，
+  触发按钮 / 菜单当前值 / 每个列表行的徽标一起变成裸名字，用户侧零信号。
+  - 修法：按 `entry.locale` 用 `ctx.locale.bind(ns)` 替对方绑一个 `t` 递过去，
+    而不是删掉委托（删掉会让 workbuddy 的倍率后缀与忙闲图标一起消失）。
+  - **不转发我们自己的 `t`**：那会把 `settings.qoder` 的字典当成对方的字典用，
+    对方的 key 查不到就回落成字面键名画在界面上。
+  - 兜底：拿不到 locale 面、或命名空间未注册（`bindLocale` 抛错）时**不委托**，
+    落回裸名字（也是宿主的 fallback）——少一枚别家徽标好过整片消失。
+  - `docs/PROMO_BADGE.md` 里「当前生态都是终点型组件」那句断言是**错的**，已更正：
+    只要同槽存在**任何**声明了 `locale` 的组件，无条件委托就必崩，与是哪家插件无关。
+- **上游申报的重试间隔被静默丢弃**（issue #24）：`10605 / RESOURCE_LIMIT` 的信封里
+  带着 `retryAfterSeconds`（实测 `{"isQueued":false,"queueCount":0,"retryAfterSeconds":5,
+  "serviceAvailable":true}`），此前读到即丢，用户只看到「上游报了个 4xx」，宿主按
+  自己的固定阶梯等待。
+  - 新增 `retryAfterMsOf()`（沿信封 `message` 往里剥，与 `deepestBusinessCode` 同一条
+    路）与 `retryAfterMsOfHeader()`（`Retry-After` 头的秒数 / HTTP-date 两种形式），
+    挂在 `QoderUpstreamError.retryAfterMs` 上。
+  - **写进给宿主的失败文案**（`[upstream retry-after 5s]`）：宿主在 pi-ai 这条路由上
+    只从文案分类（`llm-pi-ai/src/stream.ts` 的 `classifyPiAiError(text)`），失败对象上
+    没有 `providerRetryAfterMs` 通道——那条通道只属于 Anthropic / DeepSeek 两个直连
+    适配器。所以**文案是唯一能影响阅读的出口**。
+  - 非流式失败响应另发 `Retry-After` 头（给别的消费者，不是本插件的判据）。
+  - 上限 1 小时：超过就当上游没申报（一个离谱的值会让宿主放弃这次重试）。
+
+### Added
+
+- **重试预算可配**（issue #24 第二条）：`regions.<region>.retry.{maxRetries,
+  initialDelayMs,maxDelayMs}`。此前只能是宿主默认值，想调只能改 `node_modules`
+  里的构建产物，而升级即静默还原。
+  - **三项全 0 = 跟随宿主默认**，与升级前逐字一致（老配置里没有这个键）。
+  - 只暴露三个数字，不暴露 `mode` / `retryableCodes`：那两个会改变「哪些错误值得
+    重试」的语义（`always` 甚至会让必然失败的请求无限重试），不属于「调预算」。
+  - 缺失的一侧按另一侧/宿主默认量级补齐，并保证 `initialDelayMs <= maxDelayMs`
+    （宿主的 `resolveBackoff` 会拒绝 0 与倒挂）。
+  - README 双语补了配置样例与推荐预算（`5000 → 30000`，兼顾瞬时 5 秒与排队 30 秒）。
+
+### Tests
+
+- `tests/model-label.spec.tsx`：新增「委托必须给出对方自己的 t」一组 5 条（对方
+  无条件调用 t / 无 locale 时若仍委托必抛 / `bindLocale` 缺席落回裸名字 /
+  `bindLocale` 抛错落回裸名字 / 本插件徽标回归对照），并改正原来断言「绝不传 t」
+  的那条——那正是缺陷本身。
+- `tests/upstream.spec.ts`：新增 `retryAfterMsOf` / `retryAfterMsOfHeader` 两组
+  （含 issue 原样信封、`waitTime`/`queueCount` 不得被当成等待时长、>1h 拒绝、
+  深度上限、负数与字符串不认）。
+- `tests/shim.spec.ts`：新增 `retryAfterNote` 与端到端两条（`Retry-After` 头、
+  文案里出现申报值、未申报时两处都不加）。
+- `tests/index.spec.ts`：新增 `retryPolicyOf` 一组（全 0 → undefined、只配
+  maxRetries 时补齐退避、推荐预算原样表达、两区域各配各的、`mode` 恒为 normal）。
+- 测试 1001 → 1032。两条新逻辑都做过变异验证（退回「丢弃申报值」/「解析恒
+  undefined」/「不传 t」，对应用例立刻变红）。
+
 ## 1.15.0 (2026-10-29)
 
 ### Fixed

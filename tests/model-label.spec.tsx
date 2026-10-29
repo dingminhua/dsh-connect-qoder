@@ -103,9 +103,22 @@ function stubFetch(models: QoderWebModel[]): { urls: string[] } {
   return { urls }
 }
 
-/** 空注册表 + 可注入条目的替身。 */
-function slotsStub(others: Array<{ component: unknown }> = []): QoderModelLabelSlots {
-  return { entries: () => others }
+/**
+ * 空注册表 + 可注入条目的替身。
+ *
+ * `bindLocale` 默认按 `ns` 回一个可断言的翻译器（键名直通、带上命名空间前缀），
+ * 这样「递过去的是**对方**命名空间的 t」可以被逐字验证 —— issue #23 的两个
+ * 错误修法（不传 t / 传我们自己的 t）都会在这里露馅。
+ */
+function slotsStub(
+  others: Array<{ component: unknown, locale?: string }> = [],
+  opts: { bindLocale?: boolean } = {},
+): QoderModelLabelSlots {
+  const stub: QoderModelLabelSlots = { entries: () => others }
+  if (opts.bindLocale !== false) {
+    stub.bindLocale = (ns: string) => ((key: string) => `${ns}:${key}`) as any
+  }
+  return stub
 }
 
 async function mount(
@@ -248,17 +261,18 @@ describe('选择器标签：外来 provider 的委托', () => {
       // 故意用 hooks：直接调用会把它混进我们的 hook 序列（非法），元素渲染才合法。
       const [count] = React.useState(1)
       seen.push(props)
-      return React.createElement('span', { className: 'wb-label' }, `${props.model.name}·${String(count)}`)
+      return React.createElement('span', { className: 'wb-label' }, `${props.model.name}·${String(count)}·${String((props.t as unknown as (k: string) => string | undefined)?.(`badge.label`))}`)
     }
     stubFetch([])
     const { container, unmount } = await mount(
       { provider: { id: 'workbuddy' }, model: { id: 'wb-1', name: 'WB One' } },
-      slotsStub([{ component: ForeignLabel }]),
+      slotsStub([{ component: ForeignLabel, locale: 'workbuddy-labels' }]),
     )
-    expect(container.querySelector('.wb-label')?.textContent).toBe('WB One·1')
-    // 转发的是 ownerProps 契约那几项，且绝没有把我们的 t 递过去。
+    // issue #23：必须把**对方命名空间**的 t 递过去（这里是 `workbuddy-labels:badge.label`）。
+    // 不递 ⇒ 对方无条件调用 t 时抛 TypeError（#23 现场）；
+    // 递我们自己的 t ⇒ 串了命名空间，界面上出现字面键名。
+    expect(container.querySelector('.wb-label')?.textContent).toBe('WB One·1·workbuddy-labels:badge.label')
     expect(seen).toHaveLength(1)
-    expect(seen[0]?.t).toBeUndefined()
     expect(seen[0]?.provider.id).toBe('workbuddy')
     await unmount()
   })
@@ -330,8 +344,11 @@ describe('选择器标签：外来 provider 的委托', () => {
   it('账本里第一条是自己时跳过自己（否则会自委托成环）', async () => {
     stubFetch([])
     // 同一实例进账本：身份比对必须排除自己，才会落到下一个组件。
-    const ledger: Array<{ component: unknown }> = []
-    const Component = createQoderModelLabel({ entries: () => ledger })
+    const ledger: Array<{ component: unknown, locale?: string }> = []
+    const Component = createQoderModelLabel({
+      entries: () => ledger,
+      bindLocale: (ns: string) => ((key: string) => `${ns}:${key}`) as any,
+    })
     ledger.push({ component: Component }, { component: () => React.createElement('b', null, 'real') })
 
     const container = document.createElement('div')
@@ -431,5 +448,96 @@ describe('findUsageRow', () => {
     expect(findUsageRow(models, 'Qwen3.8-Max')?.key).toBe('qmodel_38max')
     expect(findUsageRow(models, 'nope')).toBeUndefined()
     expect(findUsageRow(undefined, 'qmodel_38max')).toBeUndefined()
+  })
+})
+
+/**
+ * **issue #23 的现场**：被委托的组件无条件调用 `t`。
+ *
+ * 宿主的 `DeepSeekModelLabel` 长这样（`app.asar` 实测）：
+ *
+ * ```js
+ * function DeepSeekModelLabel({ provider, model, t }) {
+ *   if (!(...匹配 deepseek 的 provider/model...)) return model.name
+ *   … jsx(Tag, { children: t("badge.label") }) …
+ * }
+ * ```
+ *
+ * 它声明了 `locale: "deepseek-model-label-1017"`，所以宿主的框架会按那个
+ * 命名空间注入 `t`。我们绕过框架直接 `jsx(Other, {...ownerProps})` 时没传，
+ * 于是 `t(...)` 抛 `TypeError: t is not a function`，宿主边界把**整片** label
+ * 槽弃权 → 触发按钮、菜单当前值、每个列表行的徽标一起消失，且用户零信号。
+ *
+ * 这组用例把三种结局分开钉：
+ *  1. 不传 t           → 对方抛错（本测试的替身会抛，证明这就是缺陷形状）
+ *  2. 传**对方**命名空间的 t → 正常渲染（修复后的行为）
+ *  3. 拿不到 locale 面   → 不委托，落回裸名字（而不是递一个会抛的东西）
+ */
+describe('选择器标签：委托必须给出对方自己的 t（issue #23）', () => {
+  /** 与宿主 1017 同构：**无条件**调用 t。 */
+  function NeedsT(props: QoderModelLabelProps): React.ReactElement {
+    const label = (props.t as (k: string) => string)('badge.label')
+    return React.createElement('span', { className: 'needs-t' }, label)
+  }
+
+  it('传的是对方命名空间的 t，不是我们的（串命名空间会画出字面键名）', async () => {
+    stubFetch([])
+    const { container, unmount } = await mount(
+      { provider: { id: 'deepseek-account' }, model: { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' } },
+      slotsStub([{ component: NeedsT, locale: 'deepseek-model-label-1017' }]),
+    )
+    expect(container.querySelector('.needs-t')?.textContent).toBe('deepseek-model-label-1017:badge.label')
+    await unmount()
+  })
+
+  it('对方没声明 locale 时不传 t（它自己就不依赖框架的座位）', async () => {
+    stubFetch([])
+    function Plain(props: QoderModelLabelProps): React.ReactElement {
+      return React.createElement('span', { className: 'plain' }, `${props.model.name}|${String(props.t === undefined)}`)
+    }
+    const { container, unmount } = await mount(
+      { provider: { id: 'workbuddy' }, model: { id: 'wb', name: 'WB' } },
+      slotsStub([{ component: Plain }]),
+    )
+    expect(container.querySelector('.plain')?.textContent).toBe('WB|true')
+    await unmount()
+  })
+
+  it('拿不到 locale 面（bindLocale 缺席）时落回裸名字，不把会抛的组件渲染出去', async () => {
+    // 老宿主 / 单测环境：`bindLocale` 不存在。此时若仍委托，NeedsT 必抛，
+    // 整片 label 槽被弃权 —— 正是 #23 的后果。宁可少一枚别家徽标。
+    stubFetch([])
+    const { container, unmount } = await mount(
+      { provider: { id: 'deepseek-account' }, model: { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' } },
+      slotsStub([{ component: NeedsT, locale: 'deepseek-model-label-1017' }], { bindLocale: false }),
+    )
+    expect(container.querySelector('.needs-t')).toBeNull()
+    expect(container.textContent).toBe('DeepSeek-V4.1-Flash')
+    await unmount()
+  })
+
+  it('bindLocale 抛错（命名空间未注册）也落回裸名字，不把异常扩散出去', async () => {
+    stubFetch([])
+    const { container, unmount } = await mount(
+      { provider: { id: 'deepseek-account' }, model: { id: 'deepseek-flash', name: 'DeepSeek-V4.1-Flash' } },
+      {
+        entries: () => [{ component: NeedsT, locale: 'not-registered' }],
+        bindLocale: () => { throw new Error('locale namespace not registered') },
+      },
+    )
+    expect(container.textContent).toBe('DeepSeek-V4.1-Flash')
+    await unmount()
+  })
+
+  it('本插件的徽标在修复前后都照常渲染（回归对照）', async () => {
+    // 委托是给**外来** provider 的；改这段不能碰到自家的三态徽标。
+    stubFetch([row({ promotion: parsedPromo({ active: true }), isFree: false })])
+    const { container, unmount } = await mount(
+      { provider: { id: 'qoder' }, model: { id: 'qmodel_38max', name: 'Qwen3.8-Max' } },
+      slotsStub([{ component: NeedsT, locale: 'deepseek-model-label-1017' }]),
+    )
+    expect(container.querySelector('.dsm-qoder-model-promo')).not.toBeNull()
+    expect(container.querySelector('.needs-t')).toBeNull()
+    await unmount()
   })
 })

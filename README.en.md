@@ -178,6 +178,27 @@ The last two rows are deliberate: checking in and testing are **manual actions**
 
 **The one hard rule**: with zero members checked, batch actions refuse outright. An empty pool never degrades into "then run it on all accounts" — that would be the one reading that spends credits you did not authorize.
 
+### The retry budget is configurable (`regions.<region>.retry`)
+
+The host has an in-place retry loop: when a request fails but is worth one more attempt, it waits and sends it again. The wait ladder is declared by the plugin and executed by the host; by default it follows the host, so leaving it unset keeps your behaviour exactly as it is today.
+
+Qoder occasionally answers with `RESOURCE_LIMIT` (business code `10605`) and **states how long to wait**. The plugin now writes that value into the failure text it hands the host (of the form `[upstream retry-after 5s]`), so you can see that upstream only asked for five seconds instead of just "upstream returned a 4xx".
+
+To change the budget, set three numbers (per region):
+
+```yaml
+regions:
+  cn:
+    retry:
+      maxRetries: 4        # attempts (0 = follow the host default)
+      initialDelayMs: 5000 # first backoff in ms (0 = follow the host default)
+      maxDelayMs: 30000    # backoff ceiling in ms (0 = follow the host default)
+```
+
+`5000 -> 30000` covers both common upstream shapes: a transient throttle (5 s) and a `queueType:p2` queue (about 30 s). **Three zeros mean "follow the host default"**, so leaving them out is equivalent to not configuring this at all.
+
+> Previously this was whatever the host picked; changing it meant editing the build artifact inside `node_modules` — and that silently reverts on upgrade.
+
 ### Ranking rules (who serves when the pool is on)
 
 1. **Usable first** — accounts measured unusable (rate-limit cooldown, rejected credential) go to the back and do not participate;

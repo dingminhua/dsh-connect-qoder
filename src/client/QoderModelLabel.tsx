@@ -37,9 +37,28 @@ import type { Translate } from './locales.ts'
 /** The slot key（宿主 model-selection 声明的 single 槽，ownerProps 见 `QoderModelLabelProps`）. */
 export const QODER_MODEL_LABEL_SLOT = 'conversation.input.model.label'
 
+/**
+ * 账本里一条注册的最小形状。
+ *
+ * `locale` 就是**被委托组件自己声明的命名空间**——委托时必须按它绑一个 `t`
+ * 递给对方，理由见 {@link createQoderModelLabel} 的委托段（issue #23）。
+ */
+export interface QoderModelLabelEntry {
+  component: unknown
+  locale?: string | undefined
+}
+
 /** The minimal registry face the delegation needs: the RAW ledger view. */
 export interface QoderModelLabelSlots {
-  entries(key: string): readonly { component: unknown }[]
+  entries(key: string): readonly QoderModelLabelEntry[]
+  /**
+   * 按命名空间绑翻译器（宿主 `ctx.locale.bind`）。
+   *
+   * 缺席 = 拿不到 locale 面（单测 / 老宿主）：此时**不委托**，落回裸名字。
+   * 宁可少一枚别家的徽标，也不要递一个会让对方抛错的对象——那正是 #23 的
+   * 现场：整个 label 子树陪葬。
+   */
+  bindLocale?(ns: string): Translate
 }
 
 /**
@@ -221,9 +240,26 @@ function QoderModelLabelPromoChip(props: {
  *   它，宿主把抛错的 entry 一次性弃权（`reportEntryError` ⇒ 下一帧换幸存者），
  *   不会死循环。
  *
- * 委托必须渲染成**子元素**（见文件头第 2 条）；转发的 props 严格是 ownerProps
- * 契约那四个 —— 我们的 `t` 绑在 `settings.qoder` 命名空间上，递给别人等于
- * 让别人拿我们的字典读它自己的 key。
+ * ## 委托必须把对方**自己命名空间的 `t`** 递过去（issue #23）
+ *
+ * 宿主对 `t` 的注入是「每个 entry 按自己注册时声明的 `locale`，由框架塞进 kit」
+ * （`scoped-slots.tsx` 的 `if (entry.locale !== undefined) kit['t'] = localeSeat(...)`）。
+ * 绕过框架直接 `jsx(Other, {...ownerProps})` 就没这个机会，于是：
+ *
+ * - 对方的组件若**无条件**调用 `t(...)`（宿主内置的 `DeepSeekModelLabel` 正是），
+ *   立刻 `TypeError: t is not a function`；
+ * - 宿主错误边界接住后**弃权**该 entry，整片 label 槽回退成裸名字 —— 触发按钮、
+ *   菜单当前值、每个列表行一起死，用户零信号。
+ *
+ * 所以这里按 `entry.locale` 用 `ctx.locale.bind(ns)` 替对方绑一个 `t`。**不是**
+ * 转发我们自己的 `t`：那会把我们的 `settings.qoder` 字典当成对方的字典用，
+ * 对方的 key 查不到就回落成字面键名（`badge.label` 直接画在界面上）。
+ *
+ * 拿不到 locale 面（`bindLocale` 缺席：单测 / 老宿主）时**不委托**，落回裸名字：
+ * 少一枚别家的徽标，好过整片槽被一个 TypeError 打掉。
+ *
+ * 委托仍然渲染成**子元素**（见文件头第 2 条）：直接函数调用会把对方的 hooks
+ * 混进我们的序列，provider 切换时 hook 数量变化直接崩。
  */
 export function createQoderModelLabel(
   slots: QoderModelLabelSlots,
@@ -259,13 +295,35 @@ export function createQoderModelLabel(
     // 的行还给它的标签组件——只经过宿主公开的槽位账本与 ownerProps，不按名字找人。
     const foreign = region === undefined
     if (foreign) {
-      const other = slots.entries(QODER_MODEL_LABEL_SLOT)
-        .find(entry => entry.component !== QoderModelLabel && typeof entry.component === 'function')
-      if (other !== undefined) {
-        const Other = other.component as (p: QoderModelLabelProps) => ReactNode
-        return <Other provider={provider} model={model} placement={placement} selected={selected} />
+      const entries = slots.entries(QODER_MODEL_LABEL_SLOT)
+        .filter(entry => entry.component !== QoderModelLabel && typeof entry.component === 'function')
+      const other = entries[0]
+      // 没有可委托的组件，或拿不到 locale 面 → 裸名字（也是宿主的 fallback）。
+      if (other === undefined || slots.bindLocale === undefined) return <span>{model.name}</span>
+      const Other = other.component as (p: QoderModelLabelProps) => ReactNode
+      // **对方自己命名空间的 t**（issue #23）：宿主按 entry 的 locale 注入，
+      // 我们绕过框架直接渲染，就得自己替它绑。
+      //
+      // 绑不出来（命名空间没注册 / 面缺席）时**不委托**、落回裸名字 —— 不能
+      // 带着 `t: undefined` 硬渲染：对方若无条件调用 t，抛错会把整片 label 槽
+      // 打掉，那正是 #23 的后果。少一枚别家的徽标比整片消失好。
+      let otherT: Translate | undefined
+      if (other.locale !== undefined && other.locale !== '') {
+        try {
+          otherT = slots.bindLocale(other.locale)
+        } catch {
+          return <span>{model.name}</span>
+        }
       }
-      return <span>{model.name}</span>
+      return (
+        <Other
+          provider={provider}
+          model={model}
+          placement={placement}
+          selected={selected}
+          {...otherT === undefined ? {} : { t: otherT }}
+        />
+      )
     }
 
     const compact = placement !== 'trigger'

@@ -37,6 +37,7 @@ import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thi
 import { imageDefaultFor } from './native-modality.ts'
 import { createQoderShim, type QoderShim, type QoderServingAccount } from './shim.ts'
 import { createQoderAdapter, type QoderAdapter, QODER_PROVIDERS, QODER_PROVIDER_DISPLAY_NAMES, regionOfProvider } from './adapter.ts'
+import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { probeModel, probeUserMessage, redactUpstreamText, type QoderProbeClient, type QoderProbeError } from './probe.ts'
 import {
   registerQoderWebRoutes,
@@ -211,6 +212,27 @@ const poolConfig = z.object({
   orderAccountIds: z.array(z.string()).default([]),
 })
 
+/**
+ * 重试预算（issue #24）。**三个 0 都表示「用宿主默认」**。
+ *
+ * 用 0 而不是 `.optional()` 作缺省：配置界面把三个数字框摆在用户眼前，留空
+ * 就是 0；而「0 次重试」是一个真实且有用的选择（彻底关掉原地重试），不能被
+ * 当作「未配置」吞掉。所以判据是「值为 0 = 跟随宿主默认」，与「填 0 = 关掉」
+ * 分开 —— 后者请填 `maxRetries: -1`？不行，那更绕。
+ *
+ * 结论：这里只把 **0 当默认**，并把「关掉重试」留给宿主默认里的 `maxRetries`
+ * 之外的手段（本版不提供）。理由：把 0 解释成「关」会让**升级用户**的中文
+ * 配置（schema 默认 0）一上来就关掉全部重试，那是静默的行为变化。
+ */
+const regionRetryConfig = z.object({
+  /** 最多重试几次（0 = 跟随宿主默认）。 */
+  maxRetries: z.number().step(1).min(0).default(0).description('最多原地重试几次（0 = 跟随宿主默认）'),
+  /** 首次退避毫秒（0 = 跟随宿主默认）。 */
+  initialDelayMs: z.number().min(0).default(0).description('首次退避毫秒（0 = 跟随宿主默认）'),
+  /** 退避上限毫秒（0 = 跟随宿主默认）。 */
+  maxDelayMs: z.number().min(0).default(0).description('退避上限毫秒（0 = 跟随宿主默认）'),
+})
+
 const regionConfig = z.object({
   /** 本区域 PAT。留空读环境变量；env 与 vault 承接连带选择。 */
   pat: z.string().default('').description('Qoder PAT（留空时读取环境变量）'),
@@ -281,6 +303,19 @@ const regionConfig = z.object({
   thinkingEfforts: z.dict(z.string()).default({}),
   /** 账号池偏好。 */
   pool: poolConfig.default({ enabled: false, targetModelId: '', probeInputTokens: 0, memberAccountIds: [] }),
+  /**
+   * 重试预算（issue #24）。缺省 = 宿主默认，行为与升级前一致。
+   *
+   * 为什么要能配：`llm-retry` 的等待阶梯由 provider 自己的策略决定，本插件此前
+   * 只传 `resolveRetryPolicy(undefined, …)`（宿主默认 5 次 / 500ms→10s）。上游
+   * 报 `10605 / RESOURCE_LIMIT` 的两种形态差很多（瞬时 5 秒 / `queueType:p2`
+   * 排队 30 秒），一套固定阶梯不可能同时贴合；而插件又没暴露配置项，用户只能改
+   * `node_modules` 里的构建产物 —— 升级即静默还原。
+   *
+   * 只暴露**三个**数字，不暴露 `mode` / `retryableCodes`：那两个会改变「哪些错误
+   * 值得重试」的语义（`always` 甚至会让一个必然失败的请求无限重试），不是「调预算」。
+   */
+  retry: regionRetryConfig.default({ maxRetries: 0, initialDelayMs: 0, maxDelayMs: 0 }),
   /** 保存的模型目录（卡片“保存”时写入）。 */
   lastCatalog: z.array(modelConfig).default([]),
 })
@@ -349,6 +384,39 @@ export function regionStateOf(config: { regions?: Record<string, unknown> | null
 export function regionEnabled(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
   const state = regionStateOf(config, region)
   return state.enabled !== false
+}
+
+/**
+ * 某区域的重试预算 → 宿主的 `RetryPolicyConfig`（issue #24）。
+ *
+ * 三个值全为 0（schema 默认）时返回 `undefined`：**交给宿主默认**，与升级前
+ * 逐字一致。只要有一个非 0 就成对补齐 —— 宿主的 `resolveBackoff` 要求
+ * `initialDelayMs <= maxDelayMs` 且都为正数，所以缺失的一侧用另一侧/默认填，
+ * 而不是原样把 0 递进去（那会直接抛）。
+ *
+ * `mode` 恒为 `normal`（只重试宿主的可重试码）：`always` 会让一个必然失败的
+ * 请求无限重试，那不是「调预算」，所以本版不暴露。
+ */
+export function retryPolicyOf(
+  config: { regions?: Record<string, unknown> | null },
+  region: QoderRegion,
+): RetryPolicyConfig | undefined {
+  const state = regionStateOf(config, region)
+  const raw = (state.retry ?? {}) as Record<string, unknown>
+  const num = (value: unknown): number => (typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0)
+  const maxRetries = num(raw.maxRetries)
+  const initialDelayMs = num(raw.initialDelayMs)
+  const maxDelayMs = num(raw.maxDelayMs)
+  if (maxRetries === 0 && initialDelayMs === 0 && maxDelayMs === 0) return undefined
+
+  // 补齐规则：给定的一侧优先；都缺就用宿主默认量级，且保证 initial <= max。
+  const initial = initialDelayMs > 0 ? initialDelayMs : Math.min(500, maxDelayMs > 0 ? maxDelayMs : 500)
+  const max = maxDelayMs > 0 ? maxDelayMs : Math.max(initial, 10_000)
+  return {
+    mode: 'normal',
+    ...maxRetries > 0 ? { maxRetries } : {},
+    backoff: { initialDelayMs: Math.min(initial, max), maxDelayMs: max },
+  }
 }
 
 /** 某区域是否在主界面显示积分（opt-out）。 */
@@ -1833,6 +1901,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
             provider: QODER_PROVIDERS[region],
             displayName: QODER_PROVIDER_DISPLAY_NAMES[region],
             resolveAttachments: () => ctx.get('attachments'),
+            // issue #24：重试预算可配（缺省 = 宿主默认，与升级前一致）。
+            retryPolicy: retryPolicyOf(config, region),
+            retryPolicyPath: `dsh-connect-qoder regions.${region}.retry`,
           })
           stacks[region].adapter = adapters[region]
         }

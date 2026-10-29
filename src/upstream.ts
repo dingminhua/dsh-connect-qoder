@@ -243,12 +243,29 @@ export class QoderUpstreamError extends Error {
   readonly kind: UpstreamErrorKind
   readonly status: number
   readonly code?: string | undefined
-  constructor(kind: UpstreamErrorKind, message: string, status = 0, code?: string) {
+  /**
+   * 上游**自己申报**的「请等这么久再试」，毫秒（issue #24）。
+   *
+   * 来自 `10605 / RESOURCE_LIMIT` 信封里的 `retryAfterSeconds`（实测形状：
+   * `{"isQueued":false,"queueCount":0,"retryAfterSeconds":5,"serviceAvailable":true}`），
+   * 或 HTTP `Retry-After` 头。取不到就是 `undefined` —— 「上游没说」与「上游说
+   * 等 0 秒」是两件事，抽取层不替它下结论。
+   *
+   * 这个值的去向有两处，都必须有：①写进给宿主的失败文案（否则用户只看到
+   * 「上游报了个 4xx」，看不到「上游只要求等 5 秒」）；②非流式失败响应上的
+   * `Retry-After` 头。宿主在 pi-ai 那条路由上**只从文案分类**，不读头，所以
+   * ①是唯一能让「申报值」影响等待的一条。
+   */
+  readonly retryAfterMs?: number | undefined
+  constructor(kind: UpstreamErrorKind, message: string, status = 0, code?: string, retryAfterMs?: number) {
     super(message)
     this.name = 'QoderUpstreamError'
     this.kind = kind
     this.status = status
     this.code = code
+    if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      this.retryAfterMs = retryAfterMs
+    }
   }
 }
 
@@ -713,7 +730,15 @@ export class QoderUpstreamClient {
       // 用 classifyFailure 而不是 classifyHttpStatus：chat 面的「当日用量用尽」
       // 就是从这里进来的（实测 HTTP 403 + body `{"code":"110",…}`），只看状态会
       // 把它判成凭据被拒，进而把好的账号永久踢出池。
-      throw new QoderUpstreamError(classifyFailure(resp.status, errText), `聊天请求失败: HTTP ${resp.status} ${truncate(errText, 300)}`, resp.status, deepestBusinessCode(errText))
+      throw new QoderUpstreamError(
+        classifyFailure(resp.status, errText),
+        `聊天请求失败: HTTP ${resp.status} ${truncate(errText, 300)}`,
+        resp.status,
+        deepestBusinessCode(errText),
+        // 上游申报的重试间隔（issue #24）：`10605 / RESOURCE_LIMIT` 就走这条
+        // 路径进来，以前读到即丢，用户只看到「上游报了个 4xx」。
+        retryAfterMsOf(errText) ?? retryAfterMsOfHeader(resp.headers.get('retry-after')),
+      )
     }
     if (!resp.body) {
       throw new QoderUpstreamError('transient', '聊天响应没有 body')
@@ -1167,7 +1192,15 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
     // **这条路径就是本轮 bug 的现场**：用户实拍那句「Qoder 拒绝了这个账号的
     // PAT」，来自这里对 `statusCodeValue: 403` + body `{"code":"110",…}` 的分类。
     // 信封里的业务码比信封状态更具体，所以优先按码分（见 classifyFailure）。
-    throw new QoderUpstreamError(classifyFailure(Number(scv), detail), `上游信封错误: HTTP ${scv} ${truncate(detail, 300)}`, Number(scv), deepestBusinessCode(detail))
+    throw new QoderUpstreamError(
+      classifyFailure(Number(scv), detail),
+      `上游信封错误: HTTP ${scv} ${truncate(detail, 300)}`,
+      Number(scv),
+      deepestBusinessCode(detail),
+      // issue #24 的现场就是这条：`code 10605 / subCode RESOURCE_LIMIT` 的信封
+      // 里带着 `retryAfterSeconds`，此前读到即丢。
+      retryAfterMsOf(detail),
+    )
   }
   const innerStr = wrapper.body
   if (typeof innerStr !== 'string' || innerStr === '') return undefined
@@ -1346,6 +1379,71 @@ export function businessCodeOf(detail: string): string | undefined {
  * 一点余量，因为上游换一次包装就会多一层，而多一层只是多一次 JSON.parse。
  */
 const MAX_CODE_NESTING = 6
+
+/**
+ * 取上游申报的「请等这么久再试」，毫秒（issue #24）。
+ *
+ * 实测形状（`HTTP 4xx` + `code 10605 / subCode RESOURCE_LIMIT`）：
+ *
+ * ```json
+ * {"code":"10605","message":"{\"isQueued\":false,\"modelKey\":\"…\",
+ *   \"queueCount\":0,\"queueType\":\"p2\",\"retryAfterSeconds\":5,
+ *   \"serviceAvailable\":true,\"waitTime\":0}","subCode":"RESOURCE_LIMIT"}
+ * ```
+ *
+ * 与 {@link deepestBusinessCode} 走同一条路（只沿 `message` 往里剥、有深度上限），
+ * 因为这两个值在同一个信封里，分头解析迟早漂移。
+ *
+ * **只认 JSON 里的数字秒。** 不解析 HTTP `Retry-After` 头：宿主在 pi-ai 路由上
+ * 只从文案分类、不读头（见 `llm-pi-ai/src/stream.ts` 的 `classifyPiAiError`），
+ * 所以头带了也没人读；而这里读到的值会进文案，是**真的**能影响等待的那条路。
+ * 头仍然照发（`Retry-After`），那是给别的消费者看的，不是本插件的判据。
+ *
+ * 上限 1 小时：超过就当上游没申报。一个离谱的值会让宿主放弃这次重试
+ * （`llm-retry` 在 `> maxDelayMs` 时 `next()`），比不报更糟。
+ */
+const MAX_RETRY_AFTER_MS = 3_600_000
+
+/**
+ * 解析 HTTP `Retry-After` 头（两种合法形式：秒数 / HTTP-date）。
+ *
+ * 只作**兜底**：上游的申报值在 body 里（`retryAfterSeconds`），头是次要来源。
+ * 判据同 {@link retryAfterMsOf}：正数、且不超过 1 小时。
+ */
+export function retryAfterMsOfHeader(value: string | null | undefined, nowMs = Date.now()): number | undefined {
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const text = value.trim()
+  if (/^\d+$/u.test(text)) {
+    const seconds = Number(text)
+    const ms = Math.round(seconds * 1000)
+    return ms > 0 && ms <= MAX_RETRY_AFTER_MS ? ms : undefined
+  }
+  const at = Date.parse(text)
+  if (!Number.isFinite(at)) return undefined
+  const ms = at - nowMs
+  return ms > 0 && ms <= MAX_RETRY_AFTER_MS ? ms : undefined
+}
+
+export function retryAfterMsOf(detail: string): number | undefined {
+  let text = typeof detail === 'string' ? detail.trim() : ''
+  for (let depth = 0; depth < MAX_CODE_NESTING; depth += 1) {
+    if (!text.startsWith('{')) break
+    const parsed = parseJson(text)
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) break
+    const record = parsed as Record<string, unknown>
+    // 字段名只认这一个：上游还有 `waitTime`（排队已等时长）与 `queueCount`，
+    // 那些都不是「该等多久」，拿错了会把等待算成 0 或算成别人的排队量。
+    const seconds = record.retryAfterSeconds
+    if (typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0) {
+      const ms = Math.round(seconds * 1000)
+      return ms <= MAX_RETRY_AFTER_MS ? ms : undefined
+    }
+    const message = record.message
+    if (typeof message !== 'string') break
+    text = message.trim()
+  }
+  return undefined
+}
 
 /**
  * 取**最深一层认识的**业务码（`{"code":"10605","message":"…"}`）。

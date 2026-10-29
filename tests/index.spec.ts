@@ -1699,3 +1699,63 @@ describe('图片默认种子（issue #22）', () => {
     }
   })
 })
+
+/**
+ * **重试预算可配**（issue #24 的第二条）。
+ *
+ * 此前 `retryPolicy` 恒为宿主默认，用户想调只能改 `node_modules` 里的构建产物
+ * （升级即静默还原）。这里把三个数字提成区域配置，**默认全 0 = 跟随宿主**，
+ * 所以升级用户的行为一个字都不变。
+ */
+describe('retryPolicyOf（issue #24）', () => {
+  it('三项都为 0（schema 默认）时返回 undefined，交给宿主默认', () => {
+    // 这是升级安全的关键：老配置里根本没有 `retry` 这个键。
+    expect(Qoder.retryPolicyOf({}, 'cn')).toBeUndefined()
+    expect(Qoder.retryPolicyOf({ regions: { cn: {} } }, 'cn')).toBeUndefined()
+    expect(Qoder.retryPolicyOf({ regions: { cn: { retry: {} } } }, 'cn')).toBeUndefined()
+    expect(Qoder.retryPolicyOf({ regions: { cn: { retry: { maxRetries: 0, initialDelayMs: 0, maxDelayMs: 0 } } } }, 'cn')).toBeUndefined()
+  })
+
+  it('只配 maxRetries 时，退避用宿主默认量级补齐（不能把 0 递进去）', () => {
+    const policy = Qoder.retryPolicyOf({ regions: { cn: { retry: { maxRetries: 4 } } } }, 'cn')
+    expect(policy?.mode).toBe('normal')
+    // 联合类型只有 normal 分支有 maxRetries；上面已断言 mode。
+    const normal = policy as Extract<typeof policy, { mode: 'normal' }>
+    expect(normal?.maxRetries).toBe(4)
+    // 宿主的 resolveBackoff 拒绝 0，所以必须补成正数且 initial <= max。
+    const backoff = normal?.backoff
+    expect(backoff?.initialDelayMs ?? 0).toBeGreaterThan(0)
+    expect(backoff?.maxDelayMs ?? 0).toBeGreaterThanOrEqual(backoff?.initialDelayMs ?? 0)
+  })
+
+  it('issue 里的推荐预算（5s→30s / 4 次）能原样表达', () => {
+    const policy = Qoder.retryPolicyOf({
+      regions: { cn: { retry: { maxRetries: 4, initialDelayMs: 5000, maxDelayMs: 30_000 } } },
+    }, 'cn')
+    expect(policy).toMatchObject({
+      mode: 'normal',
+      maxRetries: 4,
+      backoff: { initialDelayMs: 5000, maxDelayMs: 30_000 },
+    })
+  })
+
+  it('只配 maxDelayMs 时 initial 不超过它', () => {
+    const policy = Qoder.retryPolicyOf({ regions: { cn: { retry: { maxDelayMs: 200 } } } }, 'cn')
+    expect(policy?.backoff?.maxDelayMs).toBe(200)
+    expect(policy?.backoff?.initialDelayMs).toBeLessThanOrEqual(200)
+  })
+
+  it('两个区域各配各的，互不影响', () => {
+    const config = { regions: { cn: { retry: { maxRetries: 2 } }, global: { retry: { maxRetries: 9 } } } }
+    expect((Qoder.retryPolicyOf(config, 'cn') as { maxRetries?: number }).maxRetries).toBe(2)
+    expect((Qoder.retryPolicyOf(config, 'global') as { maxRetries?: number }).maxRetries).toBe(9)
+  })
+
+  it('只暴露 mode=normal —— always 会让必然失败的请求无限重试', () => {
+    const policy = Qoder.retryPolicyOf({
+      // 即便有人硬塞 mode，也不该生效（schema 里没有这个键，这里验证函数本身）。
+      regions: { cn: { retry: { maxRetries: 3, mode: 'always' } } },
+    }, 'cn')
+    expect(policy?.mode).toBe('normal')
+  })
+})

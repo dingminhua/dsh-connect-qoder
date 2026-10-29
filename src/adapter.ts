@@ -15,7 +15,7 @@
 import { createProvider } from '@earendil-works/pi-ai'
 import type { Api, AuthContext, Context, CredentialStore, Message, Model, Provider, ProviderStreams } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
-import { resolveRetryPolicy } from '@deepseek-ai/dsh-llm'
+import { resolveRetryPolicy, type RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -86,6 +86,15 @@ export interface QoderAdapterOptions {
    * them. Production callers leave it unset.
    */
   piAiGeneration?: PiAiGeneration
+  /**
+   * 该区域的重试预算（issue #24）。缺席 = 宿主默认。
+   *
+   * 由 `resolveRetryPolicy` 校验并冻结：本插件**不自己**校验范围，把宿主的
+   * 报错原样交给调用方（它的文案已经写明哪个字段越界）。
+   */
+  retryPolicy?: RetryPolicyConfig | undefined
+  /** 与 `retryPolicy` 配套的诊断路径（报错时指名字段所属）。 */
+  retryPolicyPath?: string
 }
 
 export interface QoderAdapter {
@@ -409,7 +418,13 @@ export function createQoderAdapter(options: QoderAdapterOptions): QoderAdapter {
     provider: providerId,
     displayName: providerName,
     streamIdleTimeoutMs: QODER_STREAM_IDLE_TIMEOUT_MS,
-    retryPolicy: resolveRetryPolicy(undefined, 'dsh-connect-qoder retryPolicy'),
+    // issue #24：只有用户真的配了（`retryPolicy` 非空）才交给宿主校验；
+    // 否则维持原状的 `undefined`（= 宿主默认）。**不要**把三个 0 拼成一个
+    // 策略对象传下去 —— 宿主的 `resolveBackoff` 会拒绝 `initialDelayMs: 0`。
+    retryPolicy: resolveRetryPolicy(
+      options.retryPolicy,
+      options.retryPolicyPath ?? 'dsh-connect-qoder retryPolicy',
+    ),
     configuredMaxTokens: new Map(),
     modelErrors: new Map(),
     ...REQUEST_IMAGE_BUDGETS,

@@ -10,6 +10,9 @@ import {
   isContentPolicy,
   parseUsage,
   projectCampaignEntry,
+  retryAfterMsOf,
+  retryAfterMsOfHeader,
+  isQoderUpstreamError,
   QoderUpstreamError,
   QoderUpstreamClient,
   QODER_REGIONS,
@@ -1276,5 +1279,115 @@ describe('parseStreamDelta 对空帧的宽容（实测回归）', () => {
     })
     expect(parseStreamDelta(empty)).toBeUndefined()
     expect(parseStreamDelta(good)?.content).toBe('收到')
+  })
+})
+
+/**
+ * **上游申报的重试间隔**（issue #24）。
+ *
+ * 现场：`HTTP 4xx` + `code 10605 / subCode RESOURCE_LIMIT`，信封里带着
+ *
+ * ```json
+ * {"isQueued":false,"queueCount":0,"queueType":"p2","retryAfterSeconds":5,
+ *  "serviceAvailable":true,"waitTime":0}
+ * ```
+ *
+ * 上游没有排队、服务可用，只是要求 5 秒后再来。此前这个值读到即丢：
+ * 用户看到「上游报了个 4xx」，宿主按自己的固定阶梯等待。
+ */
+describe('retryAfterMsOf（issue #24）', () => {
+  it('从 10605 信封里读出 retryAfterSeconds（issue 里的原样形状）', () => {
+    const detail = JSON.stringify({
+      code: '10605',
+      message: JSON.stringify({
+        isQueued: false, modelKey: 'qmodel_38max', queueCount: 0, queueType: 'p2',
+        retryAfterSeconds: 5, serviceAvailable: true, waitTime: 0,
+      }),
+      subCode: 'RESOURCE_LIMIT',
+    })
+    expect(retryAfterMsOf(detail)).toBe(5000)
+  })
+
+  it('字段直接在外层也认（上游包装层数不固定）', () => {
+    expect(retryAfterMsOf(JSON.stringify({ code: '10605', retryAfterSeconds: 30 }))).toBe(30_000)
+  })
+
+  it('上游没申报就是 undefined，不拿 0 或等待时长顶替', () => {
+    // `waitTime` 是「已经等了多久」，`queueCount` 是排队人数 —— 都不是「该等多久」。
+    // 拿它们当答案会把等待算成 0，等于替上游说了它没说的话。
+    expect(retryAfterMsOf(JSON.stringify({ code: '10605', waitTime: 0, queueCount: 0 }))).toBeUndefined()
+    expect(retryAfterMsOf('')).toBeUndefined()
+    expect(retryAfterMsOf('not json')).toBeUndefined()
+    expect(retryAfterMsOf(JSON.stringify({ code: '115', message: 'quota' }))).toBeUndefined()
+  })
+
+  it('离谱的值当没申报（>1h 会让宿主直接放弃这次重试）', () => {
+    expect(retryAfterMsOf(JSON.stringify({ retryAfterSeconds: 3601 }))).toBeUndefined()
+    expect(retryAfterMsOf(JSON.stringify({ retryAfterSeconds: 3600 }))).toBe(3_600_000)
+  })
+
+  it('负数 / 非数字 / NaN 一律不认', () => {
+    for (const value of [-5, '5', null, true, Number.NaN, Infinity]) {
+      expect(retryAfterMsOf(JSON.stringify({ retryAfterSeconds: value }))).toBeUndefined()
+    }
+  })
+
+  it('有深度上限，自嵌套不会死循环', () => {
+    let nested = JSON.stringify({ retryAfterSeconds: 7 })
+    for (let i = 0; i < 20; i += 1) nested = JSON.stringify({ code: '10605', message: nested })
+    // 太深就放弃（不是崩）。
+    expect(() => retryAfterMsOf(nested)).not.toThrow()
+  })
+})
+
+describe('retryAfterMsOfHeader', () => {
+  it('秒数形式', () => {
+    expect(retryAfterMsOfHeader('5')).toBe(5000)
+    expect(retryAfterMsOfHeader(' 30 ')).toBe(30_000)
+  })
+
+  it('HTTP-date 形式按差值算', () => {
+    const now = Date.parse('2026-10-29T00:00:00Z')
+    expect(retryAfterMsOfHeader(new Date(now + 60_000).toUTCString(), now)).toBe(60_000)
+  })
+
+  it('过期日期 / 空值 / 乱码都是 undefined', () => {
+    const now = Date.parse('2026-10-29T00:00:00Z')
+    expect(retryAfterMsOfHeader(new Date(now - 60_000).toUTCString(), now)).toBeUndefined()
+    expect(retryAfterMsOfHeader(null)).toBeUndefined()
+    expect(retryAfterMsOfHeader('')).toBeUndefined()
+    expect(retryAfterMsOfHeader('soon')).toBeUndefined()
+  })
+})
+
+describe('错误对象把申报值带出来', () => {
+  it('信封错误（10605 现场）带 retryAfterMs', () => {
+    const detail = JSON.stringify({
+      code: '10605',
+      message: JSON.stringify({ retryAfterSeconds: 5, queueType: 'p2' }),
+      subCode: 'RESOURCE_LIMIT',
+    })
+    const frame = JSON.stringify({ headers: {}, body: detail, statusCodeValue: 403 })
+    try {
+      parseStreamDelta(frame)
+      expect.unreachable('应当抛错')
+    } catch (error) {
+      expect(isQoderUpstreamError(error)).toBe(true)
+      if (!isQoderUpstreamError(error)) throw error
+      expect(error.retryAfterMs).toBe(5000)
+      expect(error.code).toBe('10605')
+    }
+  })
+
+  it('没有申报值时字段就是不存在的（不是 0）', () => {
+    const frame = JSON.stringify({ headers: {}, body: JSON.stringify({ code: '115', message: 'quota' }), statusCodeValue: 403 })
+    try {
+      parseStreamDelta(frame)
+      expect.unreachable('应当抛错')
+    } catch (error) {
+      expect(isQoderUpstreamError(error)).toBe(true)
+      if (!isQoderUpstreamError(error)) throw error
+      expect(error.retryAfterMs).toBeUndefined()
+    }
   })
 })

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { classifyPiAiError, hostRendersOwnCopy, verifyFixtureAgainstInstalledHost } from './host-piai.ts'
-import { createQoderShim, hostFailureMessage, hostMessageText, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
+import { createQoderShim, hostFailureMessage, hostFailureMessageOf, hostMessageText, retryAfterNote, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
 import { failoverNoticeText } from '../src/failover-notice.ts'
 import { QoderUpstreamError, type QoderUpstreamClient, type UpstreamErrorKind } from '../src/upstream.ts'
 import { readFileSync } from 'node:fs'
@@ -895,5 +895,109 @@ describe('写给宿主的失败文案：宿主正则分类器必须读对', () =
     // 前提二：拼上 pi-ai 的前缀之后，分类仍然是配额。
     expect(classifyPiAiError(`${resp.status} ${data.error.message}`)).toBe('QUOTA')
     expect(classifyPiAiError(`${resp.status} ${data.error.message}`)).not.toBe('AUTH')
+  })
+})
+
+/**
+ * **上游申报的重试间隔要出现在给宿主的失败文案里**（issue #24）。
+ *
+ * 为什么是文案而不是结构化字段：宿主在 pi-ai 这条路由上只从**文案**分类
+ * （`llm-pi-ai/src/stream.ts` 的 `classifyPiAiError(text)`），失败对象上没有
+ * `providerRetryAfterMs` 的通道 —— 那条通道只属于 Anthropic / DeepSeek 两个直连
+ * 适配器（它们的 `providerError(raw, status, headers)` 读 `retry-after` 头）。
+ * 所以「上游说等 5 秒」在本路由上唯一能影响阅读的出口就是文案。
+ */
+describe('retryAfterNote（issue #24）', () => {
+  it('整数秒按整数写，不出现 5.0s', () => {
+    expect(retryAfterNote(5000)).toBe(' [upstream retry-after 5s]')
+    expect(retryAfterNote(30_000)).toBe(' [upstream retry-after 30s]')
+  })
+
+  it('非整数秒保留一位小数', () => {
+    expect(retryAfterNote(2500)).toBe(' [upstream retry-after 2.5s]')
+  })
+
+  it('没有申报值时不追加任何东西（不写 0s）', () => {
+    expect(retryAfterNote(undefined)).toBe('')
+    expect(retryAfterNote(0)).toBe('')
+    expect(retryAfterNote(-1)).toBe('')
+    expect(retryAfterNote(Number.NaN)).toBe('')
+  })
+
+  it('hostFailureMessageOf 把它接在文案尾部，且仍走净化', () => {
+    const message = hostFailureMessageOf(
+      { kind: 'transient', status: 403, message: '上游信封错误: HTTP 403 {"code":"10605"}', retryAfterMs: 5000 },
+    )
+    expect(message).toContain('[upstream retry-after 5s]')
+    // 裸 403 仍被净化（原有契约不许因为多了一个后缀就破）。
+    expect(message).not.toMatch(/(?<![\w.])403(?!\d)(?!\.\d)/u)
+  })
+
+  it('auth 档仍原文照送 —— 不因为要报重试间隔就装饰凭据被拒', () => {
+    // auth 那一档必须一个字符都不改：宿主靠它判「凭据坏了」。
+    expect(hostFailureMessageOf({ kind: 'auth', status: 401, message: 'token expired', retryAfterMs: 5000 }))
+      .toBe('token expired')
+  })
+
+  it('suffix 与 retry-after 同时存在时都在（顺序固定）', () => {
+    const message = hostFailureMessageOf(
+      { kind: 'transient', status: 502, message: 'boom', retryAfterMs: 5000 },
+      ' (after trying 2 accounts)',
+    )
+    expect(message).toContain('(after trying 2 accounts)')
+    expect(message).toContain('[upstream retry-after 5s]')
+    expect(message.indexOf('(after trying')).toBeLessThan(message.indexOf('[upstream'))
+  })
+})
+
+/**
+ * **申报值要真的走到宿主面前**（issue #24 的端到端版）。
+ *
+ * 两条断言分别对着两个出口：
+ *  - 非流式失败响应上带 `Retry-After`（给别的消费者）；
+ *  - 失败文案里带 `[upstream retry-after 5s]`（**这条才是宿主读得到的**，
+ *    因为 pi-ai 路由只从文案分类）。
+ */
+describe('上游申报的重试间隔到达宿主（issue #24）', () => {
+  /** 上游抛一个带 10605 现场形状（含 retryAfterSeconds）的错误。 */
+  function resourceLimitUpstream(): QoderUpstreamClient {
+    return {
+      chatStream: async () => {
+        throw new QoderUpstreamError('transient', '上游信封错误: HTTP 4xx {"code":"10605","subCode":"RESOURCE_LIMIT"}', 403, '10605', 5000)
+      },
+    } as unknown as QoderUpstreamClient
+  }
+
+  it('非流式失败响应带 Retry-After 头', async () => {
+    const shim = await startShim({ upstream: resourceLimitUpstream() })
+    const resp = await chat(shim, {})
+    if (resp.status === 200) {
+      // 已经建流（说明走的是 SSE 路径）：头层面带不出去，只断言文案。
+      const text = await resp.text()
+      expect(text).toContain('retry-after 5s')
+      return
+    }
+    expect(resp.headers.get('retry-after')).toBe('5')
+    const data = await resp.json() as { error: { message: string } }
+    expect(data.error.message).toContain('[upstream retry-after 5s]')
+  })
+
+  it('失败文案里写明上游只要求等 5 秒（宿主的唯一读取面）', async () => {
+    const shim = await startShim({ upstream: resourceLimitUpstream() })
+    const resp = await chat(shim, {})
+    const body = await resp.text()
+    expect(body).toContain('retry-after 5s')
+    // 10605 仍被归到 transient（可重试），没有被这条改动带偏。
+    expect(body).toContain('upstream_error')
+  })
+
+  it('上游没申报时既不加头也不加文案', async () => {
+    const upstream = {
+      chatStream: async () => { throw new QoderUpstreamError('transient', 'boom', 502) },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({ upstream })
+    const resp = await chat(shim, {})
+    if (resp.status !== 200) expect(resp.headers.get('retry-after')).toBeNull()
+    expect(await resp.text()).not.toContain('retry-after')
   })
 })

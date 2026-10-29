@@ -290,6 +290,40 @@ export function hostFailureMessage(
   return sanitizeForHost(`qoder upstream ${kind} (http ${status}): ${hostMessageText(kind, message)}${suffix}`)
 }
 
+/**
+ * 把上游申报的重试间隔写进**给宿主的失败文案**（issue #24）。
+ *
+ * 为什么非写文案不可：宿主在 pi-ai 这条路由上**只从文案分类**
+ * （`llm-pi-ai/src/stream.ts` 的 `classifyPiAiError` 拿到的就是 `failure.message`），
+ * 失败对象上没有 `providerRetryAfterMs` 的通道 —— 那条通道只有 Anthropic /
+ * DeepSeek 那两个直连适配器有（它们的 `providerError(raw, status, headers)` 读
+ * `retry-after` 头）。所以「上游说等 5 秒」这件事，在本路由上唯一能影响宿主
+ * 行为的办法就是让它出现在文案里，且**不要**被 `hostMessageText` 的净化吞掉
+ * （那个净化只动裸 401/403，不动我们这段）。
+ *
+ * 措辞固定为 `retry-after 5s`：`llm-retry` 不解析文案，所以这不是给机器读的，
+ * 是给用户与后续排查读的 —— 现在他们能直接看到「上游只要求等 5 秒」，而不是
+ * 「上游报了个 4xx」。
+ */
+export function retryAfterNote(retryAfterMs: number | undefined): string {
+  if (retryAfterMs === undefined || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0) return ''
+  const seconds = retryAfterMs / 1000
+  // 保留一位小数即可（上游给的通常就是整数秒）；避免 5000ms 打成 5.0s 之外的噪音。
+  const shown = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1)
+  return ` [upstream retry-after ${shown}s]`
+}
+
+/**
+ * 构造给宿主的失败文案，并把上游申报的重试间隔附在后面。
+ *
+ * 这一层存在是为了让「文案」与「头」两个出口用同一个判据：`retryAfterNote`
+ * 负责文案，`Retry-After` 头负责非流式响应（见 `writeJson` 的调用点）。
+ * 两处都从 `QoderUpstreamError.retryAfterMs` 读，不各自解析一遍。
+ */
+export function hostFailureMessageOf(error: { kind: UpstreamErrorKind, status: number, message: string, retryAfterMs?: number | undefined }, suffix = ''): string {
+  return hostFailureMessage(error.kind, error.status, error.message, `${suffix}${retryAfterNote(error.retryAfterMs)}`)
+}
+
 /** HTTP 状态 + error.code 双映射表（DSH 依据 code 判定原地重试 vs failover）。 */
 const ERROR_MAP: Record<UpstreamErrorKind, { status: number; code: string }> = {
   network: { status: 502, code: 'connection_error' },
@@ -348,11 +382,11 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         // 内层未捕获的抛出），只净化而不带 kind 前缀会落到宿主的 TRANSPORT 兜底。
         writeJson(res, status, {
           error: {
-            message: upstream ? hostFailureMessage(error.kind, error.status, raw) : raw,
+            message: upstream ? hostFailureMessageOf({ ...error, message: raw }) : raw,
             code,
             type: 'qoder_error',
           },
-        })
+        }, upstream ? error.retryAfterMs : undefined)
       })
     })
 
@@ -538,11 +572,11 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
       // formatter：留一串没有 kind 线索的中文会被宿主猜成 TRANSPORT。
       writeJson(res, mapped.status, {
         error: {
-          message: upstream ? hostFailureMessage(error.kind, error.status, raw) : raw,
+          message: upstream ? hostFailureMessageOf({ ...error, message: raw }) : raw,
           code: mapped.code,
           type: 'qoder_error',
         },
-      })
+      }, upstream ? error.retryAfterMs : undefined)
       return
     }
 
@@ -718,13 +752,14 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           const mapped = ERROR_MAP[error.kind]
           writeJson(res, mapped.status, {
             error: {
-              // 文案交给 `hostFailureMessage` 统一拼齐并净化：状态码由它加、也由
-              // 它净化，`note` 也从它过一遍（S3：拼在净化之后就会绕过）。
-              message: hostFailureMessage(error.kind, error.status, error.message.slice(0, 400), note),
+              // 文案交给 `hostFailureMessageOf` 统一拼齐并净化：状态码由它加、也由
+              // 它净化，`note` 与上游申报的重试间隔都从它过一遍（S3：拼在净化
+              // 之后就会绕过）。
+              message: hostFailureMessageOf({ ...error, message: error.message.slice(0, 400) }, note),
               code: hostErrorCode(error.kind),
               type: 'qoder_error',
             },
-          })
+          }, error.retryAfterMs)
           return
         }
         // 非上游错误（组装问题等）：交外层统一 500。
@@ -816,10 +851,27 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     }
   }
 
-  function writeJson(res: import('node:http').ServerResponse, status: number, body: unknown): void {
+  /**
+   * 写一条 JSON 响应。`retryAfterMs` 可选：带上就发 `Retry-After`（秒，向上取整）。
+   *
+   * 这个头是给**别的**消费者看的（浏览器/中间层/未来的宿主能力）。宿主在当前
+   * pi-ai 路由上**不读它**（`llm-pi-ai` 的失败只有 `{message, code}`），所以
+   * 上游申报值真正影响等待的那条路是**文案**（见 `retryAfterNote`）。两个出口都
+   * 从同一个 `QoderUpstreamError.retryAfterMs` 来，不各解析一遍。
+   */
+  function writeJson(
+    res: import('node:http').ServerResponse,
+    status: number,
+    body: unknown,
+    retryAfterMs?: number | undefined,
+  ): void {
     if (res.writableEnded || res.destroyed) return
     const text = JSON.stringify(body)
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
+    const headers: Record<string, string> = { 'Content-Type': 'application/json; charset=utf-8' }
+    if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
+      headers['Retry-After'] = String(Math.ceil(retryAfterMs / 1000))
+    }
+    res.writeHead(status, headers)
     res.end(text)
   }
 
