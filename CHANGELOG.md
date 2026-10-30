@@ -2,6 +2,49 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.16.3 (2026-10-30)
+
+> **英文界面下的时刻不再显示成中文式的时间。** 同步自 `dsh-connect-trae` 的
+> issue #71。
+
+### 变更
+
+- **「最近刷新」与「配额耗尽」两处时刻跟随读者语言**（同步自 `dsh-connect-trae`
+  的 issue #71）。
+  - **问题**：两处都把 locale 钉死成 `'zh-CN'`，于是英文界面印的是中文习惯的
+    `23:59` / `14:32`，而不是 `11:59 PM` / `02:32 PM`。用户看的是一个**显示**
+    格式，却按一个写死的语言来排。
+  - **改法**：两处都改成 `toLocaleTimeString(undefined, …)`，即跟随读者语言。
+  - **两处分别是**：
+    - `src/client/ComposerCredits.tsx` 的 `formatClock` —— 页脚的「最近刷新」
+      （`composer.lastRefresh`），**当下**的同一时刻，不需要日期。
+    - `src/client/QoderCard.tsx` 的「上游报额度耗尽」通知 —— 内联的
+      `toLocaleTimeString`。这一处**不在** `formatClock` 里，所以它需要自己的
+      守卫（下面的源码级断言就为此单列一条）。
+  - **没有连带改的**：`AccountPool.tsx` 的池日志时间戳用的是
+    `pad(d.getHours())` —— 与 locale 无关的 24 小时制，属于另一种设计取舍
+    （日志语境要的是「刚刚/刚才」），不在本次范围；`ComposerCredits.tsx` 里
+    `formatCredits` 的 `toLocaleString('en-US', …)` 是金额分组的刻意选择
+    （千分位一致），与语言无关，不动。
+
+### 测试
+
+- 新增 **3** 例（1036 总例，较 1.16.2 净增 3）：
+  - **源码级**：`ComposerCredits.tsx` 的 `formatClock` 不得再出现硬编码的 locale；
+    `QoderCard.tsx` 整体不得再出现 `'zh-CN'`（覆盖那条**内联**的路径）。
+    这两条不依赖测试环境的 locale——行为级断言在 zh-CN 环境下会因两种写法
+    结果相同而失效，源码级不会。
+  - **行为级**：渲染出的「最近刷新」时刻必须等于**读者 locale** 对该时刻的写法。
+    `lastRefresh` 是「最近一次刷新的时刻」（即当下），所以期望值取渲染前后两个
+    瞬间，容许跨过一分钟边界。
+- **修掉一处钉住旧行为的既有断言**：`tests/card-render.spec.tsx` 原先断言通知里
+  出现 `'14:32'` —— 那是**旧行为**（写死的 24 小时制）才能过的断言。改成按
+  读者语言计算，于是它在任何语言的环境下都成立。
+- **变异验证**（每一项都确认会转红）：
+  - `ComposerCredits.tsx` 的 locale 改回 `'zh-CN'` → 两条用例同时转红；
+  - `QoderCard.tsx` 的 locale 改回 `'zh-CN'` → 源码级与行为级同时转红。
+- 全仓 **1036** 例通过（49 文件），类型检查通过。
+
 ## 1.16.2 (2026-10-30)
 
 > **积分读数从「权限切换器旁边」挪到「模型选择器左边」。** 两者原本相隔 8px 且都是

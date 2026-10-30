@@ -98,8 +98,20 @@ function formatCredits(value: number): string {
   return value.toLocaleString('en-US', { maximumFractionDigits: 0 })
 }
 
+/**
+ * A same-day instant, as the READER's locale writes it.
+ *
+ * The locale is `undefined` — the reader's, not a fixed one — so an English UI
+ * shows `11:59 PM` rather than the Chinese convention's `23:59`. It used to
+ * hardcode `'zh-CN'`, which meant the English interface printed a Chinese-style
+ * time. Ported from dsh-connect-trae (issue #71).
+ *
+ * Only for instants that are the same day as the reader: a bare clock time on
+ * a timestamp from another day is a different question (and a different
+ * design), which is why this is not reused for anything but "now".
+ */
 function formatClock(value: number): string {
-  return new Date(value).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
 }
 
 export function ComposerCredits(props: ComposerCreditsProps) {

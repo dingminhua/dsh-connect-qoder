@@ -19,6 +19,9 @@ import * as React from 'react'
 import { act as actFromReact } from 'react'
 import { act as actTestUtils } from 'react-dom/test-utils'
 import { createRoot, type Root } from 'react-dom/client'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QoderCard } from '../src/client/QoderCard.tsx'
 
@@ -1025,7 +1028,12 @@ describe('账号工具区：添加 PAT 与导出 / 导入共用一行', () => {
         code: '110',
         message: '上游信封错误: HTTP 403 {"code":"110","message":"Billing daily count exceeded"}',
         // 用本地时间分量构造（而非带时区的 ISO 串）：通知按查看者的本地钟渲染
-        // 时刻，断言 14:32 才能在任何时区的 CI 上都成立。
+        // 时刻，断言写成「本地 14:32 的那种写法」才能在任何时区的 CI 上都成立。
+        //
+        // 注意断言的写法：它按**读者语言**算，而不是写死 '14:32'。通知此前把
+        // locale 钉死成 'zh-CN'，所以写死 24 小时制反而是能过的；改成跟随读者
+        // 之后（同步自 dsh-connect-trae，issue #71），英文界面显示的是 `02:32 PM`，
+        // 写死的 '14:32' 就成了钉住旧行为的断言。
         atMs: new Date(2026, 9, 24, 14, 32, 0).getTime(),
       },
     })
@@ -1036,7 +1044,10 @@ describe('账号工具区：添加 PAT 与导出 / 导入共用一行', () => {
       const text = notices[0]!.textContent ?? ''
       expect(text).toContain('row.quotaExhaustedTitle')
       expect(text).toContain('110')
-      expect(text).toContain('14:32')
+      // 时刻按读者语言渲染，不钉死 24 小时制。
+      expect(text).toContain(
+        new Date(2026, 9, 24, 14, 32, 0).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }),
+      )
       // 脱敏原文挂在悬停上，不占版面。
       expect(notices[0]!.getAttribute('title')).toContain('Billing daily count exceeded')
     } finally {
@@ -1051,5 +1062,27 @@ describe('账号工具区：添加 PAT 与导出 / 导入共用一行', () => {
     } finally {
       await plain.unmount()
     }
+  })
+})
+
+/**
+ * 「配额耗尽」通知的时刻按**读者**语言渲染。
+ *
+ * 同步自 dsh-connect-trae（issue #71）：这条通知此前把 locale 钉死成 `'zh-CN'`，
+ * 于是英文界面印的是中文习惯的 `14:32`，而不是 `02:32 PM`。
+ *
+ * 这一处是**内联**的 `toLocaleTimeString`（不在 `formatClock` 里），所以上面那条
+ * 「`formatClock` 不得钉死 locale」的源码级守卫**覆盖不到它**——需要单独一条。
+ */
+describe('配额耗尽通知的时刻跟随读者语言', () => {
+  it('不为这条通知钉死 locale', () => {
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'QoderCard.tsx'),
+      'utf8',
+    )
+    expect(
+      source.includes("'zh-CN'"),
+      "QoderCard.tsx 仍钉死了 locale —— 通知里的时刻必须按读者语言渲染",
+    ).toBe(false)
   })
 })

@@ -761,7 +761,11 @@ export function QoderCard(props: QoderCardProps): ReactElement {
    * 失败在任何 UI 上都无处可看（0.7.x「今日额度疑似已用尽」胶囊拆掉后留下的）。
    */
   function renderQuotaExhausted(record: QoderWebQuotaExhaustion): ReactElement {
-    const time = new Date(record.atMs).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+    // The reader's locale, not a fixed one: an English UI shows `11:59 PM`
+    // rather than the Chinese convention's `23:59` (ported from
+    // dsh-connect-trae, issue #71). Only the clock is shown — the date is a
+    // separate question, and this notice's caliber is "most recent + time".
+    const time = new Date(record.atMs).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
     return (
       <section
         className="dsm-qoder-usage-error dsm-qoder-quota-exhausted"

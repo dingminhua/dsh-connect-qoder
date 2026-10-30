@@ -21,6 +21,9 @@ import * as React from 'react'
 import { act as actFromReact } from 'react'
 import { act as actTestUtils } from 'react-dom/test-utils'
 import { createRoot, type Root } from 'react-dom/client'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   nextRegionCreditPosition,
@@ -281,23 +284,56 @@ describe('composer 页脚的数据时刻', () => {
     expect(view.foot).toContain('composer.lastRefresh')
     expect(view.foot).not.toContain('composer.dataStale')
   })
+  it('不为页脚时刻钉死 locale', () => {
+    // 源码级断言：不论测试环境是什么语言都成立。行为级断言在 zh-CN 环境下
+    // 会因为「钉死的写法」和「读者语言的写法」结果相同而失效，源码级不会。
+    const source = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), '..', 'src', 'client', 'ComposerCredits.tsx'),
+      'utf8',
+    )
+    const clock = /function formatClock\(value: number\): string \{([\s\S]*?)\n\}/.exec(source)?.[1] ?? ''
+    expect(clock, 'ComposerCredits.tsx 里没有找到 formatClock').not.toBe('')
+    expect(
+      clock,
+      "formatClock 仍钉死了 locale —— 必须用 undefined，让时刻跟随读者",
+    ).not.toContain("'zh-CN'")
+    expect(clock).toContain('undefined')
+  })
+
+  it('渲染出的时刻是读者语言的那种写法', async () => {
+    // 行为级那一半。这个时刻是「最近一次刷新的时刻」——也就是当下——所以期望值
+    // 取渲染**前后**两个瞬间，两者都接受，因为中间可能跨过一分钟。
+    const format = (ms: number): string =>
+      new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+    const before = Date.now()
+    const view = await openPanel(signedInDoc({ creditsAtMs: Date.now() }))
+    const after = Date.now()
+
+    expect(view.foot).toContain('composer.lastRefresh')
+    expect(
+      view.foot.includes(format(before)) || view.foot.includes(format(after)),
+      `页脚印的是 ${JSON.stringify(view.foot)}，不是读者语言对 ${format(before)} 的写法`,
+    ).toBe(true)
+  })
+
 })
 
-// ==========================================================================
-// composer 面板的点色：与设置页大表同判、同证据
-// ==========================================================================
+  // ==========================================================================
+  // composer 面板的点色：与设置页大表同判、同证据
+  // ==========================================================================
 
-/**
- * 用户实拍（2026-10-18）与最终口径：「能用的绿色圆点；当前选择的，绿色圆点
- * 加第二行提示当前选用；不能用的红色圆点+原因；原因里显示解禁时间」。
- *
- * 面板此前的 bug：宿主的 account-credits 表不带探针字段，面板的点落在「没测过」
- * 的灰上——设置页绿、面板灰。现在颜色只回答「能不能用」：没被排除就绿，被排除
- * 就红；「哪一个是它」由第二行「当前选用」说明，不再靠颜色区分。
- *
- * 这里从 DOM 钉住最终颜色与文字（而不是只测纯函数）：面板此前正是「纯函数没错、
- * 接线没接」才灰的。
- */
+  /**
+   * 用户实拍（2026-10-18）与最终口径：「能用的绿色圆点；当前选择的，绿色圆点
+   * 加第二行提示当前选用；不能用的红色圆点+原因；原因里显示解禁时间」。
+   *
+   * 面板此前的 bug：宿主的 account-credits 表不带探针字段，面板的点落在「没测过」
+   * 的灰上——设置页绿、面板灰。现在颜色只回答「能不能用」：没被排除就绿，被排除
+   * 就红；「哪一个是它」由第二行「当前选用」说明，不再靠颜色区分。
+   *
+   * 这里从 DOM 钉住最终颜色与文字（而不是只测纯函数）：面板此前正是「纯函数没错、
+   * 接线没接」才灰的。
+   */
+
 describe('composer 面板的点色', () => {
   // accountStateColor 的两档在用色（var() 令牌的回退值就是这些 hex）。
   const GREEN = '#22a06b'
