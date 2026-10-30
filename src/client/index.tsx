@@ -102,8 +102,16 @@ export function apply(ctx: QoderClientContext): void {
     // 就绪后才确定，早期就注册会绑错 scope 且永不回看（workbuddy #46/#55）。
 
     /**
-     * Credit readout in the composer tool row (`conversation.input.left`, a
-     * session-scope list slot).
+     * Credit readout in the composer row (`conversation.input.right`, a
+     * session-scope list slot rendered immediately before the model picker).
+     *
+     * `input.right` 而不是 `input.left`（同步自 dsh-connect-trae 的 issue #71）：
+     * 宿主把 `input.right` 渲染在 `div.trailing` 的 `standardControls` 内、模型
+     * 选择器**之前**，而 `input.left` 在 `div.tools` 最末尾、距权限选择器只有
+     * 8px。两者都是可点元素，想点「完全权限」会点到读数并弹出积分浮层。
+     * 读数是读数不是按钮，挨着模型选择器就不再和用户真正想点的控件争位置。
+     * `composer` 这个设置值含义不变（「带模型选择器的那一行」），老 profile
+     * 无需迁移。
      *
      * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
      *   — 该项目的 `registerComposerCredits`：无条件注册插槽、由 gate 读
@@ -118,13 +126,13 @@ export function apply(ctx: QoderClientContext): void {
      */
     const registerComposerCredits = (): (() => void) | undefined => {
       try {
-        return ctx.slots.inject('conversation.input.left' as never, () => (ctx.slots as unknown as {
+        return ctx.slots.inject('conversation.input.right' as never, () => (ctx.slots as unknown as {
           register(
             options: { name: string; id: string; order: number; locale: string; inject: () => QoderCardInjected },
             component: unknown,
           ): () => void
         }).register({
-          name: 'conversation.input.left',
+          name: 'conversation.input.right',
           id: 'dsh-connect-qoder-composer-credits',
           order: 4,
           locale: namespace,

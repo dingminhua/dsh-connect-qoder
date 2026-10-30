@@ -4,7 +4,7 @@
  * f16b05f，MIT，Copyright (c) 2026 LaoDing）。
  *
  * 报告的问题是：装了第三方插件之后，输入框里的积分余额就不显示了。根因是位置
- * 本身——`conversation.input.left`（输入框工具栏）是**共享的 list 插槽**，shell
+ * 本身——`conversation.input.right`（输入框工具栏）是**共享的 list 插槽**，shell
  * 自己的控件和任何其他 bundle 都注册在那里，而 list 插槽无法保证每个占用者都
  * 可见：谁后注册/占了地方，就可能把读数挤没。
  *

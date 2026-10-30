@@ -2,6 +2,41 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.16.2 (2026-10-30)
+
+> **积分读数从「权限切换器旁边」挪到「模型选择器左边」。** 两者原本相隔 8px 且都是
+> 可点元素——想去点「完全权限」，结果点到读数、弹出积分浮层。读数不是操作按钮，
+> 紧贴操作按钮只会制造误触。
+
+### 变更
+
+- **积分读数改挂 `conversation.input.right`**（同步自 `dsh-connect-trae` 的 issue #71）。
+  - **动机**：`conversation.input.left` 渲染在 `div.tools` 的**最末尾**，紧挨
+    `div.modes` 里的权限选择器，间距只有 8px；两个都是可点元素，误触后弹出的是
+    积分浮层。
+  - **新位置**：宿主把 `conversation.input.right` 渲染在 `div.trailing` 的
+    `standardControls` 内、模型选择器**之前**，迁过去后与权限选择器隔开整段空白。
+  - **宿主要改吗**：不用。`conversation.input.right` 早已是 `kind: list` /
+    `scope: session` 的现成座位。
+  - **老 profile 无需迁移**：`creditPosition` 的两个取值、设置名、`order: 4` 全部
+    不变；`composer` 的含义是「带模型选择器的那一行」，正是 `input.right` 的位置。
+
+### 补齐一个测试盲点（本次发现）
+
+`tests/settings-rebind.spec.tsx` 此前**没有任何座位断言**：`live()` 只数条数（5 条），
+`propsOf()` 用固定 cell 查 props 且在查不到时静默返回 `undefined`。实测：把座位名
+从 `input.right` 改回 `input.left`，该文件仍然全绿。
+
+现补 `describe('积分读数的座位')`：断言
+`conversation.input.right#dsh-connect-qoder-composer-credits` 在册，且
+`conversation.input.left#` 前缀的注册**不存在**（只断言「右侧存在」不够——两处都注册时
+右侧会覆盖左侧，症状被掩盖）。变异验证：改回 `input.left`，新用例转红。
+
+### 测试
+
+- 全仓 **1033** 例通过（49 文件，较 1.16.1 净增 1 例），类型检查通过。
+- 构建产物中 `conversation.input.right` 出现 2 次、`input.left` 出现 0 次。
+
 ## 1.16.1 (2026-10-30)
 
 > **只改文档与测试，不改运行时代码。** 宿主从 `0.2.1-rc.3` 升到 `0.2.1-rc.5`

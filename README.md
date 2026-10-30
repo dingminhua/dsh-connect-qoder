@@ -53,7 +53,7 @@
 - **思考强度与上下文预算** —— 上游按模型声明 `thinking_config.efforts`，卡片只列出**真实存在**的档位（Qwen 系 `low/medium/xhigh`、DeepSeek/GLM 系 `low/high/max`），选定即保存、每个请求自动带上（与 Qoder 客户端同一发送字段，双写顶层与 `parameters`）；上下文档位同样只来自上游 `context_config` 声明的档位，未声明时不渲染控件、不编造选项。
 - **诚实的模型能力** —— 上游的 `is_vl` 是**平台**的图片输入声明而非模型原生能力，且它对几乎每个模型都是 `true`，所以本插件**不拿它当能力答案**，只认一张按精确 model id 键控的核对表：核对过的才预勾选，没核实的（含全新模型）一律不勾，并在开关 tooltip 里说明「为什么没勾」。表的依据是**厂商文档 + 真机实测**：2026-10-29 用「发一张画着数字 `7` 的图、问是哪个数字」逐个测了**两个区域目录并集里的全部 14 个模型**，**全部读图成功**，因此当前目录里没有纯文本模型（此前按命名推断的「code 系模型应是纯文本」被实测推翻）。「关闭思考」同样只对上游显式声明、且不在已知拒绝集里的模型提供。宁可少给一个选项，也不要让用户按下去就失败。
 - **缓存命中如实上报** —— 上游的 `usage` 带 `prompt_tokens_details.cached_tokens`，插件把它一路透传到宿主，所以 GUI 轮次统计里的「缓存命中」是真实比例（修复前这里恒显 0%：字段在归一路径上被丢掉了，那个 0% 是不可信的读数，不是缓存没生效的证据）。**命中数是 `prompt_tokens` 的子集，不是额外增量**——所以它不会被加进总数（那会把命中的前缀算两遍）。上游没报这个字段时就不写，不会用 0 顶替「不知道」。
-- **composer 积分读数（位置可选）** —— 会话输入区按区域显示 `QD CN` / `QD AI` 与**当前计费账号**的余额（如 `QD CN · 92`；池接管时是接管者的余额，悬停写明归属），点开是逐账号的余额表，点某一行即切换到该账号；受每区域「在对话框显示积分」开关控制（默认开，opt-out）。**读数可放在两个位置之一**（卡片上的二选一下拉，每区域独立，默认不变）：**输入框工具栏**（`conversation.input.left`，更近、更易扫一眼）或**输入框下方**（`conversation.composer.dock`，即 shell 渲染轮次 / tok/s / token / 缓存命中那一行的常驻栏，读数是追加在自带统计之后）。之所以可选：输入框工具栏是**共享的 list 插槽**，另一个把东西停在那里的插件可能把读数挤到看不见——此时切到「输入框下方」即可（对齐 workbuddy issue #62）。
+- **composer 积分读数（位置可选）** —— 会话输入区按区域显示 `QD CN` / `QD AI` 与**当前计费账号**的余额（如 `QD CN · 92`；池接管时是接管者的余额，悬停写明归属），点开是逐账号的余额表，点某一行即切换到该账号；受每区域「在对话框显示积分」开关控制（默认开，opt-out）。**读数可放在两个位置之一**（卡片上的二选一下拉，每区域独立，默认不变）：**输入框工具栏**（`conversation.input.right`，紧挨模型选择器左侧、与权限切换器隔开）或**输入框下方**（`conversation.composer.dock`，即 shell 渲染轮次 / tok/s / token / 缓存命中那一行的常驻栏，读数是追加在自带统计之后）。之所以可选：输入框工具栏是**共享的 list 插槽**，另一个把东西停在那里的插件可能把读数挤到看不见——此时切到「输入框下方」即可（对齐 workbuddy issue #62）。
 
   <img src="docs/assets/dsh-connect-qoder-composer-credits.png" width="360" alt="对话输入框的积分面板：QD CN 逐账号余额表、刷新积分按钮与最近刷新时间" />
 - **命令行诊断与现场验证** —— `dsh-connect-qoder doctor|status|logout [--json] [--region cn|global]`：`doctor` 报 PAT 来源、cosy 指纹派生、pi-ai 代际、宿主心跳存活与 vault 账号计数；`status` 报凭据来源、上游可达性与当前剩余积分；`logout` 清除指定区域的 vault 账号与账号池测量副本。另有 `pnpm run probe:cosy`（不依赖宿主直连 cosy 链路验证）与 `pnpm run probe:vault`（只读 dump vault / 账号池测量，PAT 只显示掩码）。
@@ -267,7 +267,7 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 | 宿主内置 pi-ai | `1.1.0`（rc.3 起未变）—— `generationOf()` 仍判 `modern` |
 | `@deepseek-ai/schemastery` | `3.18.5`（rc.3 的 `3.18.4` → `3.18.5`）；两个版本的 `lib/` 与 `src/` **逐字节相同**，只有 `package.json` 版本号不同，落在声明的 `>=3.18.2 <4.0.0` 内 |
 | rc.4 / rc.5 的运行时改动 | 共 13 个提交，非版本号改动只有 40 个文件；**没有一条**落在插件导入的宿主包上 |
-| 插件用到的三个槽位 | `conversation.input.model.label`、`conversation.input.left`、`conversation.composer.dock` 的 `kind` / `scope` / 注册字段 / owner props 在 rc.3→rc.5 **逐字未变** |
+| 插件用到的三个槽位 | `conversation.input.model.label`、`conversation.input.right`、`conversation.composer.dock` 的 `kind` / `scope` / 注册字段 / owner props 在 rc.3→rc.5 **逐字未变** |
 | `plugins.bundle.config` / `plugins.row.config` | keyed 槽位的 `key` 语义（裸包名 / `<包名>#<行 id>`）未变，卡片照常挂载 |
 | 插件在 rc.5 上的实际加载 | `Config` 目录里 `include:dsh-connect-qoder` 状态 `schema`；四个槽位占用者全部 `active: true`，其中模型标签由 `dsh-connect-qoder-client`（priority `-1`）占据 |
 | peer 范围 | `evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.5')` → `undefined`（= 兼容）；rc.3 / rc.4 / rc.5 三者都放行 |

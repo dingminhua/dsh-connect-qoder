@@ -247,7 +247,7 @@ const regionConfig = z.object({
    *
    * 两个席位，因为第一个不总是可用：
    *
-   *   - `composer` —— 输入框工具栏（`conversation.input.left`），与 shell 自带
+   *   - `composer` —— 输入框工具栏（`conversation.input.right`），与 shell 自带
    *     控件共享该 list 插槽。它更近、更易扫一眼，且是默认值，所以没主动选过的
    *     人升级后界面不动。
    *   - `stats` —— 输入框卡片下方的常驻栏（`conversation.composer.dock`），

@@ -199,7 +199,7 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     // 四个槽位当前在册的那一代，都得读到**新**命名空间的 form。
     const cells = [
       'plugins.bundle.config#@dmh2002/dsh-connect-qoder',
-      'conversation.input.left#dsh-connect-qoder-composer-credits',
+      'conversation.input.right#dsh-connect-qoder-composer-credits',
       'conversation.composer.dock#dsh-connect-qoder-stats-credits',
     ]
     for (const cell of cells) {
@@ -253,5 +253,26 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     // 五条里坏了一条，其余四条仍在册。
     expect(slots.live()).toHaveLength(4)
     errorSpy.mockRestore()
+  })
+})
+
+describe('积分读数的座位（同步自 trae issue #71）', () => {
+  it('composer 读数注册在 conversation.input.right，而不是贴着权限选择器的 input.left', () => {
+    // 这条盯的是「读数登在哪个座位」。宿主把 input.right 渲染在
+    // standardControls 内、模型选择器**之前**，而 input.left 在 div.tools 最末尾、
+    // 距权限选择器仅 8px——两者都可点，想点「完全权限」会点到读数并弹出积分浮层。
+    //
+    // 之所以单独写一条：本文件的 `live()` 只数条数（5 条），`propsOf()` 用固定
+    // cell 查 props 且在查不到时静默返回 undefined——所以把座位名从 right 改回
+    // left，整个文件仍然全绿（实测如此）。座位本身此前没有任何断言。
+    const { live } = mount(undefined)
+
+    // 两个读数座位都在册，且「输入框工具栏」那一档落在 input.right。
+    expect(live()).toContain('conversation.input.right#dsh-connect-qoder-composer-credits')
+    expect(live()).toContain('conversation.composer.dock#dsh-connect-qoder-stats-credits')
+
+    // 反向：不得再注册到 input.left。只断言「right 存在」是不够的——
+    // 若两处都注册，右侧那个会覆盖左侧、症状被掩盖。
+    expect(live().some(cell => cell.startsWith('conversation.input.left#'))).toBe(false)
   })
 })

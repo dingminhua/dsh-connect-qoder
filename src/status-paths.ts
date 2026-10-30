@@ -1364,7 +1364,8 @@ export function nextRegionEnabled(
  * Copyright (c) 2026 LaoDing）—— 位置是**用户的**选择，因为第一个席位本身不
  * 一定可用。
  *
- * `composer` 是输入框工具栏（`conversation.input.left`）；`stats` 是输入框
+ * `composer` 是输入框工具栏（`conversation.input.right`，渲染在模型选择器
+ * 之前）；`stats` 是输入框
  * 卡片下方的常驻栏（`conversation.composer.dock`），即 shell 渲染「轮次 / tok/s /
  * token / 缓存命中」那一行。用联合类型而不是布尔，因为第三个席位是可预见的，
  * 而 `showAtTop: boolean` 只能迁移、不能扩展。
