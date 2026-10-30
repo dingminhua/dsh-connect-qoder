@@ -7,3 +7,10 @@ coverage/
 .env
 .env.*
 !.env.example
+
+# Scratch directories a human (or an agent) may leave behind while restoring a
+# profile: they hold LOCAL state, not repo sources, and must never be committed.
+# Without this rule `git add -A` picks them up — which is how a 94 KB snapshot
+# of the machine's `cordis.patch.yml` once landed in a release commit.
+.tmp-restore/
+.tmp-*/
