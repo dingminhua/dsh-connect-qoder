@@ -3,6 +3,7 @@ import {
   accountLabelOf,
   failoverNoticeText,
   failoverReasonText,
+  queuedFailoverNoticeText,
   shouldAnnounceFailover,
 } from '../src/failover-notice.ts'
 import type { UpstreamErrorKind } from '../src/upstream.ts'
@@ -105,5 +106,26 @@ describe('shouldAnnounceFailover —— 只在真的换了号时才提示', () =
 
   it('来源账号未知时不提示，避免产出「「」被限流」', () => {
     expect(shouldAnnounceFailover({ ...base, fromAccountId: '' })).toBe(false)
+  })
+})
+
+// ==========================================================================
+// issue #26：排队的换号提示要说「上游排队中」，不是「上游暂时异常」
+//
+// 排队在 kind 那一层是 `transient`，所以光看 kind 只能说「上游暂时异常」——
+// 而上游逐字说的是「在排队，服务是好的，30 秒后再来」。用户读到前一句会以为
+// 出了故障，后一句才告诉他该等多久。
+// ==========================================================================
+describe('issue #26：排队的换号提示', () => {
+  it('说的是「上游排队中」', () => {
+    const text = queuedFailoverNoticeText({ accountName: 'A', accountId: 'acc-a' })
+    expect(text).toContain('上游排队中')
+    expect(text).not.toContain('上游暂时异常')
+    // 说的是失败的那个账号，不是接管者（与其它档同一规矩）。
+    expect(text).toContain('「A」')
+  })
+
+  it('transient 那一档本身仍然说「上游暂时异常」（别把这一档改坏）', () => {
+    expect(failoverReasonText('transient')).toBe('上游暂时异常')
   })
 })

@@ -84,7 +84,22 @@ export interface QoderShimOptions {
     accountId: string,
     kind: UpstreamErrorKind,
     message: string,
-    context?: { status?: number | undefined, code?: string | undefined },
+    context?: {
+      status?: number | undefined
+      code?: string | undefined
+      /**
+       * 上游申报的等待时长（毫秒），issue #26。
+       *
+       * 缺席 = 上游没申报。此前这条被丢掉，池子把「等 30 秒」放大成 30 分钟。
+       */
+      retryAfterMs?: number | undefined
+      /**
+       * 上游说「我在排队」的证据，issue #26。
+       *
+       * 缺席 = 上游没提排队；这时不许把失败说成「排队中」。
+       */
+      queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number } | undefined
+    },
   ) => void
   /**
    * 判定「这条换号通知是否已经对用户说过」，说过就把这条并入上一次、不再重复写。
@@ -123,6 +138,13 @@ export interface QoderShimOptions {
     from: QoderServingAccount,
     to: QoderServingAccount,
     kind: UpstreamErrorKind,
+    /**
+     * 上游说「我在排队」的证据（issue #26）；缺席 = 上游没提排队。
+     *
+     * 排队在 kind 那一层是 `transient`，光看 kind 只能说「上游暂时异常」——
+     * 而上游逐字说的是「在排队，服务是好的」。措辞归宿主，所以证据递给它。
+     */
+    context?: { queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number } | undefined },
   ) => string | undefined
   /** 模型显示名 → Qoder 内部 key。未知时原样发送。 */
   modelKeyOf?: (displayName: string) => string | undefined
@@ -684,7 +706,14 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         if (isQoderUpstreamError(error) && isFailoverEligible(error.kind) && !controller.signal.aborted) {
           // 每一次失败尝试都记测量，包括没有后继可试的最后一次——那正是下一个
           // 请求最该避开的账号。客户端已断开时不记：断开不是账号的错。
-          options.onServingFailure?.(serving.accountId, error.kind, error.message, { status: error.status, code: error.code })
+          options.onServingFailure?.(serving.accountId, error.kind, error.message, {
+            status: error.status,
+            code: error.code,
+            // issue #26：上游申报的等待时长与排队证据一并递过去。此前两者都
+            // 没递，于是真实请求撞到排队时，池子把它记成「连不上上游」。
+            ...error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs },
+            ...error.queue === undefined ? {} : { queue: error.queue },
+          })
           tried.push(serving.accountId)
           let next: QoderServingAccount | undefined
           try {
@@ -731,7 +760,9 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
               // 说——判据包含接管账号。）
               && options.hasAnnouncedFailover?.(from, to, error.kind) !== true
             ) {
-              notice = options.failoverNotice?.(from, to, error.kind)
+              notice = options.failoverNotice?.(from, to, error.kind, {
+                ...error.queue === undefined ? {} : { queue: error.queue },
+              })
             }
             serving = next
             // 零间隔连环重试会让每个候选都撞上同一个按体积计费的限流墙；

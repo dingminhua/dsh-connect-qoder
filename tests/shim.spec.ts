@@ -1001,3 +1001,51 @@ describe('上游申报的重试间隔到达宿主（issue #24）', () => {
     expect(await resp.text()).not.toContain('retry-after')
   })
 })
+
+// ==========================================================================
+// issue #26：真实请求撞到排队时，shim 必须把排队证据交给宿主
+//
+// 用户实拍：池子把账号记成「连不上上游」并踢出池半小时，而上游逐字说的是
+// 「排队中，30 秒后再来，服务是好的」。shim 是这条证据的唯一上游。
+// ==========================================================================
+describe('issue #26：shim 把排队证据递给宿主', () => {
+  it('onServingFailure 收到 queue 与 retryAfterMs', async () => {
+    const seen: Array<{ queue?: unknown, retryAfterMs?: number | undefined }> = []
+    const upstream = {
+      chatStream: async () => {
+        throw new QoderUpstreamError(
+          'transient',
+          '上游信封错误: HTTP 403 …',
+          403,
+          '10605',
+          30_000,
+          { isQueued: true, queueCount: 1027, queueType: 'p3', retryAfterSeconds: 30 },
+        )
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({
+      upstream,
+      onServingFailure: (_id, _kind, _message, context) => {
+        seen.push({ queue: context?.queue, retryAfterMs: context?.retryAfterMs })
+      },
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(502)
+    expect(seen).toHaveLength(1)
+    expect(seen[0]?.retryAfterMs).toBe(30_000)
+    expect(seen[0]?.queue).toMatchObject({ isQueued: true, queueCount: 1027 })
+  })
+
+  it('上游没给排队证据时，递给宿主的上下文里没有 queue（不许编）', async () => {
+    const seen: Array<{ queue?: unknown }> = []
+    const upstream = {
+      chatStream: async () => { throw new QoderUpstreamError('transient', 'boom', 502) },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({
+      upstream,
+      onServingFailure: (_id, _kind, _message, context) => { seen.push({ queue: context?.queue }) },
+    })
+    await chat(shim, {})
+    expect(seen[0]?.queue).toBeUndefined()
+  })
+})

@@ -1759,3 +1759,52 @@ describe('retryPolicyOf（issue #24）', () => {
     expect(policy?.mode).toBe('normal')
   })
 })
+
+// ==========================================================================
+// issue #26：真实请求撞到排队时，池里的那条测量必须照上游说的记
+//
+// 用户实拍：真实请求撞到 10605 排队信封后，池子把账号记成「连不上上游」并
+// 踢出池半小时。上游逐字说的是「排队中，30 秒后再来，服务是好的」。
+// ==========================================================================
+describe('issue #26：真实请求撞到排队', () => {
+  const QUEUE_CONTEXT = {
+    status: 403,
+    code: '10605',
+    retryAfterMs: 30_000,
+    queue: { isQueued: true, queueCount: 1027, queueType: 'p3', retryAfterSeconds: 30 },
+  }
+
+  it('记成 queued（不是 unavailable —— 「连不上上游」是两句都不对的话）', () => {
+    const probe = Qoder.liveRequestProbe('transient', '上游信封错误: HTTP 403 …', 'dfmodel', QUEUE_CONTEXT)
+    expect(probe?.outcome).toBe('queued')
+    expect(probe?.modelId).toBe('dfmodel')
+  })
+
+  it('冷却用上游申报的 30 秒（此前这一路把申报值丢了 → 30 分钟兜底）', () => {
+    const before = Date.now()
+    const probe = Qoder.liveRequestProbe('transient', '排队中', 'dfmodel', QUEUE_CONTEXT)
+    expect(probe?.retryAtMs).toBeDefined()
+    expect(probe!.retryAtMs! - before).toBeGreaterThan(29_000)
+    expect(probe!.retryAtMs! - before).toBeLessThanOrEqual(30_000)
+  })
+
+  it('排队人数被带出来（卡片要显示「前面还有 N 个」）', () => {
+    const probe = Qoder.liveRequestProbe('transient', '排队中', 'dfmodel', QUEUE_CONTEXT)
+    expect(probe?.queue?.queueCount).toBe(1027)
+    expect(probe?.queue?.queueType).toBe('p3')
+  })
+
+  it('没有排队证据时，transient 仍然是 unavailable（别把别的故障说成排队）', () => {
+    expect(Qoder.liveRequestProbe('transient', 'boom', 'dfmodel', { status: 503 })?.outcome)
+      .toBe('unavailable')
+  })
+
+  it('上游没申报等待时长时不编倒计时（retryAtMs 缺席）', () => {
+    const probe = Qoder.liveRequestProbe('transient', '排队中', 'dfmodel', {
+      status: 403,
+      queue: { isQueued: true, queueCount: 10 },
+    })
+    expect(probe?.outcome).toBe('queued')
+    expect(probe?.retryAtMs).toBeUndefined()
+  })
+})

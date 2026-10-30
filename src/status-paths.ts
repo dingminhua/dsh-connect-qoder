@@ -771,6 +771,7 @@ export type QoderWebProbeOutcome =
   | 'credential-rejected'
   | 'policy-rejected'
   | 'unavailable'
+  | 'queued'
   | 'not-found'
   | 'failed'
 
@@ -793,7 +794,19 @@ export interface QoderWebProbeResult {
    */
   retryAtMs?: number
   /** Which source supplied {@link retryAtMs}. */
-  retrySource?: 'retry-after' | 'upstream-message' | 'quota-refresh'
+  retrySource?: 'retry-after' | 'upstream-message' | 'quota-refresh' | 'upstream-reported'
+  /**
+   * 上游说「我在排队」时给出的队列信息（issue #26）。
+   *
+   * 缺席 = 上游没提排队（那就不许把任何失败说成「排队中」）。`queueCount` 是
+   * 上游给的人头数，`queueType` 是上游的队列分档 —— 都是上游的事实，本地不估。
+   */
+  queue?: {
+    /** 排队中的人数。 */
+    queueCount?: number
+    /** 上游的队列分档（p1/p2/p3 之类）。 */
+    queueType?: string
+  }
 }
 
 /** The probe endpoint's answer document. */
@@ -813,6 +826,7 @@ export type QoderWebPoolExclusion =
   | 'credential-rejected'
   | 'not-found'
   | 'unavailable'
+  | 'queued'
   | 'failed'
 
 /**
@@ -857,6 +871,11 @@ export interface QoderWebPoolAccount {
      * treat as applying to anything, which is the coarse pre-field behaviour.
      */
     modelId?: string
+    /** 上游的排队信息（issue #26）；缺席 = 上游没提排队。 */
+    queue?: {
+      queueCount?: number
+      queueType?: string
+    }
   }
   /**
    * 今天是否已签到。`undefined` = 还没读过（UI 说「未知」，而不是断言「未签到」

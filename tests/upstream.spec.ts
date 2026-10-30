@@ -10,6 +10,7 @@ import {
   isContentPolicy,
   parseUsage,
   projectCampaignEntry,
+  queueOf,
   retryAfterMsOf,
   retryAfterMsOfHeader,
   isQoderUpstreamError,
@@ -1388,6 +1389,95 @@ describe('错误对象把申报值带出来', () => {
       expect(isQoderUpstreamError(error)).toBe(true)
       if (!isQoderUpstreamError(error)) throw error
       expect(error.retryAfterMs).toBeUndefined()
+    }
+  })
+})
+
+// ==========================================================================
+// issue #26：上游的排队信封（`isQueued`）与「等 30 秒」被读成「等 30 分钟」
+//
+// 用户实拍（1.16.3）：账号完全正常（同一时刻六个模型实测全部可用），池子却
+// 报「✗ 连不上上游——上游没有给出可用答复」，并把账号踢出池半小时。
+//
+// 上游的信封逐字（脱敏）：
+//   HTTP 403
+//   {"code":"403","message":"{\"code\":\"10605\",\"message\":{\"isQueued\":true,
+//     \"modelKey\":\"dfmodel\",\"queueCount\":1027,\"queueType\":\"p3\",
+//     \"retryAfterSeconds\":30,\"serviceAvailable\":true,
+//     \"subCode\":\"CALL_COUNT_LIMIT\",\"waitTime\":119}}"}
+//
+// 关键点：`message` 在第二层是**对象**而不是字符串。此前两个读者
+// （`retryAfterMsOf` / `deepestBusinessCode`）都要求 `message` 是字符串才
+// 继续往里走，于是停在了第二层 —— `retryAfterSeconds` 与内层业务码
+// `10605` 双双读不到。
+// ==========================================================================
+describe('issue #26：排队信封（message 是对象的那种）', () => {
+  /** issue 里的原样信封。 */
+  const QUEUE_ENVELOPE = JSON.stringify({
+    code: '403',
+    message: JSON.stringify({
+      code: '10605',
+      message: {
+        isQueued: true,
+        modelKey: 'dfmodel',
+        queueCount: 1027,
+        queueType: 'p3',
+        retryAfterSeconds: 30,
+        serviceAvailable: true,
+        subCode: 'CALL_COUNT_LIMIT',
+        waitTime: 119,
+      },
+    }),
+  })
+
+  it('剥到第三层，读出 retryAfterSeconds（此前读不到 → 30 秒被放大成 30 分钟）', () => {
+    expect(retryAfterMsOf(QUEUE_ENVELOPE)).toBe(30_000)
+    // 变异检查：把 envelopeRecords 改回「只认字符串 message」，这条立刻红。
+  })
+
+  it('剥到第三层，读出内层业务码 10605（此前读不到 → 403 回落成 auth）', () => {
+    expect(deepestBusinessCode(QUEUE_ENVELOPE)).toBe('10605')
+    expect(classifyFailure(403, QUEUE_ENVELOPE)).toBe('transient')
+  })
+
+  it('queueOf 读出排队事实与队列长度', () => {
+    const queue = queueOf(QUEUE_ENVELOPE)
+    expect(queue?.isQueued).toBe(true)
+    expect(queue?.queueCount).toBe(1027)
+    expect(queue?.queueType).toBe('p3')
+    expect(queue?.retryAfterSeconds).toBe(30)
+  })
+
+  it('上游没提排队就是 undefined（不许把任何失败说成排队）', () => {
+    expect(queueOf('{"code":"115","message":"quota"}')).toBeUndefined()
+    expect(queueOf('')).toBeUndefined()
+    expect(queueOf('not json')).toBeUndefined()
+    // `isQueued:false` 是「没在排队」，不是「在排队」。
+    expect(queueOf('{"isQueued":false,"retryAfterSeconds":5}')?.isQueued).toBe(false)
+  })
+
+  it('字符串 message 的那种信封照样读得到（不能把另一条路改坏）', () => {
+    const detail = JSON.stringify({
+      code: '10605',
+      message: JSON.stringify({ isQueued: true, queueCount: 0, queueType: 'p2', retryAfterSeconds: 5, serviceAvailable: true }),
+      subCode: 'RESOURCE_LIMIT',
+    })
+    expect(retryAfterMsOf(detail)).toBe(5000)
+    expect(queueOf(detail)?.isQueued).toBe(true)
+  })
+
+  it('SSE 信封路径把排队证据带在错误上（parseStreamDelta）', () => {
+    const frame = JSON.stringify({ headers: {}, body: QUEUE_ENVELOPE, statusCodeValue: 403 })
+    try {
+      parseStreamDelta(frame)
+      expect.unreachable('应当抛错')
+    } catch (error) {
+      expect(isQoderUpstreamError(error)).toBe(true)
+      if (!isQoderUpstreamError(error)) throw error
+      expect(error.retryAfterMs).toBe(30_000)
+      expect(error.queue?.isQueued).toBe(true)
+      expect(error.queue?.queueCount).toBe(1027)
+      expect(error.code).toBe('10605')
     }
   })
 })

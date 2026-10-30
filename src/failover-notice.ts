@@ -45,6 +45,27 @@ export function failoverReasonText(kind: UpstreamErrorKind | string): string {
 }
 
 /**
+ * 排队这一档的专属说法（issue #26）。
+ *
+ * 排队在 kind 那一层是 `transient`（上游业务码 10605），所以光看 kind 只能说
+ * 「上游暂时异常」—— 而上游逐字说的是「在排队，服务是好的」。这两句对用户的
+ * 行动指导完全不同：前者像是要等，后者是「等 30 秒就好，账号没坏」。
+ */
+export const QUEUE_REASON_TEXT = '上游排队中'
+
+/**
+ * 排队时的换号提示正文（issue #26）。
+ *
+ * 与 {@link failoverNoticeText} 同构，只是理由换成「上游排队中」。
+ */
+export function queuedFailoverNoticeText(
+  failed: { accountName: string; accountId: string },
+): string {
+  const label = accountLabelOf(failed.accountName, failed.accountId)
+  return `「${label}」${QUEUE_REASON_TEXT}，已改用池中另一个账号回答。`
+}
+
+/**
  * 账号在提示里怎么称呼。
  *
  * 账号名可能为空（env 路径下 `accountName` 是空串），也可能就是内部 id。

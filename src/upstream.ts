@@ -257,7 +257,16 @@ export class QoderUpstreamError extends Error {
    * ①是唯一能让「申报值」影响等待的一条。
    */
   readonly retryAfterMs?: number | undefined
-  constructor(kind: UpstreamErrorKind, message: string, status = 0, code?: string, retryAfterMs?: number) {
+  /**
+   * 上游说「我在排队」的证据（issue #26）。
+   *
+   * 与 {@link retryAfterMs} 分开是因为它们是**两件事**：`retryAfterMs` 说
+   * 「等多久再来」，`queue` 说「你现在排在第几位、服务本身是好的」。前者决定
+   * 冷却多长，后者决定**怎么跟用户说** —— 把排队说成「连不上上游」是错的
+   * （用户实拍：账号完全正常，六个模型同时可用）。
+   */
+  readonly queue?: QoderQueueState | undefined
+  constructor(kind: UpstreamErrorKind, message: string, status = 0, code?: string, retryAfterMs?: number, queue?: QoderQueueState) {
     super(message)
     this.name = 'QoderUpstreamError'
     this.kind = kind
@@ -266,7 +275,36 @@ export class QoderUpstreamError extends Error {
     if (retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0) {
       this.retryAfterMs = retryAfterMs
     }
+    if (queue !== undefined) {
+      this.queue = queue
+    }
   }
+}
+
+/**
+ * 上游的排队状态（issue #26 的实测信封）。
+ *
+ * 实测形状（HTTP 403 + `code 10605`）：
+ *
+ * ```json
+ * {"code":"10605","message":{"isQueued":true,"modelKey":"dfmodel",
+ *   "queueCount":1027,"queueType":"p3","retryAfterSeconds":30,
+ *   "serviceAvailable":true,"subCode":"CALL_COUNT_LIMIT","waitTime":119}}
+ * ```
+ *
+ * `isQueued:true` + `serviceAvailable:true` 的意思是「**服务是好的**，你排在
+ * 队列第 1027 位，30 秒后再来」。上游说得很清楚，插件此前把它读成了「连不上
+ * 上游」。
+ */
+export interface QoderQueueState {
+  /** 上游明确说了「在排队」。 */
+  isQueued: boolean
+  /** 队列里的人头数（上游给的，不是本地估的）。 */
+  queueCount?: number
+  /** 队列类型（上游的 p1/p2/p3 之类）。 */
+  queueType?: string
+  /** 上游申报的等待秒数；与 `retryAfterMs` 同源，但保留原始单位。 */
+  retryAfterSeconds?: number
 }
 
 export function isQoderUpstreamError(error: unknown): error is QoderUpstreamError {
@@ -738,6 +776,8 @@ export class QoderUpstreamClient {
         // 上游申报的重试间隔（issue #24）：`10605 / RESOURCE_LIMIT` 就走这条
         // 路径进来，以前读到即丢，用户只看到「上游报了个 4xx」。
         retryAfterMsOf(errText) ?? retryAfterMsOfHeader(resp.headers.get('retry-after')),
+        // issue #26：排队证据（`isQueued`）与重试间隔在同一个信封里，一并带出。
+        queueOf(errText),
       )
     }
     if (!resp.body) {
@@ -1200,6 +1240,9 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
       // issue #24 的现场就是这条：`code 10605 / subCode RESOURCE_LIMIT` 的信封
       // 里带着 `retryAfterSeconds`，此前读到即丢。
       retryAfterMsOf(detail),
+      // issue #26：同一个信封里还带着 `isQueued` —— 上游明说「在排队、服务
+      // 可用、30 秒后再来」。此前这条被整段丢掉，池子把它报成「连不上上游」。
+      queueOf(detail),
     )
   }
   const innerStr = wrapper.body
@@ -1219,7 +1262,16 @@ export function parseStreamDelta(dataPayload: string): QoderChatDelta | undefine
 
   // 业务错误：{"code":"115","message":"..."}
   if (typeof inner.code === 'string' && inner.code !== '' && inner.code !== '0') {
-    throw new QoderUpstreamError(classifyBusinessCode(inner.code), `上游业务错误 code=${inner.code}: ${String(inner.message ?? '')}`, 0, inner.code)
+    const detail = typeof inner.message === 'string' ? inner.message : JSON.stringify(inner.message ?? '')
+    throw new QoderUpstreamError(
+      classifyBusinessCode(inner.code),
+      `上游业务错误 code=${inner.code}: ${String(inner.message ?? '')}`,
+      0,
+      inner.code,
+      // issue #26：业务码帧里同样可能带着排队信封（`isQueued` + 等待秒数）。
+      retryAfterMsOf(detail),
+      queueOf(detail),
+    )
   }
 
   const usageIn = readTokens(inner.usage, 'prompt_tokens')
@@ -1425,12 +1477,7 @@ export function retryAfterMsOfHeader(value: string | null | undefined, nowMs = D
 }
 
 export function retryAfterMsOf(detail: string): number | undefined {
-  let text = typeof detail === 'string' ? detail.trim() : ''
-  for (let depth = 0; depth < MAX_CODE_NESTING; depth += 1) {
-    if (!text.startsWith('{')) break
-    const parsed = parseJson(text)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) break
-    const record = parsed as Record<string, unknown>
+  for (const record of envelopeRecords(detail)) {
     // 字段名只认这一个：上游还有 `waitTime`（排队已等时长）与 `queueCount`，
     // 那些都不是「该等多久」，拿错了会把等待算成 0 或算成别人的排队量。
     const seconds = record.retryAfterSeconds
@@ -1438,9 +1485,82 @@ export function retryAfterMsOf(detail: string): number | undefined {
       const ms = Math.round(seconds * 1000)
       return ms <= MAX_RETRY_AFTER_MS ? ms : undefined
     }
+  }
+  return undefined
+}
+
+/**
+ * 沿一条失败信封往里剥，产出每一层的记录对象。
+ *
+ * **为什么需要它（issue #26）**：上游的信封有两种「往里包」的方式，两种都在
+ * 现场出现过：
+ *
+ * ```json
+ * { "code": "403", "message": "{\"code\":\"10605\",\"message\":\"…\"}" }   // 字符串
+ * { "code": "403", "message": "{\"code\":\"10605\",\"message\":{…}}" }   // 对象
+ * ```
+ *
+ * 第二种里，`message` **不是**字符串而是对象，而此前 `retryAfterMsOf` 与
+ * `deepestBusinessCode` 都写着「`message` 是字符串才继续往里走」—— 于是
+ * 走到第二层就停下，`retryAfterSeconds` 明明就在那层的 `message` 对象里，
+ * 却读不出来。现场后果：上游说「等 30 秒」，插件读成「上游没说」，于是按
+ * 30 分钟兜底冷却（差 60 倍）。
+ *
+ * 这里把「剥信封」收成**一处**实现，两个读者共用，避免两处再次漂移。深度
+ * 上限沿用 {@link MAX_CODE_NESTING}。
+ */
+function envelopeRecords(detail: string): Array<Record<string, unknown>> {
+  const records: Array<Record<string, unknown>> = []
+  let text: unknown = typeof detail === 'string' ? detail.trim() : ''
+  for (let depth = 0; depth < MAX_CODE_NESTING; depth += 1) {
+    let record: Record<string, unknown>
+    if (typeof text === 'string') {
+      if (!text.startsWith('{')) break
+      const parsed = parseJson(text)
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) break
+      record = parsed as Record<string, unknown>
+    } else if (typeof text === 'object' && text !== null && !Array.isArray(text)) {
+      record = text as Record<string, unknown>
+    } else {
+      break
+    }
+    records.push(record)
     const message = record.message
-    if (typeof message !== 'string') break
-    text = message.trim()
+    // 两种形态都继续往里走：字符串（要再解一层 JSON）与对象（直接就是下一层）。
+    if (typeof message === 'string') {
+      text = message.trim()
+    } else if (typeof message === 'object' && message !== null && !Array.isArray(message)) {
+      text = message
+    } else {
+      break
+    }
+  }
+  return records
+}
+
+/**
+ * 上游的排队状态（issue #26）。
+ *
+ * 判据是上游**自己说的** `isQueued: true`；`serviceAvailable: true` 是旁证
+ * （服务是好的，只是排在队里）。返回 undefined 表示上游没提排队 —— 那时
+ * 不许把任何失败说成「排队中」。
+ *
+ * `queueCount` 与 `retryAfterSeconds` 一并带出：前者让用户看到「排在第 1027
+ * 位」，后者是「等 30 秒」—— 上游给了就显示，没给就不编。
+ */
+export function queueOf(detail: string): QoderQueueState | undefined {
+  for (const record of envelopeRecords(detail)) {
+    const isQueued = record.isQueued
+    if (typeof isQueued !== 'boolean') continue
+    const count = record.queueCount
+    const queueType = record.queueType
+    const seconds = record.retryAfterSeconds
+    return {
+      isQueued,
+      ...typeof count === 'number' && Number.isFinite(count) && count >= 0 ? { queueCount: count } : {},
+      ...typeof queueType === 'string' && queueType !== '' ? { queueType } : {},
+      ...typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 ? { retryAfterSeconds: seconds } : {},
+    }
   }
   return undefined
 }
@@ -1472,13 +1592,11 @@ export function retryAfterMsOf(detail: string): number | undefined {
  *    非 JSON body、空 body 的行为与改动前逐字一致（真被拒的那一侧不能被改坏）。
  */
 export function deepestBusinessCode(detail: string): string | undefined {
-  let text = typeof detail === 'string' ? detail.trim() : ''
   let fallback: string | undefined
-  for (let depth = 0; depth < MAX_CODE_NESTING; depth += 1) {
-    if (!text.startsWith('{')) break
-    const parsed = parseJson(text)
-    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) break
-    const record = parsed as Record<string, unknown>
+  // 与 `retryAfterMsOf` 共用同一条剥壳路径（`envelopeRecords`）：issue #26 的
+  // 现场里 `message` 是**对象**的那种信封此前读不到内层业务码，于是 `10605`
+  // 被丢掉、403 回落成 `auth` —— 排队被说成「凭据被拒」。
+  for (const record of envelopeRecords(detail)) {
     const raw = record.code
     let code: string | undefined
     if (typeof raw === 'string' && raw !== '') code = raw
@@ -1489,10 +1607,6 @@ export function deepestBusinessCode(detail: string): string | undefined {
       if (classifyBusinessCode(code) !== 'unknown') return code
       if (fallback === undefined) fallback = code
     }
-    const message = record.message
-    if (typeof message !== 'string') break
-    // 下一层就藏在 message 里（纪律 1：只走这一条路）。
-    text = message.trim()
   }
   return fallback
 }

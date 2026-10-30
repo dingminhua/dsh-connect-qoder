@@ -397,3 +397,103 @@ describe('probeModel', () => {
     expect(result.outcome).toBe('failed')
   })
 })
+// ==========================================================================
+// issue #26：上游说「在排队」时，结论、冷却与文案都必须照上游说的来
+//
+// 用户实拍：池子报「✗ 连不上上游」，账号其实完全正常（六个模型同时可用）。
+// 上游逐字说的是「排队中，30 秒后再来，服务是好的」。
+// ==========================================================================
+describe('issue #26：排队是一条独立的结论', () => {
+  it('上游说在排队 → queued，不是 unavailable（连不上上游）', () => {
+    const outcome = outcomeOfFailure({
+      kind: 'transient',
+      status: 403,
+      message: '上游信封错误: HTTP 403 …',
+      queue: { isQueued: true, queueCount: 1027, queueType: 'p3', retryAfterSeconds: 30 },
+    })
+    expect(outcome).toEqual({ outcome: 'queued' })
+    // 变异检查：把 queued 分支去掉，这条立刻红。
+  })
+
+  it('没有排队证据时，transient 仍然是 unavailable（别把别的故障说成排队）', () => {
+    expect(outcomeOfFailure({ kind: 'transient', status: 503, message: 'boom' }))
+      .toEqual({ outcome: 'unavailable' })
+  })
+
+  it('上游申报 30 秒 → 冷却就是 30 秒（此前是 30 分钟，差 60 倍）', () => {
+    const cool = cooldownOf({
+      outcome: 'queued',
+      retryAfter: null,
+      nowMs: NOW,
+      retryAfterMs: 30_000,
+    })
+    expect(cool).toEqual({ retryAtMs: NOW + 30_000, retrySource: 'upstream-reported' })
+  })
+
+  it('申报值优先于报文里刮出来的重置句子（上游明说的数字更具体）', () => {
+    const cool = cooldownOf({
+      outcome: 'queued',
+      retryAfter: null,
+      nowMs: NOW,
+      body: '将在 2026-09-30 02:30:30 UTC+8 重置',
+      retryAfterMs: 30_000,
+    })
+    expect(cool.retrySource).toBe('upstream-reported')
+    expect(cool.retryAtMs).toBe(NOW + 30_000)
+  })
+
+  it('上游没申报就一个字都不编（仍然返回空）', () => {
+    expect(cooldownOf({ outcome: 'queued', retryAfter: null, nowMs: NOW })).toEqual({})
+    expect(cooldownOf({ outcome: 'queued', retryAfter: null, nowMs: NOW, retryAfterMs: 0 })).toEqual({})
+    expect(cooldownOf({ outcome: 'queued', retryAfter: null, nowMs: NOW, retryAfterMs: -5 })).toEqual({})
+  })
+
+  it('probeModel 把排队与等待时刻一起带出来', async () => {
+    const client: QoderProbeClient = {
+      probeChat: async () => ({
+        ok: false,
+        status: 403,
+        retryAfter: null,
+        retryAfterMs: 30_000,
+        body: '上游信封错误: HTTP 403 {"code":"10605",…}',
+        error: {
+          kind: 'transient',
+          status: 403,
+          message: '上游信封错误: HTTP 403 …',
+          retryAfterMs: 30_000,
+          queue: { isQueued: true, queueCount: 1027, queueType: 'p3', retryAfterSeconds: 30 },
+        },
+      }),
+    }
+    const result = await probeModel({
+      client,
+      credential: { pat: 'pt-x', accountName: 'a' },
+      modelKey: 'dfmodel',
+      nowMs: NOW,
+    })
+    expect(result.outcome).toBe('queued')
+    expect(result.retryAtMs).toBe(NOW + 30_000)
+    expect(result.retrySource).toBe('upstream-reported')
+    expect(result.queue?.queueCount).toBe(1027)
+    expect(result.queue?.queueType).toBe('p3')
+  })
+
+  it('探针自己抛错但带排队证据时也照实说排队', async () => {
+    const client: QoderProbeClient = {
+      probeChat: async () => {
+        throw Object.assign(new Error('排队中'), {
+          queue: { isQueued: true, queueCount: 1027 },
+          retryAfterMs: 30_000,
+        })
+      },
+    }
+    const result = await probeModel({
+      client,
+      credential: { pat: 'pt-x', accountName: 'a' },
+      modelKey: 'dfmodel',
+      nowMs: NOW,
+    })
+    expect(result.outcome).toBe('queued')
+    expect(result.retryAtMs).toBe(NOW + 30_000)
+  })
+})

@@ -146,11 +146,18 @@ export function parseUpstreamResetAt(message: string): number | undefined {
 /**
  * The cooldown the upstream stated, if it stated one.
  *
- * Three sources, in order of authority: `Retry-After` on the failure response;
- * the reset time written into the failure body (the case that actually fires —
- * a 429 carries `将在 … 重置`, no header); and the region's quota refresh point
- * ONLY for an out-of-credit outcome. None of these → `{}`, which the card
- * renders as "the upstream did not say when".
+ * Four sources, in order of authority: `Retry-After` on the failure response;
+ * the upstream's OWN declared wait (`retryAfterSeconds` in the queue envelope,
+ * issue #26); the reset time written into the failure body (the case that
+ * actually fires — a 429 carries `将在 … 重置`, no header); and the region's
+ * quota refresh point ONLY for an out-of-credit outcome. None of these → `{}`,
+ * which the card renders as "the upstream did not say when".
+ *
+ * ⚠️ The declared wait comes **before** the body reset sentence on purpose:
+ * issue #26's field report is an upstream that says "wait 30 seconds" while the
+ * plugin amplified it into a 30-minute cooldown — a 60× error caused by one
+ * dropped field. The upstream's explicit number is the most specific statement
+ * it can make, so it outranks a sentence we scraped out of a body.
  */
 export function cooldownOf(input: {
   outcome: QoderWebProbeOutcome
@@ -158,9 +165,18 @@ export function cooldownOf(input: {
   nowMs: number
   body?: string
   quotaRefreshAtMs?: number
+  /**
+   * 上游申报的等待时长（毫秒），来自排队信封里的 `retryAfterSeconds`。
+   *
+   * 缺席 = 上游没申报（那就不许编倒计时）。
+   */
+  retryAfterMs?: number
 }): Pick<QoderWebProbeResult, 'retryAtMs' | 'retrySource'> {
   const fromHeader = parseRetryAfter(input.retryAfter, input.nowMs)
   if (fromHeader !== undefined) return { retryAtMs: fromHeader, retrySource: 'retry-after' }
+  if (input.retryAfterMs !== undefined && Number.isFinite(input.retryAfterMs) && input.retryAfterMs > 0) {
+    return { retryAtMs: input.nowMs + input.retryAfterMs, retrySource: 'upstream-reported' }
+  }
   const fromBody = input.body === undefined ? undefined : parseUpstreamResetAt(input.body)
   if (fromBody !== undefined) return { retryAtMs: fromBody, retrySource: 'upstream-message' }
   if (input.outcome === 'out-of-credit' && input.quotaRefreshAtMs !== undefined) {
@@ -181,14 +197,40 @@ export interface QoderProbeError {
   kind: UpstreamErrorKind | 'not-found-model'
   status: number
   message: string
+  /**
+   * 上游申报的等待时长（毫秒），issue #26。
+   *
+   * 缺席 = 上游没申报。此前这一个字段在 `probeChat` 门口被丢掉，于是上游说
+   * 「等 30 秒」被放大成 30 分钟冷却。
+   */
+  retryAfterMs?: number
+  /**
+   * 上游说「我在排队」的证据，issue #26。
+   *
+   * 缺席 = 上游没提排队；这时不许把失败说成「排队中」。
+   */
+  queue?: {
+    isQueued: boolean
+    queueCount?: number
+    queueType?: string
+    retryAfterSeconds?: number
+  }
 }
 
 /**
  * Classify one failed probe into the card's outcome vocabulary, from the
  * upstream error kind rather than raw status codes, so a probe and a real chat
  * request never disagree about the same answer.
+ *
+ * **排队单独成一档（issue #26）**：上游明说「在排队、服务是好的、30 秒后再来」
+ * —— 把它归进 `unavailable`（「连不上上游」）是**两句都不对的话**：连接是通的，
+ * 上游也是好的，只是这个模型在排队。用户看到那句话会以为账号坏了、要求换
+ * PAT，而真相是「等 30 秒就好」。
  */
 export function outcomeOfFailure(error: QoderProbeError): { outcome: QoderProbeOutcome, notFound?: boolean } {
+  // 排队优先于 kind：`transient` 是 10605 的通用分类，但**上游自己说了在排队**
+  // 时，那才是更具体的事实。
+  if (error.queue?.isQueued === true) return { outcome: 'queued' }
   switch (error.kind) {
     case 'auth': return { outcome: 'credential-rejected' }
     case 'rate-limited': return { outcome: 'rate-limited' }
@@ -265,6 +307,13 @@ export interface QoderProbeClient {
     /** The upstream's own failure body, redaction happens later. */
     body?: string
     error?: QoderProbeError
+    /**
+     * 上游申报的等待时长（毫秒），issue #26。
+     *
+     * 此前**没有这一条**：值在上游客户端里已经解析出来了（`error.retryAfterMs`），
+     * 却在 `probeChat` 门口被丢掉 —— 于是「等 30 秒」被放大成 30 分钟冷却。
+     */
+    retryAfterMs?: number
   }>
 }
 
@@ -291,10 +340,23 @@ export async function probeModel(input: {
       ...input.signal === undefined ? {} : { signal: input.signal },
     })
   } catch (error: unknown) {
+    // 探针自己抛错（Host 那边应当自己接住上游错误，这里是兜底）：能看出排队
+    // 证据就照实说排队，别退回「连不上上游」（issue #26）。
+    const thrown = error as { queue?: { isQueued?: boolean, queueCount?: number, queueType?: string }, retryAfterMs?: number }
+    const queued = thrown.queue?.isQueued === true
     return {
       modelId: input.modelKey,
-      outcome: 'unavailable',
+      outcome: queued ? 'queued' : 'unavailable',
       message: redactUpstreamText(error instanceof Error ? error.message : String(error)),
+      ...queued
+        ? {
+            queue: {
+              ...thrown.queue?.queueCount === undefined ? {} : { queueCount: thrown.queue.queueCount },
+              ...thrown.queue?.queueType === undefined ? {} : { queueType: thrown.queue.queueType },
+            },
+          }
+        : {},
+      ...thrown.retryAfterMs === undefined ? {} : { retryAtMs: input.nowMs + thrown.retryAfterMs, retrySource: 'upstream-reported' as const },
     }
   }
   const elapsedMs = Date.now() - startedAt
@@ -320,17 +382,30 @@ export async function probeModel(input: {
   }
   const { outcome } = outcomeOfFailure(error)
   const body = answer.body ?? ''
+  // 上游申报的等待时长：客户端返回的与错误对象上挂的是**同一个值**，取任一即可
+  // （上游客户端两条构造路径都挂了它，见 `QoderUpstreamError.retryAfterMs`）。
+  const retryAfterMs = answer.retryAfterMs ?? error.retryAfterMs
   return {
     modelId: input.modelKey,
     outcome,
     elapsedMs,
     status: answer.status,
     ...body === '' ? {} : { message: redactUpstreamText(body) },
+    // 排队信息只在上游明说时带出（issue #26）：缺席 = 上游没提排队。
+    ...error.queue?.isQueued === true
+      ? {
+          queue: {
+            ...error.queue.queueCount === undefined ? {} : { queueCount: error.queue.queueCount },
+            ...error.queue.queueType === undefined ? {} : { queueType: error.queue.queueType },
+          },
+        }
+      : {},
     ...cooldownOf({
       outcome,
       retryAfter: answer.retryAfter,
       nowMs: input.nowMs,
       body,
+      ...retryAfterMs === undefined ? {} : { retryAfterMs },
       ...input.quotaRefreshAtMs === undefined ? {} : { quotaRefreshAtMs: input.quotaRefreshAtMs },
     }),
   }

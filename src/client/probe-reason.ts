@@ -32,6 +32,9 @@ import type { QoderWebProbeOutcome } from '../status-paths.ts'
 const SELF_EXPLANATORY: ReadonlySet<QoderWebProbeOutcome> = new Set([
   'rate-limited',
   'out-of-credit',
+  // 排队（issue #26）：标签 + 上游给的等待时刻已经说完了；它的报文是一坨
+  // JSON 信封，内联出来只是噪声。
+  'queued',
 ])
 
 /** Longest inline reason kept. */

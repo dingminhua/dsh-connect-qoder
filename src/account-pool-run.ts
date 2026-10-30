@@ -205,6 +205,7 @@ export function probeUpdatesOf(
       atMs,
       source: 'test-batch',
       ...row.result.retryAtMs === undefined ? {} : { retryAtMs: row.result.retryAtMs },
+      ...row.result.queue === undefined ? {} : { queue: row.result.queue },
       ...row.result.message === undefined ? {} : { message: row.result.message },
     }
   }

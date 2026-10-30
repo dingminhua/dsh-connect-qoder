@@ -175,3 +175,35 @@ describe('readPoolProbes', () => {
     await expect(writePoolProbes('cn', { alpha: { outcome: 'ok', atMs: 1 } })).resolves.toBeUndefined()
   })
 })
+// ==========================================================================
+// issue #26：排队信息要能落盘、也要能被读回来
+//
+// 上游说「排在第 1027 位」是要显示给人看的，落在磁盘上的那条测量里也得带着它
+// —— 否则进程重启后卡片就退回「上游未给出」。
+// ==========================================================================
+describe('issue #26：排队信息的落盘往返', () => {
+  it('写进去再读出来，排队人数与队列分档都还在', async () => {
+    await writePoolProbes('global', {
+      alpha: {
+        outcome: 'queued',
+        atMs: 1_800_000_000_000,
+        retryAtMs: 1_800_000_030_000,
+        modelId: 'dfmodel',
+        queue: { queueCount: 1027, queueType: 'p3' },
+      },
+    })
+    const probes = await readPoolProbes('global')
+    expect(probes['alpha']?.queue).toEqual({ queueCount: 1027, queueType: 'p3' })
+    expect(probes['alpha']?.retryAtMs).toBe(1_800_000_030_000)
+    expect(probes['alpha']?.outcome).toBe('queued')
+  })
+
+  it('形状不对的排队信息被整个丢掉，不留半个对象', async () => {
+    await writePoolProbes('cn', {
+      alpha: { outcome: 'queued', atMs: 1_800_000_000_000, queue: { queueCount: 'many' } as never },
+    })
+    const probes = await readPoolProbes('cn')
+    // `queueCount` 不是数字 ⇒ 丢掉这一项；没有任何可留的字段 ⇒ 整个 queue 丢弃。
+    expect(probes['alpha']?.queue).toBeUndefined()
+  })
+})

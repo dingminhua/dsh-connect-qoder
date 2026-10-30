@@ -2,6 +2,77 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.16.4 (2026-10-31)
+
+> **上游说「排队中，30 秒后再来」，插件却报「连不上上游」并冷却 30 分钟。**
+> 上游申报的等待时长差 60 倍，而上游自己给的排队证据被整段丢掉。
+
+### 修复
+
+- **排队不再被报成「连不上上游」，冷却也不再被放大 60 倍**（issue #26）。
+  - **现场**：HTTP 403 + 业务码 `10605`，信封逐字是
+    `{"isQueued":true,"modelKey":"dfmodel","queueCount":1027,"queueType":"p3",
+    "retryAfterSeconds":30,"serviceAvailable":true,...}` ——
+    **上游明说「服务是好的、排在第 1027 位、30 秒后再来」**。
+    插件此前把它记成 `unavailable`（「连不上上游」），账号被踢出池，
+    冷却 30 分钟（`18e5` 的兜底值）—— 用户实拍同一时刻六个模型全部可用。
+  - **根因一（信封剥壳停在第二层）**：上游的信封有两种「往里包」的方式——
+    `message` 是**字符串**（`{"code":"10605","message":"{…}"}`）与 `message`
+    是**对象**（`{"code":"10605","message":{…}}`）。此前 `retryAfterMsOf` 与
+    `deepestBusinessCode` 都要求 `message` 是字符串才继续往里走，于是现场那种
+    形状下双双读不到：`retryAfterSeconds` 读不出（⇒ 30 秒被当成「上游没说」
+    ⇒ 30 分钟兜底），内层业务码 `10605` 也读不出（⇒ 403 回落成 `auth`）。
+    **改法**：把剥信封收成一处实现 `envelopeRecords()`，两种形态都往下走，
+    两个读者共用。`deepestBusinessCode` 一并受益。
+  - **根因二（申报值在探针门口被丢掉）**：1.16.0 起上游客户端已经解析出
+    `retryAfterSeconds` 并挂在 `QoderUpstreamError.retryAfterMs` 上，但
+    `probeChat` 的返回里**没有这一项**，`probeError` 里也没有 ——
+    值在门口被丢掉。**改法**：探针客户端把 `retryAfterMs` 与 `queue` 一并带出，
+    `cooldownOf` 新增第 0 条来源 `upstream-reported`（**优先于**报文里刮出来的
+    重置句子：上游明说的数字是它能做出的最具体的陈述）。
+  - **根因三（排队没有自己的结论）**：`10605` 归到 `transient` ⇒ `unavailable`
+    ⇒「连不上上游」。**改法**：新增 `queued` 结论。上游**自己说了**在排队时
+    （`isQueued: true`），那是比 kind 更具体的事实，优先于 kind。
+  - **根因四（「自动」永远钉在最热门的免费模型上）**：`pickFreeModel` 只按
+    「上下文最大」挑，于是 1M 上下文的 `dfmodel` 永远是探测目标 —— 一次排队
+    之后每一次探测都撞同一个队列。**改法**：「自动」这一档改为
+    「**最近测成功过的优先 → 跳过刚被排过队的 → 上下文最大的**」。
+    用户手选的模型**永远优先**，绝不因为它排队就偷偷换人测。
+  - **文案**：排队单独一档（`row.probeQueuedAt` / `row.probeQueuedUnknown` /
+    `row.probeQueuedCount`「前面还有 N 个」/ `row.poolExcludedQueued`），
+    色调是 **warn 而不是 bad** —— 用户看到红色的「连不上上游」会以为账号坏了、
+    去换 PAT，而账号完全正常。排队人数与队列分档由上游给出，本地不编。
+  - **换号提示**：排队时说的是「上游排队中」而不是「上游暂时异常」
+    （`failover-notice.ts` 的 `queuedFailoverNoticeText`）。
+
+### 变更
+
+- **探测目标模型不再永远钉在最热门的那一个**（issue #26 的第 4 条根因）。
+  「自动 —— 挑一个免费模型」现在会优先挑**最近测成功过**的免费模型，并跳过
+  **刚被排过队**的模型。用户手选的模型不受影响。
+
+### 测试
+
+- 新增 **40** 例（1076 总例，较 1.16.3 净增 40）：
+  - `tests/upstream.spec.ts`：issue 里的原样信封（`message` 是对象的那种）能读出
+    `retryAfterSeconds` / 内层业务码 `10605` / 排队人数；`queueOf` 在上游没提
+    排队时返回 undefined；字符串形态的信封**没有**被改坏。
+  - `tests/probe.spec.ts`：`queued` 结论（不是 `unavailable`）；上游申报 30 秒
+    ⇒ 冷却 30 秒（此前 30 分钟）；申报值优先于报文重置句子；上游没申报时不编
+    倒计时；`probeModel` 把排队与等待时刻一起带出；探针自己抛错但带排队证据
+    时也照实说排队。
+  - `tests/account-pool.spec.ts`：排队是独立的排除档；冷却用上游申报的那个数；
+    「自动」跳过排队模型、优先成功过的模型、用户手选永远优先。
+  - `tests/account-pool-store.spec.ts`：排队信息落盘往返；形状不对就整个丢掉。
+  - `tests/probe-label.spec.ts`（新文件）：排队用自己那组 key，不复用
+    `probeUnavailable`；色调是 warn；中文文案里说的是「排队」而不是「连不上」。
+  - `tests/index.spec.ts`：真实请求撞到排队时，池里的那条测量记成 `queued`，
+    冷却用上游申报的 30 秒。
+  - `tests/shim.spec.ts`：shim 把排队证据递给宿主；没有证据时不编。
+  - `tests/failover-notice.spec.ts`：排队的换号提示说「上游排队中」。
+- 三处新逻辑都做过变异验证（退回丢弃申报值 / 把排队并回 `unavailable` /
+  剥信封只认字符串 `message`，对应用例立刻变红）。
+
 ## 1.16.3 (2026-10-30)
 
 > **英文界面下的时刻不再显示成中文式的时间。** 同步自 `dsh-connect-trae` 的

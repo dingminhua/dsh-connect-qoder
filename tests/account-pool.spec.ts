@@ -23,8 +23,10 @@ import {
   pickAccount,
   pickFreeModel,
   POOL_UNKNOWN_COOLDOWN_MS,
+  queuedModelIdsOf,
   rankPool,
   resolveTargetModel,
+  workingModelIdsOf,
 } from '../src/account-pool.ts'
 import type {
   QoderPoolMember,
@@ -657,5 +659,69 @@ describe('rankPool: user-defined order', () => {
     const open = member('open', { credits: 1 })
     expect(rankPool([limited, open], NOW, 'gpt-a', ['limitedOnA', 'open'])[0]?.account.id).toBe('open')
     expect(rankPool([limited, open], NOW, 'gpt-b', ['limitedOnA', 'open'])[0]?.account.id).toBe('limitedOnA')
+  })
+})
+
+// ==========================================================================
+// issue #26：排队是一条独立的排除档，且冷却用上游申报的那个数
+//
+// 用户实拍：上游说「等 30 秒」，插件把账号踢出池 30 分钟 —— 差 60 倍。
+// ==========================================================================
+describe('issue #26：排队的排除档', () => {
+  it('排队在冷却期内是 queued（不是 unavailable —— 上游说了服务是好的）', () => {
+    const probe = { outcome: 'queued' as const, atMs: NOW, retryAtMs: NOW + 30_000 }
+    expect(exclusionOf(probe, NOW)).toBe('queued')
+    expect(exclusionOf(probe, NOW + 30_000)).toBeUndefined()
+  })
+
+  it('上游没给等待时刻时退回 30 分钟兜底（与其它未知冷却同一口径）', () => {
+    const probe = { outcome: 'queued' as const, atMs: NOW }
+    expect(exclusionOf(probe, NOW)).toBe('queued')
+    expect(exclusionOf(probe, NOW + POOL_UNKNOWN_COOLDOWN_MS)).toBeUndefined()
+  })
+})
+
+describe('issue #26：「自动」不再永远钉在最热门的免费模型上', () => {
+  const catalog = [
+    { id: 'hot', name: 'Hot', creditMultiplier: 0, contextWindow: 1_000_000 },
+    { id: 'cool', name: 'Cool', creditMultiplier: 0, contextWindow: 200_000 },
+  ]
+
+  it('刚被排过队的模型被跳过，自动改挑另一个免费模型', () => {
+    const target = resolveTargetModel(catalog, undefined, { avoidModelIds: ['hot'] })
+    expect(target).toEqual({ modelId: 'cool', source: 'free' })
+  })
+
+  it('最近测成功过的模型优先（哪怕上下文更小）', () => {
+    const target = resolveTargetModel(catalog, undefined, { preferModelIds: ['cool'] })
+    expect(target).toEqual({ modelId: 'cool', source: 'free' })
+  })
+
+  it('用户手选的模型永远优先，绝不因为它排队就偷偷换人测', () => {
+    const target = resolveTargetModel(catalog, 'hot', { avoidModelIds: ['hot'] })
+    expect(target).toEqual({ modelId: 'hot', source: 'preferred' })
+  })
+
+  it('全部免费候选都被排过队时仍然挑一个（不能没有目标）', () => {
+    const target = resolveTargetModel(catalog, undefined, { avoidModelIds: ['hot', 'cool'] })
+    expect(target.modelId).toBeDefined()
+    expect(target.source).toBe('free')
+  })
+})
+
+describe('issue #26：排队模型与可用模型的收集', () => {
+  it('冷却未到的排队测量算作「在排队」', () => {
+    const probes = {
+      a: { outcome: 'queued' as const, atMs: NOW, retryAtMs: NOW + 30_000, modelId: 'hot' },
+      b: { outcome: 'queued' as const, atMs: NOW, retryAtMs: NOW - 1, modelId: 'stale' },
+      c: { outcome: 'ok' as const, atMs: NOW, modelId: 'cool' },
+    }
+    expect(queuedModelIdsOf(probes, NOW)).toEqual(['hot'])
+    expect(workingModelIdsOf(probes)).toEqual(['cool'])
+  })
+
+  it('没记录模型的测量不进名单（它不是关于某个模型的事实）', () => {
+    const probes = { a: { outcome: 'queued' as const, atMs: NOW, retryAtMs: NOW + 30_000 } }
+    expect(queuedModelIdsOf(probes, NOW)).toEqual([])
   })
 })

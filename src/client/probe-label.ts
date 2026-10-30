@@ -28,6 +28,11 @@ export type ProbeLike = {
   status?: number
   retryAtMs?: number
   message?: string
+  /** 上游的排队信息（issue #26）。 */
+  queue?: {
+    queueCount?: number
+    queueType?: string
+  }
 }
 
 /** 恢复时刻的本地化显示（日期 + 时间，24 小时制）。 */
@@ -84,6 +89,20 @@ export function probeResultView(
     case 'credential-rejected': return { text: t('row.probeCredentialRejected'), tone: 'bad' }
     case 'policy-rejected': return { text: t('row.probePolicyRejected'), tone: 'bad' }
     case 'not-found': return { text: t('row.probeNotFound'), tone: 'bad' }
+    case 'queued': {
+      // 排队**不是**「连不上上游」（issue #26）：上游明说服务是好的、只是排在
+      // 队里。所以这一档说的是「等多久」+「排在第几位」，色调是 warn 而不是
+      // bad —— 用户看到红色的「连不上上游」会以为账号坏了、要求换 PAT。
+      const queue = result.queue?.queueCount === undefined ? '' : t('row.probeQueuedCount', { count: String(result.queue.queueCount) })
+      return {
+        text: result.retryAtMs === undefined
+          ? t('row.probeQueuedUnknown')
+          : t('row.probeQueuedAt', { at: formatProbeMoment(result.retryAtMs) })
+            + retrySuffix(t, result.retryAtMs, nowMs)
+            + (queue === '' ? '' : ` · ${queue}`),
+        tone: 'warn',
+      }
+    }
     case 'unavailable': return { text: t('row.probeUnavailable'), tone: 'bad' }
     default:
       return {

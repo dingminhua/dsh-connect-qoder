@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { QoderUpstreamClient } from './upstream.ts'
-import { failoverNoticeText } from './failover-notice.ts'
+import { failoverNoticeText, queuedFailoverNoticeText } from './failover-notice.ts'
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind, QoderCampaignFeed } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
@@ -71,9 +71,12 @@ import {
   exclusionOf,
   rankPool,
   resolveTargetModel,
+  queuedModelIdsOf,
+  workingModelIdsOf,
   type QoderPoolCredits,
   type QoderPoolProbe,
   type QoderPoolMember,
+  type QoderPoolTarget,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
 import { testAllAccounts, testOne, POOL_BATCH_GAP_MS, type QoderPoolRunnerDeps } from './account-pool-run.ts'
@@ -932,7 +935,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       isAccountExcluded: (accountId) => {
         const probe = poolRuntime[accountId]
         if (probe === undefined) return false
-        const targetModelId = resolveTargetModel(poolModelsOf(region), poolPreferencesOf(config, region).targetModelId).modelId
+        const targetModelId = poolTargetOf(region).modelId
         // 上游恢复后必须能重新播报：记录只在仍然被排除时才有意义。
         if (exclusionOf(probe, Date.now(), targetModelId) === undefined) {
           clearAnnouncedFailoversFrom(announcedFailovers, accountId)
@@ -946,8 +949,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 宿主的调度决定；这条是插件**已经**自作主张换了号，用户有权知道。不提示
       // 的话，用户看到一段正常回答，既不知道换过号，也不知道自己选的账号已经
       // 出问题，下次还会踩进去。
-      failoverNotice: (from, _to, kind) =>
-        failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+      failoverNotice: (from, _to, kind, context) =>
+        context?.queue?.isQueued === true
+          ? queuedFailoverNoticeText({ accountName: from.accountName, accountId: from.accountId })
+          : failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
       // 同一个事实只说一次：一次 Agent 回合有十几轮调用，每轮都以同样的方式
       // 换号时，用户不该读到十几条一模一样的引用条。
       hasAnnouncedFailover: (from, to, kind) =>
@@ -1022,7 +1027,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const chosen = rankPool(
       candidates,
       now,
-      resolveTargetModel(poolModelsOf(region), prefs.targetModelId).modelId,
+      poolTargetOf(region).modelId,
       prefs.orderAccountIds,
     )[0]
     if (chosen === undefined || chosen.excludedBy !== undefined) return undefined
@@ -1133,11 +1138,23 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           else throw caught
         }
         if (error !== undefined) {
-          const probeError: QoderProbeError = { kind: error.kind, status: error.status, message: error.message }
+          // issue #26：上游**自己申报**的两件事此前在这里被丢掉 ——
+          // ① `retryAfterMs`（「等 30 秒」被放大成 30 分钟冷却）；
+          // ② `queue`（`isQueued` ⇒ 明明在排队，却被报成「连不上上游」）。
+          // 两者都已经在上游客户端里解析好了（`QoderUpstreamError`），这一行
+          // 只是把它们带过门槛。
+          const probeError: QoderProbeError = {
+            kind: error.kind,
+            status: error.status,
+            message: error.message,
+            ...error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs },
+            ...error.queue === undefined ? {} : { queue: error.queue },
+          }
           return {
             ok: false,
             status: error.status,
             retryAfter: null,
+            ...error.retryAfterMs === undefined ? {} : { retryAfterMs: error.retryAfterMs },
             body: error.message,
             error: probeError,
           }
@@ -1391,6 +1408,25 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     }))
   }
 
+  /**
+   * 这个区域**该测哪个模型**（issue #26 的「自动」挑法）。
+   *
+   * 「自动」这一档不再永远钉在最热门的免费模型上：那个模型一旦排队，每一次
+   * 探测都会撞同一个队列（用户实拍：整池躺了半小时）。现在的规则是
+   * 「最近测成功过的优先 → 跳过刚被排过队的 → 上下文最大的」。
+   *
+   * 用户手选的模型**永远优先**（`resolveTargetModel` 里就短路了）—— 绝不因为
+   * 它在排队就偷偷换人测，那会与卡片上写的「测试用模型」对不上。
+   */
+  function poolTargetOf(region: QoderRegion): QoderPoolTarget {
+    const probes = stacks[region].poolRuntime
+    const now = Date.now()
+    return resolveTargetModel(poolModelsOf(region), poolPreferencesOf(config, region).targetModelId, {
+      avoidModelIds: queuedModelIdsOf(probes, now),
+      preferModelIds: workingModelIdsOf(probes),
+    })
+  }
+
   // -------------------------------------------------------------------------
   // 目录 / 注册同步
   // -------------------------------------------------------------------------
@@ -1549,7 +1585,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 不给就还是整批（工具栏「测试全部」按钮、以及旧客户端的调用）。
       test: async (reg, onlyAccountId) => {
         const prefs = poolPreferencesOf(config, reg)
-        const target = resolveTargetModel(poolModelsOf(reg), prefs.targetModelId)
+        const target = poolTargetOf(reg)
         if (target.modelId === undefined) return []
         const deps: QoderPoolRunnerDeps = {
           credentialFor: accountId => store.credentialFor(accountId, sourcesOf(reg)),
@@ -1718,7 +1754,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const prefs = poolPreferencesOf(config, region)
     const probes = stacks[region].poolRuntime
     const now = Date.now()
-    const targetModelId = resolveTargetModel(poolModelsOf(region), prefs.targetModelId).modelId
+    const targetModelId = poolTargetOf(region).modelId
     const selectedId = selectedAccountId(config, region)
     /**
      * 池开启时的**接管候选**（`rankPool` 第一个可用的成员）。
@@ -1988,6 +2024,8 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // （exclusionOf 的 modelId 参数）—— 只改一侧等于没改。
       ...(result.modelId === '' ? {} : { modelId: result.modelId }),
       ...(result.retryAtMs === undefined ? {} : { retryAtMs: result.retryAtMs }),
+      // 排队信息（issue #26）：上游说「排在第 1027 位」是要显示给人看的。
+      ...(result.queue === undefined ? {} : { queue: result.queue }),
       ...(result.message === undefined ? {} : { message: result.message }),
     }
   }
@@ -2054,17 +2092,44 @@ export function liveRequestProbe(
   kind: UpstreamErrorKind,
   message: string,
   modelId?: string,
-  context?: { status?: number | undefined, code?: string | undefined },
+  context?: {
+    status?: number | undefined
+    code?: string | undefined
+    /** 上游申报的等待时长（毫秒），issue #26。 */
+    retryAfterMs?: number | undefined
+    /** 上游说「我在排队」的证据，issue #26。 */
+    queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number } | undefined
+  },
 ): QoderPoolProbe | undefined {
-  const outcome = kind === 'auth' ? credentialOutcomeOf(context) : FAIL_OVER_OUTCOME[kind]
+  // 排队优先（issue #26）：上游明说「在排队、服务是好的、30 秒后再来」，
+  // 那就不该被记成「连不上上游」（`unavailable`）。上游自己的话比 kind 更具体。
+  const queued = context?.queue?.isQueued === true
+  const outcome = queued
+    ? 'queued'
+    : kind === 'auth' ? credentialOutcomeOf(context) : FAIL_OVER_OUTCOME[kind]
   if (outcome === undefined) return undefined
+  const now = Date.now()
+  const retryAfterMs = context?.retryAfterMs
   return {
     outcome,
-    atMs: Date.now(),
+    atMs: now,
     source: 'live-request',
     // 真实请求能说出「哪个模型」时就带上；说不准就不写（而不是写个猜的）。
     // 缺省时这条结论适用于任何模型，是修复前的粗糙行为，不是「所有模型都同意」。
     ...(modelId === undefined || modelId === '' ? {} : { modelId }),
+    // 上游申报的等待时刻（issue #26）：上游说「等 30 秒」就是等 30 秒。此前这条
+    // 路把申报值丢了，池子按 30 分钟兜底 —— 差 60 倍。
+    ...retryAfterMs === undefined || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0
+      ? {}
+      : { retryAtMs: now + retryAfterMs },
+    ...queued
+      ? {
+          queue: {
+            ...context?.queue?.queueCount === undefined ? {} : { queueCount: context.queue.queueCount },
+            ...context?.queue?.queueType === undefined ? {} : { queueType: context.queue.queueType },
+          },
+        }
+      : {},
     // 空串不写：那是「没有原因」，与「原因是空」是两件事（卡片按 undefined 说
     // 「上游未给出」）。非空一律脱敏后带上 —— pt- 形态的凭据绝不能进落盘文件。
     ...(message === '' ? {} : { message: redactUpstreamText(message) }),

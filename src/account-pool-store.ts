@@ -80,10 +80,29 @@ export async function readPoolProbes(
       atMs: probe.atMs,
       ...knownProbeSource(probe.source) === undefined ? {} : { source: knownProbeSource(probe.source)! },
       ...probe.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs },
+      // 排队信息（issue #26）：形状不对就整个丢掉，不猜。
+      ...knownQueue(probe.queue) === undefined ? {} : { queue: knownQueue(probe.queue)! },
       ...probe.message === undefined ? {} : { message: probe.message },
     }
   }
   return probes
+}
+
+/**
+ * 落盘的排队信息，只保留形状对的那些字段（issue #26）。
+ *
+ * 形状不对就返回 undefined（**丢掉**而不是留半个对象）—— 半个对象读起来会像
+ * 「上游说队列里有 0 个人」，那不是上游说过的话。
+ */
+function knownQueue(value: unknown): QoderPoolProbe['queue'] | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined
+  const record = value as Record<string, unknown>
+  const count = record['queueCount']
+  const type = record['queueType']
+  const out: NonNullable<QoderPoolProbe['queue']> = {}
+  if (typeof count === 'number' && Number.isFinite(count) && count >= 0) out.queueCount = count
+  if (typeof type === 'string' && type !== '') out.queueType = type
+  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /** A stored source string reduced to a source this build understands. */

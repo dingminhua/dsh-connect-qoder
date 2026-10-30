@@ -203,6 +203,12 @@ export const en = {
   'row.probeCredentialRejected': '✗ Qoder refused this account\'s PAT — add a new one or pick another account',
   'row.probePolicyRejected': '✗ Qoder\'s server refused this request under its content policy — re-adding the PAT will not help',
   'row.probeNotFound': '✗ The upstream does not know this model',
+  // Queued is NOT "could not be reached" (issue #26): the upstream said the
+  // service is fine and that this model sits in a queue. Say the wait and the
+  // queue length; the account is not broken.
+  'row.probeQueuedUnknown': '✗ Queued upstream · the upstream gave no time for when it frees up',
+  'row.probeQueuedAt': '✗ Queued upstream · usable again after {at}',
+  'row.probeQueuedCount': '{count} ahead in the queue',
   'row.probeUnavailable': '✗ The upstream could not be reached — no usable answer came back',
   'row.probeFailed': '✗ Test failed',
   'row.probeFailedStatus': '✗ Test failed (HTTP {status})',
@@ -217,7 +223,7 @@ export const en = {
   // poolExcludedOutOfCredit chip: this bucket covers the whole quota family
   // (incl. official code 110, the daily limit), and the account measured for it
   // still had 500 credits — two different words in one sentence would collide.
-  'row.poolNoCandidateHint': 'Members are rate-limited, at their usage limit, rejected, or unreachable. Rate limits, usage limits and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. Only a rejected credential needs a new PAT.',
+  'row.poolNoCandidateHint': 'Members are rate-limited, at their usage limit, queued upstream, rejected, or unreachable. Rate limits, usage limits, upstream queues and transient failures return to the pool on their own — at the time the upstream states, or after a 30-minute fallback. Only a rejected credential needs a new PAT.',
   'row.poolEmptyHint': 'This region has no accounts yet. Use “Add PAT” above to paste one, or “Export / import accounts” to bring them over from another machine — the pool, the model tests and the daily check-in all need at least one account.',
   // 「勾选的」而不是「所有」：两个按钮只走勾选进池的成员，表格里未勾选的行
   // 就摆在旁边——「所有账号」会被读成「我登录过的每一个账号」，与禁用条件
@@ -285,6 +291,7 @@ export const en = {
   // "Out of credits" would contradict the credits number on the very same row.
   'row.poolExcludedOutOfCredit': 'Usage limit reached',
   'row.poolExcludedRejected': 'Rejected',
+  'row.poolExcludedQueued': 'Queued upstream',
   'row.poolExcludedUnusable': 'Unusable',
   'row.poolRetryAt': 'Back after {at}',
   'row.poolRetryUnknown': 'The upstream gave no time for when this frees up',
@@ -596,6 +603,12 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.probeCredentialRejected': '✗ Qoder 拒绝了这个账号的 PAT——请添加新 PAT 或换一个账号',
   'row.probePolicyRejected': '✗ Qoder 服务端按内容策略拒绝了这次请求——重新添加 PAT 无效',
   'row.probeNotFound': '✗ 上游不认识这个模型',
+  // 排队**不是**「连不上上游」（issue #26）：上游明说服务是好的、只是这个模型
+  // 在排队。说清「等多久」与「排在第几位」—— 用户看到红色的「连不上上游」
+  // 会以为账号坏了、要求换 PAT。
+  'row.probeQueuedUnknown': '✗ 上游排队中 · 上游未给出何时恢复',
+  'row.probeQueuedAt': '✗ 上游排队中 · {at} 之后可再用',
+  'row.probeQueuedCount': '前面还有 {count} 个',
   'row.probeUnavailable': '✗ 连不上上游——上游没有给出可用答复',
   'row.probeFailed': '✗ 测试失败',
   'row.probeFailedStatus': '✗ 测试失败（HTTP {status}）',
@@ -609,7 +622,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   // 用「用量已达上限」而不是「积分耗尽」，与 `poolExcludedOutOfCredit` 芯片同一
   // 口径：这档收的是整个配额族（含官方 110 当日次数用尽），而实测那个账号
   // **还有 500 积分** —— 一句话里两个说法会当面对撞。
-  'row.poolNoCandidateHint': '成员要么在限流冷却中、要么用量已达上限、要么凭据被拒、要么上游无响应。限流、用量上限与瞬时故障都会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底，不需要你操作；只有「凭据被拒」需要换一个新 PAT。',
+  'row.poolNoCandidateHint': '成员要么在限流冷却中、要么用量已达上限、要么上游排队中、要么凭据被拒、要么上游无响应。限流、用量上限、上游排队与瞬时故障都会自动回池——按上游给出的恢复时间，没给时间就按 30 分钟兜底，不需要你操作；只有「凭据被拒」需要换一个新 PAT。',
   'row.poolEmptyHint': '这个区域还没有账号。用上面的「添加 PAT」粘贴一个，或用「导出 / 导入账号」把别的机器上的账号搬过来 —— 账号池、模型测试与每日签到都需要至少一个账号。',
   'row.poolTestAll': '测试勾选的账号',
   'row.poolCheckinAll': '签到勾选的账号',
@@ -671,6 +684,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   // 还有 500 积分 —— 芯片说「积分耗尽」会与同一行的积分数字当面对撞。
   'row.poolExcludedOutOfCredit': '用量已达上限',
   'row.poolExcludedRejected': '被拒绝',
+  'row.poolExcludedQueued': '上游排队中',
   'row.poolExcludedUnusable': '不可用',
   'row.poolRetryAt': '{at} 之后可再用',
   'row.poolRetryUnknown': '上游未给出何时恢复',

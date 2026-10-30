@@ -64,7 +64,7 @@ import {
 } from './status-paths.ts'
 import type { QoderCampaignFeed, QoderRegion } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { resolveTargetModel, exclusionOf, rankPool } from './account-pool.ts'
+import { resolveTargetModel, exclusionOf, rankPool, queuedModelIdsOf, workingModelIdsOf } from './account-pool.ts'
 import type { QoderPoolCredits, QoderPoolProbe } from './account-pool.ts'
 import type { QoderStoredAccount } from './accounts.ts'
 import { isQoderAccountId } from './credentials.ts'
@@ -628,7 +628,14 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     }
 
     if (action === 'test') {
-      const target = resolveTargetModel(pool.catalog(region).map(poolModelOf), pool.preferences(region).targetModelId)
+      // 与池视图用**同一条**目标解析（issue #26）：两者若挑出不同的模型，卡片
+      // 上写的「测试用模型」与实际测的那个就不是一回事。
+      const now = Date.now()
+      const poolProbes = pool.poolProbes(region)
+      const target = resolveTargetModel(pool.catalog(region).map(poolModelOf), pool.preferences(region).targetModelId, {
+        avoidModelIds: queuedModelIdsOf(poolProbes, now),
+        preferModelIds: workingModelIdsOf(poolProbes),
+      })
       if (target.modelId === undefined) {
         return json(res, 200, { action: 'test', rows: [], modelId: undefined })
       }
@@ -1024,7 +1031,13 @@ async function buildPoolView(
     creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
     contextWindow: m.contextWindow,
   }))
-  const target = resolveTargetModel(targetModels, prefs.targetModelId)
+  const target = resolveTargetModel(targetModels, prefs.targetModelId, {
+    // issue #26：「自动」这一档不再永远钉在最热门的免费模型上 —— 那个模型一旦
+    // 排队，每一次探测都撞同一个队列（整池躺了半小时）。规则与宿主侧
+    // `poolTargetOf` 逐字相同：最近测成功过的优先、跳过刚被排过队的。
+    avoidModelIds: queuedModelIdsOf(probes, now),
+    preferModelIds: workingModelIdsOf(probes),
+  })
 
   // Membership is explicit; effective membership is what the pool can actually
   // resolve a credential for.
@@ -1158,6 +1171,8 @@ async function buildPoolView(
           atMs: probe.atMs,
           ...(probe.source === undefined ? {} : { source: probe.source }),
           ...(probe.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs }),
+          // 排队信息（issue #26）：卡片要显示「前面还有 N 个」。
+          ...(probe.queue === undefined ? {} : { queue: probe.queue }),
           ...(probe.message === undefined ? {} : { message: probe.message }),
           // 透传作用域，卡片才能在「这条结论不是当前模型」时说出来。
           // 写侧加字段而读侧不透传，卡片就永远看不到它——那就是没改。

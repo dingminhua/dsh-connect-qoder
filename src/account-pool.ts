@@ -69,6 +69,15 @@ export interface QoderPoolProbe {
    */
   retryAtMs?: number
   /**
+   * 上游的排队信息（issue #26）。
+   *
+   * 缺席 = 上游没提排队。`queueCount` 是上游给的人头数，不是本地估的。
+   */
+  queue?: {
+    queueCount?: number
+    queueType?: string
+  }
+  /**
    * The upstream's own words on the failure, already redacted by the probe.
    * ABSENT for a success.
    */
@@ -178,6 +187,11 @@ export function exclusionOf(
       return 'not-found'
     case 'unavailable':
       return retryDue(probe, nowMs) ? undefined : 'unavailable'
+    case 'queued':
+      // 排队是**上游明说**的「等这么久再来」，所以冷却长度用上游申报的那个数
+      // （`retryAtMs`）。缺席时（上游没给等待时长）退回 30 分钟兜底 —— 但
+      // 那种情况通常意味着排队信封没读到，见 issue #26 的修复。
+      return retryDue(probe, nowMs) ? undefined : 'queued'
     case 'failed':
       return retryDue(probe, nowMs) ? undefined : 'failed'
     case 'rate-limited':
@@ -196,7 +210,13 @@ export function exclusionOf(
   }
 }
 
-/** Whether an account's cooldown has elapsed (or was never stated). */
+/**
+ * Whether an account's cooldown has elapsed (or was never stated).
+ *
+ * `exclusionOf` 与 `queuedModelIdsOf` 共用这一条 —— 两条路对「还在冷却吗」
+ * 的判断必须是同一个，否则会出现「模型被算作在排队、账号却已经回池」的
+ * 自相矛盾。
+ */
 function retryDue(probe: QoderPoolProbe, nowMs: number): boolean {
   const until = probe.retryAtMs ?? probe.atMs + POOL_UNKNOWN_COOLDOWN_MS
   return nowMs >= until
@@ -385,13 +405,37 @@ export interface QoderPoolTarget {
 export function resolveTargetModel(
   catalog: readonly QoderPoolModel[],
   preferredId: string | undefined,
+  /**
+   * 「自动」这一档的挑法依据（issue #26）。
+   *
+   * issue #26 的现场：自动挑中的免费模型固定是全表最热门的那个（1M 上下文的
+   * `dfmodel`），于是**每一次**探测都撞同一个排队队列 —— 一次排队被记成
+   * 「连不上上游」，整池跟着躺了半小时。
+   *
+   * 规则：
+   *   - 用户手选的模型**永远优先**，绝不因为它排队就偷偷换人测（那会与用户
+   *     看到的「测试用模型」对不上）；
+   *   - 「自动」时优先挑**最近测成功过**的免费模型；
+   *   - 再跳过**刚被排过队**的模型（多半还在排）。
+   *
+   * 全部免费候选都被排过队时退回原行为（仍然挑一个，而不是没有目标）。
+   */
+  options?: {
+    /** 模型 id 集合：这些模型刚被上游排过队，测它们多半还是排队。 */
+    avoidModelIds?: readonly string[]
+    /** 模型 id 集合：这些模型最近测成功过，优先挑它们。 */
+    preferModelIds?: readonly string[]
+  },
 ): QoderPoolTarget {
   if (preferredId !== undefined && preferredId !== '') {
     return catalog.some(model => model.id === preferredId)
       ? { modelId: preferredId, source: 'preferred' }
       : { staleModelId: preferredId, source: 'stale' }
   }
-  const free = pickFreeModel(catalog)
+  const free = pickFreeModel(catalog, {
+    ...options?.avoidModelIds === undefined ? {} : { avoid: new Set(options.avoidModelIds) },
+    ...options?.preferModelIds === undefined ? {} : { prefer: new Set(options.preferModelIds) },
+  })
   return free === undefined ? { source: 'none' } : { modelId: free.id, source: 'free' }
 }
 
@@ -404,18 +448,76 @@ export function resolveTargetModel(
  * silently billing real credits on a probe. Among the free candidates the
  * LARGEST context window wins, because the probe sends a real-sized payload.
  *
+ * `avoid` 是**可选的排除名单**（issue #26：刚被排过队的模型），`prefer` 是
+ * **可选的优先名单**（最近测成功过的模型）。名单里的模型先跳过/先挑；一个候选
+ * 都没有时宁可让位（返回一个都没有比挑一个更糟）。
+ *
  * Returns undefined when there is no free model, which the caller must render
  * as "none available" — never as a fallback to a paid model.
  */
 export function pickFreeModel(
   catalog: readonly QoderPoolModel[],
+  options?: {
+    avoid?: ReadonlySet<string>
+    prefer?: ReadonlySet<string>
+  },
 ): QoderPoolModel | undefined {
   let best: QoderPoolModel | undefined
+  let preferred: QoderPoolModel | undefined
+  let fallback: QoderPoolModel | undefined
   for (const model of catalog) {
     if (model.creditMultiplier !== 0) continue
+    if (fallback === undefined || model.contextWindow > fallback.contextWindow) fallback = model
+    if (options?.avoid?.has(model.id) === true) continue
+    if (options?.prefer?.has(model.id) === true) {
+      if (preferred === undefined || model.contextWindow > preferred.contextWindow) preferred = model
+      continue
+    }
     if (best === undefined || model.contextWindow > best.contextWindow) best = model
   }
-  return best
+  // 「最近测成功过」优先于「上下文最大」—— 上一次真答过话的模型是最可靠的选择。
+  return preferred ?? best ?? fallback
+}
+
+/**
+ * 哪些模型**刚被上游排过队**（issue #26）。
+ *
+ * 判据：最近一次测量是 `queued`，且上游给的等待时刻还没到。等待时刻缺席时
+ * 按池的 30 分钟兜底（与 `exclusionOf` 同一口径）——「上游说了在排队、却没说
+ * 等多久」不是一个好状态，但它仍然是排队。
+ *
+ * 只看**该账号最后一次**测量的 `modelId`：探针的结论本来就是针对某个模型的
+ * 事实。
+ */
+export function queuedModelIdsOf(
+  probes: Readonly<Record<string, QoderPoolProbe>>,
+  nowMs: number,
+): string[] {
+  const ids: string[] = []
+  for (const probe of Object.values(probes)) {
+    if (probe.outcome !== 'queued') continue
+    if (probe.modelId === undefined || probe.modelId === '') continue
+    if (!retryDue(probe, nowMs)) ids.push(probe.modelId)
+  }
+  return [...new Set(ids)]
+}
+
+/**
+ * 哪些模型**最近测成功过**（issue #26 的「自动」挑选依据）。
+ *
+ * 判据：最近一次测量是 `ok`，且记录了它测的是哪个模型。只看**该账号最后一次**
+ * 测量 —— 探针的结论本来就是针对某个模型的事实。
+ */
+export function workingModelIdsOf(
+  probes: Readonly<Record<string, QoderPoolProbe>>,
+): string[] {
+  const ids: string[] = []
+  for (const probe of Object.values(probes)) {
+    if (probe.outcome !== 'ok') continue
+    if (probe.modelId === undefined || probe.modelId === '') continue
+    ids.push(probe.modelId)
+  }
+  return [...new Set(ids)]
 }
 
 /**

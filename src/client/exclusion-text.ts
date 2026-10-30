@@ -44,6 +44,9 @@ function exclusionLabel(
     case 'rate-limited': return t('row.poolExcludedRateLimited')
     case 'out-of-credit': return t('row.poolExcludedOutOfCredit')
     case 'credential-rejected': return t('row.poolExcludedRejected')
+    // 排队单独一档（issue #26）：这不是「连不上上游」——上游说了服务是好的，
+    // 只是这个模型在排队。「等多久」由外层的解禁时长补上。
+    case 'queued': return t('row.poolExcludedQueued')
     // These four reuse the probe labels, so one measurement yields one
     // consistent story across the name column and the probe column.
     case 'not-found': return t('row.probeNotFound')
