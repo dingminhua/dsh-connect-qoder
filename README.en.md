@@ -257,17 +257,28 @@ pnpm exec dsh-connect-qoder doctor --json        # machine-readable output
 >
 > **pi-ai gets its own row** because it changed major: Desktop 0.2.1-rc.1 moved pi-ai from 0.85 to 1.x, and the two generations consume different context shapes (1.x normalizes in its Models layer). The declaration and the runtime detection must agree — otherwise you get the silent tool-loss bug fixed in 1.1.0. See [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md).
 
-### Current host baseline: 0.2.1-rc.3 (measured 2026-10-24)
+### Current host baseline: 0.2.1-rc.5 (measured 2026-10-30)
 
-The host moved to `0.2.1-rc.3` (`DeepSeek Harness.app`, nightly channel; every `@deepseek-ai/dsh-*` package inside `app.asar` is `0.2.1-rc.3`, bundled pi-ai is `1.1.0`). **This plugin needs no runtime code change.** The reasoning, item by item:
+The host moved to `0.2.1-rc.5` (`DeepSeek Harness.app`, nightly channel; every `@deepseek-ai/dsh-*` package inside `app.asar` is `0.2.1-rc.5`, bundled pi-ai is `1.1.0`). **This plugin needs no runtime code change.** The reasoning, item by item:
 
 | Check | Result |
 | --- | --- |
-| Host packages the plugin depends on (`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings` / `dsh-atomic-write` / `dsh-attachment` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-ui-slots` / `dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-renderer` / `dsh-client-locale`) | Byte-identical to rc.2 (only the `package.json` version differs) |
-| rc.3's client-side changes | All **additive**: view-tab pinning plus the new `conversation.session.header.views.actions` slot, draft adoption gaining `whenDraftExists` (`replace` / `append` / `keep`), primitives' `Tooltip` gaining `left` and automatic flipping, `Menu` gaining `current` and `minWidthFromAnchor`, two new icons. **No** slot or owner prop the plugin uses was changed |
-| Peer range | `>=0.2.1-rc.1 <0.3.0-0` admits `0.2.1-rc.3` under both the npm-standard reading and the host gate's `includePrerelease: true` reading (the latter covers the whole `0.2.x` line) |
-| Actual load on rc.3 | The `Config` directory shows `include:dsh-connect-qoder` with status `schema`; the client slot `conversation.input.model.label` is occupied by `dsh-connect-qoder-client` (priority `-1`), and `conversation.input.left` carries `dsh-connect-qoder-composer-credits` — `dsh plugin list` raises no compatibility warning for this plugin |
-| Regression | `pnpm run typecheck` and `pnpm test` (948 passed / 8 skipped) are green |
+| Host packages the plugin depends on (`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings` / `dsh-atomic-write` / `dsh-attachment` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-ui-slots` / `dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-primitives`) | Byte-identical to rc.3 (only the `package.json` version differs) |
+| Bundled pi-ai | `1.1.0` (unchanged since rc.3) — `generationOf()` still reports `modern` |
+| `@deepseek-ai/schemastery` | `3.18.5` (rc.3 shipped `3.18.4`); `lib/` and `src/` are **byte-identical** between the two, only the `package.json` version differs, and it falls inside the declared `>=3.18.2 <4.0.0` |
+| rc.4 / rc.5 runtime changes | 13 commits; only 40 files changed beyond version bumps, and **none** of them is a host package this plugin imports |
+| The three slots the plugin uses | `conversation.input.model.label`, `conversation.input.left`, and `conversation.composer.dock` keep their `kind` / `scope` / registration fields / owner props **verbatim** from rc.3 to rc.5 |
+| `plugins.bundle.config` / `plugins.row.config` | The keyed-slot `key` semantics (bare package name / `<package>#<row id>`) are unchanged, so the card still mounts |
+| Actual load on rc.5 | The `Config` directory shows `include:dsh-connect-qoder` with status `schema`; all four slot occupants are `active: true`, with the model label held by `dsh-connect-qoder-client` (priority `-1`) |
+| Peer range | `evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.5')` returns `undefined` (= compatible); rc.3, rc.4 and rc.5 all pass |
+| Regression | `pnpm run typecheck` and `pnpm test` (1032 passed / 8 skipped) are green |
+
+Every rc.4 / rc.5 change lands on a surface this plugin does not touch:
+
+- **rc.4's reasoning Body Slot field split** (`conversation.chat.reasoning.body` gains `rawText` while `text` becomes "display-ready"): the single breaking extension point this round, and the host shipped a dedicated migration note at `docs/upgrade-guide/v0.2.1-rc.4/reasoning-body-props/`. **This plugin does not register that slot** (neither `src/` nor the built `lib/client.js` registers any `conversation.chat.` key), so it is unaffected; the affected parties are wrappers such as `@deepseek-ai/dsh-experimental-cot-translation`.
+- **rc.4 moved two diagnostics from stdout to stderr** (`llm-deepseek-account`'s model listing and `mcp-client`'s resource listing), because the ACP profile reserves stdout for JSON-RPC. This plugin's Host half **never writes stdout** (it uses `ctx.logger` only; `src/bin.ts` stdout belongs to the standalone CLI), so there is no leak surface.
+- **rc.4 dropped the `session.moreViewsCurrent` locale key** and made view-tab tooltips appear only on overflow: this plugin uses neither the key nor the view tabs.
+- **rc.5 only changed reasoning display preprocessing** (`reasoningText()` unwrapping a `<signature>` envelope): this plugin emits standard `reasoning_content` deltas and never wraps them in `<signature>`.
 
 > The **environment** change that came with rc.3 (not a plugin problem): the host app directory was renamed from `DSH NEXT.app` to `DeepSeek Harness.app`, which breaks a `dsh` shim still pointing at the old path — see the note under [Installation](#installation).
 

@@ -85,10 +85,13 @@ const ADMITTED_PRERELEASES = [
   '0.2.0-rc.2',
   // 桌面端 0.2.1-rc.1：宿主升级到这一版之后才被发现判 false。
   '0.2.1-rc.1',
-  // 0.2.1-rc.2 / rc.3：桌面端继续沿同一条 rc 线推进（rc.3 即当前在跑的宿主）。
+  // 0.2.1-rc.2 / rc.3 / rc.4 / rc.5：桌面端继续沿同一条 rc 线推进
+  // （rc.5 即当前在跑的宿主）。
   // 同一元组 `0.2.1` 上的 rc 由 `>=0.2.1-rc.1` 这一支放行，不必再开分支。
   '0.2.1-rc.2',
   '0.2.1-rc.3',
+  '0.2.1-rc.4',
+  '0.2.1-rc.5',
 ]
 
 /** Published, but deliberately outside the declared range. */
@@ -250,7 +253,7 @@ describe('declared DSH host line', () => {
     const hostAdmits = (v: string): boolean =>
       semver.satisfies(v, declaredRange(), { includePrerelease: true })
 
-    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1', '0.2.2-rc.1', '0.2.9-rc.99']) {
+    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.1', '0.2.2-rc.1', '0.2.9-rc.99']) {
       expect(hostAdmits(version), `host gate must admit ${version}`).toBe(true)
     }
   })

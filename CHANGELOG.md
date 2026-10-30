@@ -2,6 +2,57 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.16.1 (2026-10-30)
+
+> **只改文档与测试，不改运行时代码。** 宿主从 `0.2.1-rc.3` 升到 `0.2.1-rc.5`
+> （跨 `rc.4`、`rc.5` 两个版本）。逐包比对后确认：插件导入的宿主包与 rc.3
+> **逐字节相同**，rc.4 / rc.5 的改动全部落在本插件不涉及的面上 —— 因此
+> **没有运行时代码要改**，peer 范围也一个字不动。
+
+### 宿主 0.2.1-rc.5 实测（无需改代码）
+
+| 检查项 | rc.3（1.9.2 时） | rc.5（本次） |
+|---|---|---|
+| 宿主 app | `DeepSeek Harness.app` | 同；`CFBundleShortVersionString = 0.2.1-rc.5` |
+| 全部 `@deepseek-ai/dsh-*` | `0.2.1-rc.3` | `0.2.1-rc.5` |
+| 插件导入的宿主包 | —— | 与 rc.3 **逐字节相同**（仅 `package.json` 版本号不同） |
+| 宿主内置 pi-ai | `1.1.0` | `1.1.0`（未变），`generationOf` 仍判 `modern` |
+| `@deepseek-ai/schemastery` | `3.18.4` | `3.18.5`；`lib/` 与 `src/` 逐字节相同，仅版本号不同 |
+| 桌面端 `hostProtocolVersion` | `4` | `4`（未变） |
+| `evaluatePluginCompatibility(…, '0.2.1-rc.5')` | — | `undefined`（= 兼容）✅ |
+| 插件在宿主里的加载 | —— | ✅ `Config` 目录 `include:dsh-connect-qoder` 状态 `schema`；三个会话槽位 + 两个配置槽位占用者全部 `active: true` |
+| 回归 | 948 passed / 8 skipped | `pnpm run typecheck` ✅；`pnpm test` 1032 passed / 8 skipped ✅ |
+
+**rc.3 → rc.5 只有 13 个提交，非版本号改动仅 40 个文件**，且逐条都不碰本插件：
+
+- **rc.4 的推理 Body Slot 字段分裂**（`conversation.chat.reasoning.body` 的
+  `text` 改为「已处理的显示文本」，新增 `rawText` 保留原始输出）是本轮唯一的
+  破坏性扩展点，宿主为此专门发了迁移指南
+  `docs/upgrade-guide/v0.2.1-rc.4/reasoning-body-props/`。**本插件不注册该槽位**
+  —— `src/` 与构建产物 `lib/client.js` 里都没有 `conversation.chat.` 开头的注册，
+  所以无影响；真正要迁的是 `@deepseek-ai/dsh-experimental-cot-translation`
+  那类「包装推理体」的组件。
+- **rc.4 把两处诊断从 stdout 挪到 stderr**（`llm-deepseek-account` 的目录装载、
+  `mcp-client` 的资源列表），因为 ACP 档案的 stdout 专供 JSON-RPC。本插件宿主
+  半边**从不写 stdout**（只用 `ctx.logger`；`src/bin.ts` 的 stdout 属独立 CLI），
+  故无泄漏面 —— 这条记一笔是因为它正是「第三方插件往 stdout 打印」的通用隐患。
+- **rc.4 删除 `session.moreViewsCurrent` 语言键**、View 标签页 tooltip 改为按
+  溢出才显示：本插件既不用该键，也不渲染 View 标签页。
+- **rc.5 只改推理块显示预处理**（`reasoningText()` 剥离 `<signature>` 包裹）：
+  本插件产出的是标准 `reasoning_content` 增量，不含该包装。
+
+### Changed
+
+- **`tests/dsh-line.spec.ts` 把 `0.2.1-rc.4` / `0.2.1-rc.5` 补进
+  `ADMITTED_PRERELEASES`**，并在 host gate 用例的放行清单里加上这两个版本。
+  同一元组 `0.2.1` 上的 rc 由既有的 `>=0.2.1-rc.1` 分支放行，**peer 范围一个字
+  没改**；这两条只是把「当前宿主版本确实在范围内」钉住，防止下次宿主再推进 rc
+  时静默失配。
+- **`README.md` / `README.en.md` 的「当前宿主基线」一节推进到 0.2.1-rc.5**，
+  并把「rc.4 的推理 Body Slot 迁移不涉及本插件」写成可核对的事实（而不是
+  「看起来没影响」）：注册面用 `grep 'conversation.chat.'` 在源码与产物上双向
+  确认过为空。
+
 ## 1.16.0 (2026-10-29)
 
 ### Fixed
