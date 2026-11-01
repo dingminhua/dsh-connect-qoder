@@ -98,11 +98,13 @@ function slotsStub() {
 }
 
 /** 跑一次真实 apply，返回可观测面。 */
-function mount(forms: any) {
+function mount(forms: any, pluginNavigation?: { openBundle(name: string): void }) {
   const stub = slotsStub()
   const effects: Array<{ run: () => unknown; label: string | undefined; disposer: unknown }> = []
   const ctx: any = {
-    get: (name: string) => (name === 'configForms' ? forms : undefined),
+    get: (name: string) => (name === 'configForms'
+      ? forms
+      : name === 'pluginNavigation' ? pluginNavigation : undefined),
     effect: (run: () => unknown, label?: string) => {
       const disposer = run()
       effects.push({ run, label, disposer })
@@ -205,6 +207,42 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     for (const cell of cells) {
       expect((propsOf(cell)?.settingsScope as any)?.__form, cell).toBe('include:dsh-connect-qoder')
     }
+  })
+
+  it('宿主没挂 Plugins 页时：插件照常注册全部槽位，只是不传 openSettings', () => {
+    // `pluginNavigation` 由 ui-plugin-manager 用 reflect.provide 提供。**它不是、
+    // 也绝不能变成本插件的 inject 依赖**：一旦写进 `inject`，没装 Plugins 页的
+    // profile 上整个客户端插件**不会激活** —— 卡片、积分读数、模型徽标一起消失，
+    // 而这里只该丢一颗「设置」按钮。
+    //
+    // 这条用例跑的是真实 apply()（下面的 mount 就是这么做的，且 ctx.get 对
+    // pluginNavigation 返回 undefined），所以它断言的是产品代码本身的降级。
+    const stub = formsStub({ served: ['dsh-connect-qoder'] })
+    const { injected, live } = mount(stub.forms)
+    expect(live()).toHaveLength(5)
+    const composerProps = injected
+      .filter(e => e.slot === 'conversation.input.right')
+      .map(e => e.props())
+      .at(-1)
+    expect(composerProps?.t).toBeDefined()
+    // 没有导航服务 => 不传 openSettings（面板据此**不渲染**那颗按钮）。
+    expect(composerProps?.openSettings).toBeUndefined()
+  })
+
+  it('宿主挂了 Plugins 页时：那颗「设置」按钮打开的是本插件的 bundle 页', () => {
+    // 正面的那一半。`openBundle` 收的是 **npm 包名**（Plugins 页按包名索引 bundle
+    // 行），不是 Loader entry id —— 传错 name 会让页签切到别处或显示插件列表，
+    // 而这里没有任何东西会报错。
+    const opened: string[] = []
+    const stub = formsStub({ served: ['dsh-connect-qoder'] })
+    const { injected } = mount(stub.forms, { openBundle: name => { opened.push(name) } })
+    const composerProps = injected
+      .filter(e => e.slot === 'conversation.input.right')
+      .map(e => e.props())
+      .at(-1)
+    expect(typeof composerProps?.openSettings).toBe('function')
+    composerProps.openSettings()
+    expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
   })
 
   it('重绑期间不得有任何注册失败被吞掉（含 already-has-an-entry）', () => {

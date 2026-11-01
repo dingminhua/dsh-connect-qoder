@@ -21,11 +21,8 @@ import { createPortal } from 'react-dom'
 import { useAnchoredPosition, useDismissOnOutsidePointer } from './popover.ts'
 import {
   QODER_ACCOUNT_CREDITS_PATH,
-  QODER_POOL_PATH,
   QODER_USAGE_PATH,
   withQoderRegion,
-  withQoderRegionAndAction,
-  withQoderRouteAction,
 } from '../status-paths.ts'
 import { writeAccountSlot } from './account-selection.ts'
 import type { QoderAccountScope } from './account-selection.ts'
@@ -75,6 +72,22 @@ export interface ComposerCreditsProps extends Partial<ComposerCreditsInjected> {
    * inert.
    */
   settingsScope?: QoderAccountScope
+  /**
+   * Open this plugin's settings page.
+   *
+   * **Optional by design**, because the destination belongs to another plugin:
+   * the Plugins page provides `pluginNavigation`, and a profile that does not
+   * mount it has nowhere to go. When absent the button is not rendered at all —
+   * a control that visibly does nothing is worse than one that is simply not
+   * there.
+   *
+   * The panel used to carry a "Test all" button here instead. That action still
+   * exists on the account pool's own toolbar (`row.poolTestAll`), where the
+   * per-account result table it feeds is also rendered; keeping a second copy
+   * floating in the composer panel made the popover look like the settings
+   * surface it could never actually open.
+   */
+  openSettings?: () => void
 }
 
 /**
@@ -115,7 +128,7 @@ function formatClock(value: number): string {
 }
 
 export function ComposerCredits(props: ComposerCreditsProps) {
-  const { t, provider, region, settingsScope } = props
+  const { t, provider, region, settingsScope, openSettings } = props
   if (t === undefined) throw new Error('Composer credits readout requires its translation function')
   const owned = provider === undefined ? undefined : QODER_COMPOSER_PROVIDERS[provider]
   const activeRegion = region ?? owned
@@ -124,9 +137,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [accountCredits, setAccountCredits] = useState<QoderWebAccountCredit[] | undefined>(undefined)
   const [busy, setBusy] = useState(false)
   const [switchingId, setSwitchingId] = useState<string | undefined>(undefined)
-  const [testing, setTesting] = useState(false)
   const [failed, setFailed] = useState(false)
-  const [testFailed, setTestFailed] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
   const [open, setOpen] = useState(false)
   const inFlight = useRef(false)
@@ -252,62 +263,6 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     }
   }
 
-  /**
-   * 「一键测试」：设置页工具栏那颗「一键测试所有账号」的同一件事，搬进面板。
-   *
-   * 原来的按钮是「刷新积分」，只重读余额——余额读不出「还能不能用」，而面板的
-   * 点色、第二行的「被拒绝／用量已达上限／限流 · 约 N 分钟后解禁」全部来自
-   * 探针结论。所以这颗按钮真正该做的是把每个成员真跑一次：探针写回宿主快照
-   * 之后，颜色与原因才是刚测出来的，而不是打开面板那一刻的旧账。
-   *
-   * 批量是串行的真实探针（一个号十几秒到几十秒），因此不干等整批响应：边跑边读
-   * 宿主的只读进度（`action=progress`，不碰上游），每落一行就把账号表重取一次，
-   * 用户能看着圆点一行一行翻新。整批结束（成功或失败）后再补最后一读。
-   */
-  const runTestAll = async (): Promise<void> => {
-    if (activeRegion === undefined || testing || busy || switchingId !== undefined) return
-    setTesting(true)
-    setTestFailed(false)
-    setFailed(false)
-    let cursor = 0
-    const pull = async (): Promise<void> => {
-      if (activeRegion === undefined) return
-      try {
-        const response = await fetch(withQoderRegionAndAction(QODER_POOL_PATH, activeRegion, 'progress'), { credentials: 'same-origin' })
-        if (!response.ok) return
-        const raw = await response.json().catch(() => ({})) as Record<string, unknown>
-        const batch = raw['batch']
-        if (typeof batch !== 'object' || batch === null) return
-        const entry = batch as Record<string, unknown>
-        // 动作对不上就不认：上一批的残行或另一个标签页在跑的别的动作，都不该
-        // 让这里重取表格。
-        if (entry['action'] !== 'test' || !Array.isArray(entry['done'])) return
-        const done = entry['done'] as unknown[]
-        if (done.length <= cursor) return
-        cursor = done.length
-        await fetchAccountCredits()
-      } catch { /* 轮询失败不打扰用户：下一拍再试，整批响应仍是最终答案 */ }
-    }
-    let timer: number | undefined
-    try {
-      timer = window.setInterval(() => { void pull() }, 1_500)
-      const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, activeRegion, 'test'), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        credentials: 'same-origin',
-      })
-      if (!response.ok) throw new Error(`HTTP ${response.status}`)
-    } catch {
-      if (mounted.current) setTestFailed(true)
-    } finally {
-      if (timer !== undefined) window.clearInterval(timer)
-      // 成败都补一读：成功时把最后一行带进来；失败时探针可能已经落了一部分，
-      // 至少别让表格停在测试前的旧账上。
-      await fetchAccountCredits()
-      if (mounted.current) setTesting(false)
-    }
-  }
-
   // Not this plugin's model: render nothing at all. 插件之间不做联动，所以别的
   // 连接器当家时这里没有该显示的读数（见 docs/DESIGN.md「边界：不做什么」）。
   if (owned === undefined) return null
@@ -408,15 +363,28 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             <span className="dsm-qoder-composer-panel-title">
               {t(activeRegion === 'cn' ? 'composer.panelTitleCn' : 'composer.panelTitleGlobal' as QoderSettingsKey)}
             </span>
-            <button
-              type="button"
-              className="dsm-qoder-composer-panel-refresh"
-              disabled={testing || busy || switchingId !== undefined}
-              title={t('composer.testAllHint')}
-              onClick={() => { void runTestAll() }}
-            >
-              {testing ? t('composer.testing') : t('composer.testAll')}
-            </button>
+            {/* 设置入口，而不是「一键测试」。
+                面板回答的是「谁在服务、还剩多少」，用户读完这个数字之后最可能
+                想做的事是**去改设置**（换号、开池、改阈值）。「一键测试」在三处
+                都有，而按账号的结论表只在设置页的账号池里 —— 把批量动作放在这个
+                浮层上，等于给了一个看得见结果、却打不开设置的地方。
+                没有 `openSettings`（宿主没挂 Plugins 页）时整颗按钮不渲染：
+                一个点了没反应的按钮，比没有按钮更糟。 */}
+            {openSettings === undefined
+              ? null
+              : (
+                  <button
+                    type="button"
+                    className="dsm-qoder-composer-panel-settings"
+                    title={t('composer.openSettingsHint')}
+                    onClick={() => {
+                      setOpen(false)
+                      openSettings()
+                    }}
+                  >
+                    {t('composer.openSettings')}
+                  </button>
+                )}
           </div>
           {signedOut
             ? <p className="dsm-qoder-composer-panel-empty">{t('composer.signedOut')}</p>
@@ -499,11 +467,9 @@ export function ComposerCredits(props: ComposerCreditsProps) {
               {staleDisplay ? ` · ${t('composer.dataStale')}` : ''}
             </span>
           </div>
-          {testFailed
-            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.testFailed')}</p>
-            : failed || signedIn?.refreshError !== undefined
-              ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p>
-              : null}
+          {failed || signedIn?.refreshError !== undefined
+            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p>
+            : null}
         </div>,
         document.body,
       )}

@@ -26,6 +26,7 @@ import type { QoderModelLabelSlots } from './QoderModelLabel.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
 import { QODER_CARD_SLOT_KEYS } from './slot-keys.ts'
+import { QODER_PACKAGE_NAME } from '../version.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
 import { setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted } from './panel-switch.ts'
 
@@ -55,6 +56,34 @@ export function apply(ctx: QoderClientContext): void {
     const t = ctx.locale.bind(namespace) as QoderCardInjected['t']
 
     const softGet = (name: string): unknown => (ctx as unknown as { get(name: string): unknown }).get(name)
+
+    /**
+     * 打开本插件的设置页，交给宿主自己的 Plugins 页去做。
+     *
+     * `pluginNavigation` 由 `ui-plugin-manager` 通过 `reflect.provide` 提供，签名为
+     * `openBundle(<npm 包名>)`：它选中 Plugins 面板、切到「已安装」并打开那个 bundle
+     * 的详情页 —— 我们的配置卡片就渲染在那一页上。语音输入插件是同样的用法。
+     *
+     * **软探测，绝不注入成硬依赖**：`inject: ['slots','locale']` 是本插件的全部依赖。
+     * 把 `pluginNavigation` 加进 inject 会让整个客户端插件在没装 Plugins 页的 profile
+     * 上**不激活**（卡片、读数、模型徽标一起消失），而这里只丢一颗按钮。拿不到就返回
+     * `undefined`，面板干脆不渲染它（一个点了没反应的按钮比没有更糟）。
+     *
+     * 包的**npm 名**（`QODER_PACKAGE_NAME`，构建期注入）而不是 Loader entry id：
+     * Plugins 页按包名索引 bundle 行（`openBundle` 的参数就是它），而 entry id 是
+     * 另一件事（故意不带作用域，见 `slot-keys.ts`）。
+     */
+    const openPluginSettings = ((): (() => void) | undefined => {
+      const navigation = softGet('pluginNavigation') as { openBundle?: (name: string) => void } | undefined
+      if (navigation === undefined || typeof navigation.openBundle !== 'function') return undefined
+      return () => {
+        try {
+          navigation.openBundle!(QODER_PACKAGE_NAME)
+        } catch (error: unknown) {
+          console.error('[dsh-connect-qoder] could not open the settings page:', error)
+        }
+      }
+    })()
 
     let settingsScope: QoderCardInjected['settingsScope'] | undefined
     const forms = softGet('configForms') as
@@ -142,9 +171,12 @@ export function apply(ctx: QoderClientContext): void {
           locale: namespace,
           // `settingsScope` rides along so the gate can honor the card's
           // per-region switch without a second writer.
-          inject: () => settingsScope === undefined
-            ? { t, position: 'composer' as const }
-            : { t, position: 'composer' as const, settingsScope },
+          inject: () => ({
+            t,
+            position: 'composer' as const,
+            ...settingsScope === undefined ? {} : { settingsScope },
+            ...openPluginSettings === undefined ? {} : { openSettings: openPluginSettings },
+          }),
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-qoder] composer credits slot failed to register (host provider unaffected):', error)
@@ -182,9 +214,12 @@ export function apply(ctx: QoderClientContext): void {
           id: 'dsh-connect-qoder-stats-credits',
           order: 10,
           locale: namespace,
-          inject: () => settingsScope === undefined
-            ? { t, position: 'stats' as const }
-            : { t, position: 'stats' as const, settingsScope },
+          inject: () => ({
+            t,
+            position: 'stats' as const,
+            ...settingsScope === undefined ? {} : { settingsScope },
+            ...openPluginSettings === undefined ? {} : { openSettings: openPluginSettings },
+          }),
         }, ComposerCreditsGate))
       } catch (error: unknown) {
         console.error('[dsh-connect-qoder] stats credits slot failed to register (host provider unaffected):', error)

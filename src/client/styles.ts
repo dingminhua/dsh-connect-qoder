@@ -696,16 +696,19 @@ export const QODER_COMPOSER_CSS = `
 }
 .dsm-qoder-composer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 .dsm-qoder-composer-panel-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
-.dsm-qoder-composer-panel-refresh{
+/* 设置入口。类名与旧的「刷新积分 / 一键测试」不同：那颗按钮已经不存在了，
+   沿用同一个类名只会让后来的人以为它还在做那件事。样式本身没变 —— 面板页头
+   右侧那颗小按钮就该长这样。 */
+.dsm-qoder-composer-panel-settings{
   appearance:none;flex:none;margin-left:auto;padding:3px 10px;
   border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.34));
   border-radius:7px;background:transparent;
   color:var(--dsw-alias-label-secondary,#444);
   font:inherit;font-size:11px;line-height:16px;cursor:pointer;
 }
-.dsm-qoder-composer-panel-refresh:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}
-.dsm-qoder-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsm-qoder-composer-panel-refresh:disabled{opacity:.5;cursor:default}
+.dsm-qoder-composer-panel-settings:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsm-qoder-composer-panel-settings:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+.dsm-qoder-composer-panel-settings:disabled{opacity:.5;cursor:default}
 .dsm-qoder-composer-panel-table{
   width:100%;border-collapse:collapse;
   font-size:12px;line-height:18px;

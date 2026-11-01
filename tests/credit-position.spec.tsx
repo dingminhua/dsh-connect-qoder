@@ -361,6 +361,11 @@ describe('composer 面板的点色', () => {
   async function withPanel(
     rows: Record<string, unknown>[],
     run: (panel: HTMLElement, counts: { accountCredits: number, test: number }) => Promise<void>,
+    /**
+     * `openSettings` 回调。**默认不传** —— 一台没挂 Plugins 页的宿主拿不到
+     * `pluginNavigation`，那时这颗按钮根本不该存在，而这个默认值正是那种形态。
+     */
+    openSettings?: () => void,
   ): Promise<void> {
     const counts = { accountCredits: 0, test: 0 }
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -386,7 +391,7 @@ describe('composer 面板的点色', () => {
     const root: Root = createRoot(container)
     try {
       await act(async () => {
-        root.render(React.createElement(ComposerCredits, { t, provider: 'qoder', region: 'cn' } as any))
+        root.render(React.createElement(ComposerCredits, { t, provider: 'qoder', region: 'cn', ...openSettings === undefined ? {} : { openSettings } } as any))
       })
       const trigger = container.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-credits-trigger')!
       await act(async () => { trigger.click() })
@@ -515,19 +520,37 @@ describe('composer 面板的点色', () => {
     })
   })
 
-  it('「一键测试」真的对池成员发探针，并把账号表重新取一遍', async () => {
+  it('页头那颗按钮是「设置」，点了就打开插件设置页', async () => {
+    // 它此前是「一键测试」：一个批量探针动作。但那件事在设置页的账号池工具栏上
+    // 本来就有（`row.poolTestAll`），而**按账号的结论表**也只在那里 —— 在浮层里
+    // 放一个只会测、却打不开设置的动作，是这块面板离「设置」最远的一处。
+    let opened = 0
     await withPanel([
       { id: 'a-cur', accountName: 'cur', selected: true, current: true },
     ], async (panel, counts) => {
-      expect(counts.accountCredits).toBe(1) // 打开时取过一次
-      const button = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
-      // 这颗按钮不再是「刷新积分」：余额读不出「还能不能用」，点色靠探针。
-      expect(button.textContent).toBe(t('composer.testAll'))
+      const button = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-settings')!
+      expect(button).not.toBeNull()
+      expect(button.textContent).toBe(t('composer.openSettings'))
       expect(button.disabled).toBe(false)
+      // 旧的批量按钮不再存在。
+      expect(panel.querySelector('button.dsm-qoder-composer-panel-refresh')).toBeNull()
       await act(async () => { button.click() })
       await act(async () => { await new Promise(r => setTimeout(r, 0)) })
-      expect(counts.test).toBe(1)
-      expect(counts.accountCredits).toBe(2)
+      expect(opened).toBe(1)
+      // 点它不再发任何探针请求。
+      expect(counts.test).toBe(0)
+      // 面板自己先关闭：设置页会接管中央面板，浮层留在半空只会挡路。
+      expect(document.querySelector('.dsm-qoder-composer-panel')).toBeNull()
+    }, () => { opened += 1 })
+  })
+
+  it('宿主没挂 Plugins 页时，页头不渲染那颗按钮（而不是渲染一个点了没反应的）', async () => {
+    // 一台不声明 `pluginNavigation` 的宿主没有可去的地方。渲染一颗死按钮比
+    // 干脆不渲染更糟 —— 用户会以为它坏了。
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+    ], async (panel) => {
+      expect(panel.querySelector('button.dsm-qoder-composer-panel-settings')).toBeNull()
     })
   })
 })
