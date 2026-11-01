@@ -625,6 +625,44 @@ export const QODER_CARD_CSS = `
 @keyframes dsm-qoder-veil-spin{to{transform:rotate(360deg)}}
 @keyframes dsm-qoder-veil-dash{0%{stroke-dasharray:12 150;stroke-dashoffset:0}50%{stroke-dasharray:24 150;stroke-dashoffset:-6}to{stroke-dasharray:12 150;stroke-dashoffset:0}}
 @media (prefers-reduced-motion: reduce){.dsm-qoder-veil-spinner{animation:none}.dsm-qoder-veil-spinner-arc{animation:none;stroke-dasharray:18 150;stroke-dashoffset:-3}}
+/*
+ * 侧边栏那一行的图标，以及它打开的整页。
+ *
+ * 图标只有一个约束：它是 PNG 品牌标，所以在 currentColor 主题的图标格里
+ * 必须**按自己的颜色**画（不能套 filter / fill:currentColor），选中态由
+ * 宿主围着它画。圆角与卡片头部那个 32px 图标同规，只是尺寸小一号。
+ */
+.dsm-qoder-panel-icon{display:block;border-radius:4px}
+/*
+ * 整页（sidebar.panellist 行打开的 main 页）。
+ *
+ * 形状照 workbuddy 的同名页：整页占满中央那一列、内容居中限宽 860px，因为
+ * 卡片正文在设置页里只有 ~600px 宽，铺满一屏会把它拉成一条极长的行。
+ * overflow:auto 在**这一层**：页面比一屏高时滚动的是页面，不是外框。
+ */
+.dsm-qoder-page{box-sizing:border-box;height:100%;display:flex;flex-direction:column;align-items:center;gap:20px;padding:28px clamp(24px,4vw,48px) 48px;overflow:auto;color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-qoder-page>*{width:100%;max-width:860px}
+.dsm-qoder-page-head{display:flex;flex-direction:column;gap:6px}
+.dsm-qoder-page-back{appearance:none;font:inherit;cursor:pointer;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-1,#17181b);color:var(--dsw-alias-label-secondary,#c7c7c7);border-radius:8px;padding:5px 12px;display:inline-flex;align-items:center;gap:6px;align-self:flex-start;font-size:13px;line-height:20px}
+.dsm-qoder-page-back:hover{color:var(--dsw-alias-label-primary,#e6e6e6);border-color:var(--dsw-alias-label-dimmed,#777)}
+.dsm-qoder-page-back svg{flex:none}
+.dsm-qoder-page-icon{width:40px;height:40px;border-radius:9px;align-self:flex-start;margin-top:14px}
+.dsm-qoder-page-title{margin:0;font-size:20px;font-weight:600;line-height:1.4}
+.dsm-qoder-page-desc{margin:0;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#999)}
+/*
+ * 整页里的正文自带外壳：.dsm-plugin-card-body 在设置页里靠外层 <li> 提供
+ * 边框与内边距，这里没有那个 <li>，所以由这条规则补上同一套外观——整页与
+ * 设置页看到的是同一个盒子，而不是一个没有边界的裸列表。
+ */
+.dsm-qoder-page-body .dsm-plugin-card-body{margin:0;padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
+/*
+ * 可选侧边栏开关那一行。类名与积分开关**刻意不同**（.dsm-qoder-pref-check
+ * 是积分那一块用例的定位器，多一个同类勾选框会把那条选择器变成二义），
+ * 布局规则则与 .dsm-qoder-credit-toggle 同源：勾选框 + 一段两行说明。
+ */
+.dsm-qoder-sidebar-panel-pref{cursor:pointer}
+/* 开关自己的失败提示：与那一行同宽缩进（借复选框那一列），红字。 */
+.dsm-qoder-sidebar-panel-error{padding-left:25px;color:var(--dsw-alias-state-error-primary,#ef4444)}
 `
 
 /**

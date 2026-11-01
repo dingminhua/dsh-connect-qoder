@@ -22,6 +22,8 @@ import {
   nextRegionModels,
   nextRegionPool,
   QODER_SAVE_PATH,
+  QODER_SIDEBAR_PANEL_FIELD,
+  sidebarPanelEnabledOf,
   unwrapVolatileDeep,
 } from '../status-paths.ts'
 import type { QoderCreditPosition, QoderWebRegion } from '../status-paths.ts'
@@ -98,6 +100,76 @@ async function saveViaHostEndpoint(
     const reason = `${String(detail.errorName ?? '')} ${String(detail.error ?? '')}`.trim()
     throw new QoderSettingsWriteError(field, `Host save refused: ${reason === '' ? String(detail.error) : reason}`)
   }
+}
+
+/**
+ * 把一个**顶层**字段写到宿主的保存端点（没有区域轴，所以 body 直接是那个值）。
+ *
+ * `regions` 走 `{ [region]: value }`，因为它是按区域槽位合并的；顶层标量
+ * （`sidebarPanel`）没有兄弟槽要保护，整份就是它自己的新值 —— 与 workbuddy
+ * 的 `__save` 对顶层开关的处理一致（`region === undefined` 时 body 直接是值）。
+ */
+async function saveTopLevelViaHostEndpoint(field: string, value: unknown): Promise<Record<string, unknown> | undefined> {
+  let response: Response
+  try {
+    response = await fetch(QODER_SAVE_PATH, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ field, value }),
+    })
+  } catch (error) {
+    throw new QoderSettingsWriteError(field, `Host save endpoint unreachable: ${String(error)}`)
+  }
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({ error: `HTTP ${String(response.status)}` })) as { errorName?: string, error?: string }
+    const reason = `${String(detail.errorName ?? '')} ${String(detail.error ?? '')}`.trim()
+    throw new QoderSettingsWriteError(field, `Host save refused: ${reason === '' ? String(detail.error) : reason}`)
+  }
+  // 端点的答案是它真正存下的那份值（或 `{ok:true}`）。返回给调用方去镜像
+  // **真值**，而不是拿自己那份可能已经过期的镜像再推导一遍。
+  const answer = await response.json().catch(() => undefined) as { value?: Record<string, unknown> } | undefined
+  return answer?.value
+}
+
+/**
+ * 写侧：打开 / 关闭侧边栏面板，并验证它真的落地了。
+ *
+ * 写者顺序与 {@link writeField} 相同、理由也相同：宿主端点优先（它是权威合并，
+ * 且自己会报告拒绝），settings 作用域次之（这个命名空间的浏览器镜像在受影响的
+ * 0.1.7 部署上被记录为陈旧 —— 一行「看起来在、Host 却不这么认为」的侧边栏
+ * 比没有这一行更糟）。
+ *
+ * 这是一个顶层标量，所以写在自己那条路径上；字段里没有兄弟状态要保留。
+ *
+ * @throws {QoderSettingsWriteError} 两个写者都没能持久化时。
+ */
+export async function writeSidebarPanelEnabled(
+  scope: QoderAccountScope,
+  enabled: boolean,
+): Promise<void> {
+  const field = QODER_SIDEBAR_PANEL_FIELD
+  let hostError: unknown
+  try {
+    const authoritative = await saveTopLevelViaHostEndpoint(field, enabled)
+    if (authoritative !== undefined) {
+      // 镜像 Host 存下的值，绝不拿客户端自己重新合并一遍。
+      try { await scope.set(field, authoritative[field]) } catch { /* 可选 */ }
+    }
+    return
+  } catch (error) {
+    hostError = error
+  }
+  let delivered = false
+  try {
+    delivered = (await scope.set(field, enabled)) !== false
+  } catch {
+    delivered = false
+  }
+  if (delivered && sidebarPanelEnabledOf(scope.getSnapshot().value)) return
+  throw hostError instanceof Error
+    ? hostError
+    : new QoderSettingsWriteError(field, 'neither the Host save endpoint nor the settings scope persisted the value')
 }
 
 /**

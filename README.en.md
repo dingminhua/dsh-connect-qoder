@@ -137,6 +137,15 @@ Create a PAT (`pt-…`) in your Qoder account settings. Two ways to provide it �
 
 The checkbox on each tab controls whether that region participates in the model picker (opt-out: **only an explicit uncheck disables it**). Disabling only removes the route and the directory entries; configuration is kept.
 
+### Sidebar panel (optional, off by default)
+
+The card's Accounts section carries a row, "Show Qoder in the sidebar": tick it and DSH's sidebar gains a Qoder icon row that opens **this same card as a full page** (the same account pool, model catalog and diagnostics, filling the centre column), with a "Back to conversation" button in its header.
+
+- **Off by default, and an explicit opt-in.** That row claims `sidebar.panellist` — the **global sidebar seat every installed plugin shares** — and opening it takes over the centre panel, so turning it on is a decision about your whole sidebar rather than a preference about this card. The Plugins page already reaches the same card, so anyone who never ticked it sees **no change at all after upgrading**.
+- **It takes effect on the click — no save needed.** Switching it off while the page is open returns the centre column to the conversation by itself (the host drops a `main` selection whose key no longer exists).
+- Stored as the top-level `sidebarPanel` setting (**no region axis**: one row, one page, unrelated to CN / global). It therefore still opens when a region is signed out — or when both are switched off — since the panel is one of the places you go to add a first PAT.
+- The test is `=== true`: absent, `false`, and a hand-edited string `"true"` all read as off.
+
 ### Multi-account pool and credential sources
 
 Besides the settings PAT and the environment variable, each region has a local vault (`$DSH_HOME/.qoder-accounts.<region>.json`, mode 0600) that stores multiple PAT accounts. The three sources are merged de-duplicated by **settings → env → vault** (a PAT appearing in two sources is listed once, under the higher-priority source).
@@ -213,7 +222,7 @@ regions:
 
 Neither batch action **locks the interface**: the button itself turns into "Checking in… / Testing…", and as each account finishes its row is updated and its line lands in the activity log **individually**, stamped with that account's own completion time rather than the second the batch ended. Everything else stays usable. Only **saving the config** and **deleting an account** put a veil up — the former is writing to disk, the latter is irreversible.
 
-How the settings card is laid out: two **independent provider cards** sit at the top (CN / international), each with its own border, background and switch on the right, and the selected one carries the brand-coloured outline — **one card is one unit**: click the name to switch tabs, click the switch to enable that provider. Below them come the two credit rows ("show credits in the composer" and "position"; the whole row is clickable and the description sits under the title), then the account pool, then model management. Those two rows decide whether the credit readout appears and where it sits — they take effect **immediately, with no save needed**.
+How the settings card is laid out: two **independent provider cards** sit at the top (CN / international), each with its own border, background and switch on the right, and the selected one carries the brand-coloured outline — **one card is one unit**: click the name to switch tabs, click the switch to enable that provider. Below them come the two credit rows ("show credits in the composer" and "position"; the whole row is clickable and the description sits under the title), then the account pool, then model management. A third row is the optional **"Show Qoder in the sidebar"**. All three take effect **immediately, with no save needed**: the first two decide whether the credit readout appears and where it sits, the third decides whether the sidebar row (and the full page it opens) exists.
 
 There is **no automatic** check-in: claiming collects a real reward, so it only happens when you press the button.
 

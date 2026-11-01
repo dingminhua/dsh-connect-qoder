@@ -230,6 +230,17 @@ export interface QoderWebRouteDeps {
    */
   creditPosition?(region: QoderRegion): QoderCreditPosition
   /**
+   * Whether the OPTIONAL DSH sidebar panel is switched on (PR #188 同款).
+   *
+   * GLOBAL, so it takes no region — one nav row and one page serve both
+   * regions, and the same value therefore rides on every region's answer.
+   *
+   * Optional, and absent reads as OFF: the row claims a `sidebar.panellist`
+   * seat every bundle shares, so a Host that cannot answer must not be read as
+   * consent.
+   */
+  sidebarPanelEnabled?(): boolean
+  /**
    * The last upstream-asserted quota exhaustion on this region's chat path,
    * or undefined when upstream never said so (see `QoderWebQuotaExhaustion`).
    *
@@ -898,6 +909,9 @@ export async function buildWebUsage(
       showCreditsInMainUi: deps.regionCreditsShown(region),
       creditPosition: deps.creditPosition?.(region) ?? 'composer',
       ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
+      // GLOBAL（不带区域参数）：侧边栏只有一行、一个整页。`=== true` 见
+      // `QoderWebRouteDeps.sidebarPanelEnabled` —— 缺席不是同意。
+      ...deps.sidebarPanelEnabled?.() === true ? { sidebarPanelEnabled: true } : {},
       message: selectionLost
         ? '所选账号已不存在，请重新选择或填写 PAT'
         : '请填写 Qoder PAT（或设置环境变量）',
@@ -975,6 +989,7 @@ export async function buildWebUsage(
     showCreditsInMainUi: deps.regionCreditsShown(region),
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
     ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
+    ...deps.sidebarPanelEnabled?.() === true ? { sidebarPanelEnabled: true } : {},
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
     accounts: accounts.map(webAccountOf(deps, region)),

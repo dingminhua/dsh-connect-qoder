@@ -37,6 +37,7 @@ import {
   QODER_PROBE_PATH,
   QODER_REGIONS,
   QODER_UPSTREAM_DOMAIN,
+  sidebarPanelEnabledOf,
   QODER_USAGE_PATH,
   toPersistedCatalogEntry,
   withQoderRegion,
@@ -59,7 +60,9 @@ import {
   writeRegionCreditsShown,
   writeRegionEnabled,
   writeRegionModels,
+  writeSidebarPanelEnabled,
 } from './account-selection.ts'
+import { setSidebarPanelWanted } from './panel-switch.ts'
 import { AccountPool } from './AccountPool.tsx'
 import { AddAccount } from './AddAccount.tsx'
 import { AccountTransfer } from './AccountTransfer.tsx'
@@ -87,11 +90,16 @@ export interface QoderCardInjected {
 }
 
 /**
- * Props delivered by the Plugin configuration slot.
+ * Props delivered by the Plugin configuration slot, or by the sidebar panel's
+ * `main` page.
+ *
+ * `surface`/`backToConversation` are `main`-only (the panel registration injects
+ * them); the configuration slots never pass them, so `surface` stays undefined
+ * there and the card keeps its `<li>` shell. Same shape as workbuddy's card.
  */
 export type QoderCardProps =
   Partial<QoderCardInjected>
-  & { view?: string }
+  & { view?: string, surface?: 'card' | 'page', backToConversation?: () => void }
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -157,12 +165,21 @@ function imageCheckboxHint(modelKey: string, modelName: string, t: Translate): s
 }
 
 export function QoderCard(props: QoderCardProps): ReactElement {
-  const { view } = props
+  const { view, surface, backToConversation } = props
+  /**
+   * 这张卡片是渲染在**设置页的一行**里，还是渲染在侧边栏那一行打开的**整页**
+   * 里（对齐 workbuddy 的同名判定）。
+   *
+   * 整页形态恒展开：折叠按钮只对设置页那个 `<li>` 外壳有意义。用**同一个**
+   * `open` 值让 60 秒轮询与首次拉取的 effect 原样不动——整页里把它切成
+   * 「收起」只会让页面变成一块空壳。
+   */
+  const pageSurface = surface === 'page'
   // The injected `t` is always present in real wiring; fall back to the key when
   // a test renders without one.
   const t: Translate = props.t ?? ((key: string) => key)
   // Re-fetch the region's usage on the 60 s cadence, plus on demand.
-  const [open, setOpen] = useState(view === 'page')
+  const [open, setOpen] = useState(view === 'page' || pageSurface)
   const [activeRegion, setActiveRegion] = useState<QoderWebRegion>(() => 'cn')
   /**
    * 卡片正文里的**分栏**：账号 / 模型 / 诊断。
@@ -197,6 +214,16 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   const [poolBusy, setPoolBusy] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>(undefined)
   const [siblingBusy, setSiblingBusy] = useState(false)
+  /**
+   * 可选的**侧边栏面板**开关（对齐 workbuddy PR #188）。
+   *
+   * `undefined` 表示「这张卡片还没写过它」，于是渲染 Host 交下来的已提交值，
+   * 猜都不猜——与本卡片其它 Host 承载开关同一条规矩。
+   */
+  const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
+  const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
+  /** 该开关自己的失败提示：它住在「账号」栏，而通用那条长在「模型」栏的保存行上。 */
+  const [sidebarPanelError, setSidebarPanelError] = useState<string | undefined>(undefined)
   /**
    * 等待二次确认的「删除账号」目标 id。
    *
@@ -524,7 +551,274 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     setSaveError(undefined)
   }
 
+  /**
+   * 可选的侧边栏面板开关此刻是否打开。
+   *
+   * 三级读法，与 `creditsShownOf` 那一族同规：**这张卡片自己成功写下的值**优先，
+   * 其次是 Host 在 usage 文档里交下来的已提交值，最后才是 settings 快照。
+   *
+   * 为什么 Host 排在快照前面（而不是反过来）：这个命名空间的浏览器镜像在受影响的
+   * 0.1.7 部署上被记录为陈旧，而这里一个陈旧的 `false` 会让行永远不出现——并且
+   * 之后没有任何事件去纠正它（`whileServed` 只在命名空间边缘触发，不在值变化时
+   * 触发）。Host 的答案才是权威，与其它 Host 承载开关一致。
+   *
+   * GLOBAL：侧边栏只有一行、一个整页，所以从活动 tab 读到的那份就是全部答案，
+   * 不随区域变。
+   */
+  const sidebarPanelSwitchedOn = (): boolean => {
+    if (sidebarPanelOn !== undefined) return sidebarPanelOn
+    const fromHost = (usage as { sidebarPanelEnabled?: unknown } | undefined)?.sidebarPanelEnabled
+    if (typeof fromHost === 'boolean') return fromHost
+    return sidebarPanelEnabledOf(scope?.getSnapshot().value)
+  }
+
+  /**
+   * 翻转侧边栏面板开关。
+   *
+   * 成功后**才**发布到入口的开关 store：那一行是拿插槽注册元数据渲染的，自己
+   * 决定不了自己的可见性（见 `panel-switch.ts`）。只在写入被验证之后发布，
+   * 两者就不会打架——Host 拒绝过的值绝不会长出一行。
+   */
+  const toggleSidebarPanel = async (enabled: boolean): Promise<void> => {
+    if (scope === undefined) return
+    setSidebarPanelBusy(true)
+    setSidebarPanelError(undefined)
+    try {
+      await writeSidebarPanelEnabled(scope, enabled)
+      if (mounted.current) setSidebarPanelOn(enabled)
+      setSidebarPanelWanted(enabled)
+      await refresh(activeRegion, true)
+    } catch (error: unknown) {
+      if (mounted.current) {
+        setSidebarPanelError(t('row.sidebarPanelFailed', {
+          message: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    } finally {
+      if (mounted.current) setSidebarPanelBusy(false)
+    }
+  }
+
+
   const signIn = usage?.status === 'signed-in' ? usage : undefined
+  /**
+   * 正文本身，与「装在哪种外壳里」无关。
+   *
+   * 两种外壳（设置页那个 `<li>` 卡片行 / 侧边栏那一行打开的整页）渲染的是
+   * **同一份**正文：账号池、模型目录、诊断栏、以及所有即时生效的开关。把它们
+   * 抽出来的理由与 workbuddy 相同——整页不是「另一个页面」，它是同一份内容的
+   * 第二个入口；写成两份就会有两个真相，而用户会拿其中一份去对照另一份。
+   */
+  const cardBody = (
+    <div className="dsm-plugin-card-body">
+      {/* 卡片正文的第一块套一层容器，因为 `.dsm-plugin-card-body` 只有
+          `padding:0 0 8px`（**上内边距为 0**）：正文的首个元素必须自带顶部
+          间距，否则会直接贴住上面那条分隔线——用户实拍「国际版 国内版
+          不要顶着上面这条线」。
+          workbuddy 的 tab 栏正是这样被 `.dsm-workbuddy-usage`
+          （padding:16px 0 4px）托住的；这里用同一条规则 `.dsm-qoder-usage`
+          恢复同样的呼吸空间（规则本来就在，是此前删掉积分块时把这层
+          容器一并拆掉了）。 */}
+      <div className="dsm-qoder-usage">
+        {/* Tab bar: one tab = one provider (qoder / qoder-global). */}
+        <div className="dsm-qoder-tabs" role="tablist" aria-label={t('row.title')}>
+          {QODER_REGIONS.map(region => {
+            const on = region === activeRegion
+            const regionStatus = usages[region]?.status ?? 'signed-out'
+            const regionOnState = regionOnOf(usages[region])
+            return (
+              // 选中的那一格把激活类挂在 CELL 上（`dsm-qoder-tab-cell-active`），
+              // 不挂在按钮上——照 `dsh-connect-trae` 的做法：边框画在最外层那个
+              // 圆角块上，内部的按钮与右侧开关才同属一个视觉单位。此前是按钮自己
+              // 描一圈 inset 边框，而它外面还套着整条 tab 栏的边框，两道边框相距
+              // 几像素，看起来像渲染出错。用户给的参照图就是这个形状：**一格一个
+              // 卡片，选中的那格描彩色边**。
+              <div key={region} className={`dsm-qoder-tab-cell${on ? ' dsm-qoder-tab-cell-active' : ''}`}>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={on}
+                  // 按钮保留 `dsm-qoder-tab-active`：它是给测试与辅助技术读的
+                  // 状态标记（既有用例按 `button.dsm-qoder-tab-active` 取选中页），
+                  // 但**不再由它自己画边框**。
+                  className={`dsm-qoder-tab${on ? ' dsm-qoder-tab-active' : ''}${regionOnState ? '' : ' dsm-qoder-tab-off'}`}
+                  onClick={() => { setActiveRegion(region as 'cn' | 'global'); setSaveError(undefined) }}
+                >
+                  {usages[region] === undefined
+                    ? null
+                    : <span aria-hidden="true" className="dsm-qoder-tab-dot" style={dotStyle(regionStatus)} />}
+                  {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
+                </button>
+                <label className="dsm-qoder-tab-switch" title={t('row.tabSwitchHint')}>
+                  <input
+                    type="checkbox"
+                    checked={regionOnState}
+                    disabled={!canWrite(scope) || siblingBusy || poolBusy}
+                    aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
+                    onChange={(event) => { toggleRegion(region, event.target.checked) }}
+                  />
+                </label>
+              </div>
+            )
+          })}
+        </div>
+        <p className="dsm-qoder-usage-hint">{t('row.tabHint')}</p>
+        {!regionOn
+          ? <p className="dsm-qoder-tab-off-notice">{t('row.tabOffNotice')}</p>
+          : null}
+
+        {/* 额度**读不到**时才说话：池行只能显示一个「—」，说不出为什么，而
+            `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档里，
+            池行拿不到。成功时这一块什么都不渲染——明细在账号池表格里。
+            「在对话框显示积分」开关本身已移到账号池标题行（见 renderPool）。 */}
+        {signIn === undefined || signIn.credits !== undefined ? null : (
+          <p className="dsm-qoder-usage-text">
+            {signIn.creditsError === undefined
+              ? t('row.usageUnavailable')
+              : t('row.creditsError', { message: signIn.creditsError })}
+          </p>
+        )}
+      </div>
+
+      {/* 活动：区域作用域内、额度读数之下的一条只读列表（上游下发了才渲染）。
+          放在  面板分栏之外，因为它是**当前区域**的读法，不是同一份文档的分栏；
+          区域开关关掉时整块不渲染，与 tabOffNotice 保持一致。 */}
+      {regionOn ? <QoderCampaigns region={activeRegion} t={t} /> : null}
+
+      {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
+      {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}
+      {renderQuotaNotice()}
+      {usage?.status === 'signed-in' && usage.refreshError !== undefined
+        ? <p className="dsm-qoder-hint">{t('row.requestFailedHint', { message: usage.refreshError })}</p>
+        : null}
+      {usage?.status === 'signed-out' && usage.selectionLost === true
+        ? <p className="dsm-qoder-hint">{t('row.selectionLostHint')}</p>
+        : null}
+
+      {regionOn && usage?.status !== 'error' ? (
+        <>
+          {/*
+            * 正文的**三个分栏**（账号 / 模型 / 诊断）。上方那两格是**作用域**
+            * （整块面板在说哪个供应商），这里则是**同一份文档的分栏** ——
+            * 所以形状刻意不同：作用域是带开关的方块，分栏是文档 tab 条。
+            *
+            * 判据写在 `hidden` 上而不是 CSS 类：非活动栏仍挂载，切回来不重新
+            * 拉取、不丢未保存的目录草稿、账号池日志不重建；同时它退出无障碍树，
+            * 这正是 role="tabpanel" 要的语义。`display:none` 走类名会被后面的
+            * 规则覆盖，`hidden` 不会。
+            */}
+          <div className="dsm-qoder-panels" role="tablist" aria-label={t('row.panelAria')}>
+            {(['accounts', 'models', 'diag'] as const).map(id => (
+              <button
+                key={id}
+                type="button"
+                role="tab"
+                id={`dsm-qoder-tab-${id}`}
+                aria-controls={`dsm-qoder-panel-${id}`}
+                aria-selected={panel === id}
+                className={`dsm-qoder-panel-tab${panel === id ? ' dsm-qoder-panel-tab-active' : ''}`}
+                onClick={() => { setPanel(id) }}
+              >
+                {t(id === 'accounts' ? 'row.panelAccounts' : id === 'models' ? 'row.panelModels' : 'row.panelDiag')}
+              </button>
+            ))}
+          </div>
+
+          {/* 账号栏：账号池、积分显示的两行偏好，以及关于凭据的每一条说明。
+              默认落在这里——用户打开设置最常是来看「谁在服务、还剩多少」。 */}
+          <div
+            className="dsm-qoder-panel"
+            role="tabpanel"
+            id="dsm-qoder-panel-accounts"
+            aria-labelledby="dsm-qoder-tab-accounts"
+            hidden={panel !== 'accounts'}
+          >
+            {/* 积分显示那两行在账号池**之上**（用户实拍要求「这段内容移动到账号池
+                上面」）。它管的是读数显不显示、立即生效，既不属于「谁在服务」那张
+                表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
+                不随区域有没有字节池而消失。 */}
+            {renderCreditsSwitch()}
+            {/* 还没拿到任何文档的那一瞬：说「正在加载」，而不是渲染一片空白。
+                空白与「这个区域没有账号」在屏幕上长得一模一样，用户无法分辨
+                （issue #77 同族：workbuddy 那边此时甚至渲染成了「未登录」）。
+                首个文档一落地这条就消失，账号行在它的位置上出现。 */}
+            {usage === undefined
+              ? <p className="dsm-qoder-usage-text" role="status">{t('row.accountsLoading')}</p>
+              : null}
+            {renderPool()}
+          </div>
+
+          {/* 模型栏：勾选、上下文预算、思考强度与逐模型测试。全是要点「保存」
+              的草稿，与账号那边的即时生效刻意分开——保存按钮因此就在它保存的
+              东西下面，而不是隔着三屏。 */}
+          <div
+            className="dsm-qoder-panel"
+            role="tabpanel"
+            id="dsm-qoder-panel-models"
+            aria-labelledby="dsm-qoder-tab-models"
+            hidden={panel !== 'models'}
+          >
+            {renderModels()}
+          </div>
+
+          {/* 诊断栏：这张卡片**实际读到了什么**。存在的唯一理由是被整段贴进
+              问题反馈，所以这里**没有任何会改设置的控件**——能改设置的诊断栏，
+              只是一个名字更差的设置栏。 */}
+          <div
+            className="dsm-qoder-panel"
+            role="tabpanel"
+            id="dsm-qoder-panel-diag"
+            aria-labelledby="dsm-qoder-tab-diag"
+            hidden={panel !== 'diag'}
+          >
+            {renderDiag()}
+          </div>
+        </>
+      ) : null}
+    </div>
+  )
+
+  /**
+   * 侧边栏整页的页头（对齐 workbuddy 的 `pageHead`）。
+   *
+   * 返回按钮由**宿主**的 layout 服务提供：`selectPanel(null)` 把中央那一列交回
+   * 对话。它是软探测的（注册处只在 `layout` 存在时才注入回调），所以一台不声明
+   * `layout` 的宿主只会少一个返回按钮，而不是整页不渲染。
+   */
+  const pageHead = pageSurface ? (
+    <div className="dsm-qoder-page-head">
+      {backToConversation === undefined
+        ? null
+        : (
+            <button type="button" className="dsm-qoder-page-back" onClick={backToConversation}>
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path d="M10 3.5 5.5 8l4.5 4.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+              <span>{t('nav.back')}</span>
+            </button>
+          )}
+      <img className="dsm-qoder-page-icon" src={QODER_PLUGIN_ICON} alt="" />
+      <span className="dsm-qoder-page-title">{t('row.title')}</span>
+      <span className="dsm-qoder-page-desc">{t('row.desc')}</span>
+    </div>
+  ) : null
+
+  /**
+   * 侧边栏整页：页头 + 同一份正文。
+   *
+   * 刻意**不是** `<li class="dsm-plugin-card">`：那一套外壳是「插件列表里的一
+   * 行」（折叠 header、上下分隔线），而整页不是列表项，套进去会得到一个既不像
+   * 列表项也不像页面的东西。
+   */
+  if (pageSurface) {
+    return (
+      <div className="dsm-qoder-page">
+        {pageHead}
+        <div className="dsm-qoder-page-body">{cardBody}</div>
+      </div>
+    )
+  }
+
   return (
     <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
       <button
@@ -541,175 +835,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         </span>
         <span className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} aria-hidden="true" />
       </button>
-
-      {open ? (
-        <div className="dsm-plugin-card-body">
-          {/* 卡片正文的第一块套一层容器，因为 `.dsm-plugin-card-body` 只有
-              `padding:0 0 8px`（**上内边距为 0**）：正文的首个元素必须自带顶部
-              间距，否则会直接贴住上面那条分隔线——用户实拍「国际版 国内版
-              不要顶着上面这条线」。
-              workbuddy 的 tab 栏正是这样被 `.dsm-workbuddy-usage`
-              （padding:16px 0 4px）托住的；这里用同一条规则 `.dsm-qoder-usage`
-              恢复同样的呼吸空间（规则本来就在，是此前删掉积分块时把这层
-              容器一并拆掉了）。 */}
-          <div className="dsm-qoder-usage">
-            {/* Tab bar: one tab = one provider (qoder / qoder-global). */}
-            <div className="dsm-qoder-tabs" role="tablist" aria-label={t('row.title')}>
-              {QODER_REGIONS.map(region => {
-                const on = region === activeRegion
-                const regionStatus = usages[region]?.status ?? 'signed-out'
-                const regionOnState = regionOnOf(usages[region])
-                return (
-                  // 选中的那一格把激活类挂在 CELL 上（`dsm-qoder-tab-cell-active`），
-                  // 不挂在按钮上——照 `dsh-connect-trae` 的做法：边框画在最外层那个
-                  // 圆角块上，内部的按钮与右侧开关才同属一个视觉单位。此前是按钮自己
-                  // 描一圈 inset 边框，而它外面还套着整条 tab 栏的边框，两道边框相距
-                  // 几像素，看起来像渲染出错。用户给的参照图就是这个形状：**一格一个
-                  // 卡片，选中的那格描彩色边**。
-                  <div key={region} className={`dsm-qoder-tab-cell${on ? ' dsm-qoder-tab-cell-active' : ''}`}>
-                    <button
-                      type="button"
-                      role="tab"
-                      aria-selected={on}
-                      // 按钮保留 `dsm-qoder-tab-active`：它是给测试与辅助技术读的
-                      // 状态标记（既有用例按 `button.dsm-qoder-tab-active` 取选中页），
-                      // 但**不再由它自己画边框**。
-                      className={`dsm-qoder-tab${on ? ' dsm-qoder-tab-active' : ''}${regionOnState ? '' : ' dsm-qoder-tab-off'}`}
-                      onClick={() => { setActiveRegion(region as 'cn' | 'global'); setSaveError(undefined) }}
-                    >
-                      {usages[region] === undefined
-                        ? null
-                        : <span aria-hidden="true" className="dsm-qoder-tab-dot" style={dotStyle(regionStatus)} />}
-                      {region === 'cn' ? t('row.tabCn') : t('row.tabGlobal')}
-                    </button>
-                    <label className="dsm-qoder-tab-switch" title={t('row.tabSwitchHint')}>
-                      <input
-                        type="checkbox"
-                        checked={regionOnState}
-                        disabled={!canWrite(scope) || siblingBusy || poolBusy}
-                        aria-label={t('row.tabSwitchAria', { region: region === 'cn' ? t('row.tabCn') : t('row.tabGlobal') })}
-                        onChange={(event) => { toggleRegion(region, event.target.checked) }}
-                      />
-                    </label>
-                  </div>
-                )
-              })}
-            </div>
-            <p className="dsm-qoder-usage-hint">{t('row.tabHint')}</p>
-            {!regionOn
-              ? <p className="dsm-qoder-tab-off-notice">{t('row.tabOffNotice')}</p>
-              : null}
-
-            {/* 额度**读不到**时才说话：池行只能显示一个「—」，说不出为什么，而
-                `creditsError`（凭据被拒 / 上游未响应）只存在于这份 usage 文档里，
-                池行拿不到。成功时这一块什么都不渲染——明细在账号池表格里。
-                「在对话框显示积分」开关本身已移到账号池标题行（见 renderPool）。 */}
-            {signIn === undefined || signIn.credits !== undefined ? null : (
-              <p className="dsm-qoder-usage-text">
-                {signIn.creditsError === undefined
-                  ? t('row.usageUnavailable')
-                  : t('row.creditsError', { message: signIn.creditsError })}
-              </p>
-            )}
-          </div>
-
-          {/* 活动：区域作用域内、额度读数之下的一条只读列表（上游下发了才渲染）。
-              放在  面板分栏之外，因为它是**当前区域**的读法，不是同一份文档的分栏；
-              区域开关关掉时整块不渲染，与 tabOffNotice 保持一致。 */}
-          {regionOn ? <QoderCampaigns region={activeRegion} t={t} /> : null}
-
-          {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
-          {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}
-          {renderQuotaNotice()}
-          {usage?.status === 'signed-in' && usage.refreshError !== undefined
-            ? <p className="dsm-qoder-hint">{t('row.requestFailedHint', { message: usage.refreshError })}</p>
-            : null}
-          {usage?.status === 'signed-out' && usage.selectionLost === true
-            ? <p className="dsm-qoder-hint">{t('row.selectionLostHint')}</p>
-            : null}
-
-          {regionOn && usage?.status !== 'error' ? (
-            <>
-              {/*
-                * 正文的**三个分栏**（账号 / 模型 / 诊断）。上方那两格是**作用域**
-                * （整块面板在说哪个供应商），这里则是**同一份文档的分栏** ——
-                * 所以形状刻意不同：作用域是带开关的方块，分栏是文档 tab 条。
-                *
-                * 判据写在 `hidden` 上而不是 CSS 类：非活动栏仍挂载，切回来不重新
-                * 拉取、不丢未保存的目录草稿、账号池日志不重建；同时它退出无障碍树，
-                * 这正是 role="tabpanel" 要的语义。`display:none` 走类名会被后面的
-                * 规则覆盖，`hidden` 不会。
-                */}
-              <div className="dsm-qoder-panels" role="tablist" aria-label={t('row.panelAria')}>
-                {(['accounts', 'models', 'diag'] as const).map(id => (
-                  <button
-                    key={id}
-                    type="button"
-                    role="tab"
-                    id={`dsm-qoder-tab-${id}`}
-                    aria-controls={`dsm-qoder-panel-${id}`}
-                    aria-selected={panel === id}
-                    className={`dsm-qoder-panel-tab${panel === id ? ' dsm-qoder-panel-tab-active' : ''}`}
-                    onClick={() => { setPanel(id) }}
-                  >
-                    {t(id === 'accounts' ? 'row.panelAccounts' : id === 'models' ? 'row.panelModels' : 'row.panelDiag')}
-                  </button>
-                ))}
-              </div>
-
-              {/* 账号栏：账号池、积分显示的两行偏好，以及关于凭据的每一条说明。
-                  默认落在这里——用户打开设置最常是来看「谁在服务、还剩多少」。 */}
-              <div
-                className="dsm-qoder-panel"
-                role="tabpanel"
-                id="dsm-qoder-panel-accounts"
-                aria-labelledby="dsm-qoder-tab-accounts"
-                hidden={panel !== 'accounts'}
-              >
-                {/* 积分显示那两行在账号池**之上**（用户实拍要求「这段内容移动到账号池
-                    上面」）。它管的是读数显不显示、立即生效，既不属于「谁在服务」那张
-                    表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
-                    不随区域有没有字节池而消失。 */}
-                {renderCreditsSwitch()}
-                {/* 还没拿到任何文档的那一瞬：说「正在加载」，而不是渲染一片空白。
-                    空白与「这个区域没有账号」在屏幕上长得一模一样，用户无法分辨
-                    （issue #77 同族：workbuddy 那边此时甚至渲染成了「未登录」）。
-                    首个文档一落地这条就消失，账号行在它的位置上出现。 */}
-                {usage === undefined
-                  ? <p className="dsm-qoder-usage-text" role="status">{t('row.accountsLoading')}</p>
-                  : null}
-                {renderPool()}
-              </div>
-
-              {/* 模型栏：勾选、上下文预算、思考强度与逐模型测试。全是要点「保存」
-                  的草稿，与账号那边的即时生效刻意分开——保存按钮因此就在它保存的
-                  东西下面，而不是隔着三屏。 */}
-              <div
-                className="dsm-qoder-panel"
-                role="tabpanel"
-                id="dsm-qoder-panel-models"
-                aria-labelledby="dsm-qoder-tab-models"
-                hidden={panel !== 'models'}
-              >
-                {renderModels()}
-              </div>
-
-              {/* 诊断栏：这张卡片**实际读到了什么**。存在的唯一理由是被整段贴进
-                  问题反馈，所以这里**没有任何会改设置的控件**——能改设置的诊断栏，
-                  只是一个名字更差的设置栏。 */}
-              <div
-                className="dsm-qoder-panel"
-                role="tabpanel"
-                id="dsm-qoder-panel-diag"
-                aria-labelledby="dsm-qoder-tab-diag"
-                hidden={panel !== 'diag'}
-              >
-                {renderDiag()}
-              </div>
-            </>
-          ) : null}
-        </div>
-      ) : null}
+      {/* 收起时不渲染正文（而不是 `hidden`）：正文里的 60 秒轮询与首屏读由组件
+          自己的 effect 负责，卸载即停，与改动前逐字一致。 */}
+      {open ? cardBody : null}
     </li>
   )
 
@@ -1252,6 +1380,34 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               <span className="dsm-qoder-pref-hint">{t('row.creditPositionHint')}</span>
             </span>
           </label>
+          {/* 可选侧边栏面板（对齐 workbuddy PR #188）。
+              为什么单独一行、且**不受区域开关约束**：这一行占的是整个插件共用的
+              `sidebar.panellist` 座位，与「国内版 / 国际版」无关——某个区域签出
+              甚至两个区域都关掉时，它仍然是一个关于整个侧边栏的决定。所以这里
+              既不读 `regionOn`、也不随活动 tab 变文案。
+              为什么它的类名与积分开关不同（`dsm-qoder-sidebar-panel-check`）：
+              积分那一块的用例以「恰好一个 `.dsm-qoder-pref-check`」定位它自己，
+              多一个同类的勾选框会把那条选择器变成二义。 */}
+          <label className="dsm-qoder-pref dsm-qoder-sidebar-panel-pref" title={t('row.sidebarPanelHint')}>
+            <input
+              type="checkbox"
+              className="dsm-qoder-sidebar-panel-check"
+              checked={sidebarPanelSwitchedOn()}
+              disabled={!canWrite(scope) || saving || poolBusy || sidebarPanelBusy}
+              onChange={(event) => { void toggleSidebarPanel(event.target.checked) }}
+            />
+            <span className="dsm-qoder-pref-copy">
+              <span className="dsm-qoder-pref-label">{t('row.sidebarPanelLabel')}</span>
+              <span className="dsm-qoder-pref-hint">{t('row.sidebarPanelHint')}</span>
+            </span>
+          </label>
+          {/* 失败就地说话。
+              这一行随时可以点（不依赖「模型」栏、也不需要先点保存），而卡片正文
+              里那条 `saveError` 长在**模型**栏的保存行上——那一栏此刻可能根本没
+              显示。把失败只写在那里，等于用户点了没反应、也没有任何解释。 */}
+          {sidebarPanelError === undefined
+            ? null
+            : <p className="dsm-qoder-hint dsm-qoder-sidebar-panel-error" role="alert">{sidebarPanelError}</p>}
     </div>
     )
   }

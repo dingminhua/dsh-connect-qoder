@@ -1133,6 +1133,16 @@ export type QoderWebUsage =
     showCreditsInMainUi?: boolean
     /** WHERE this region's readout sits; absent means `composer`. */
     creditPosition?: QoderCreditPosition
+    /**
+     * Whether the OPTIONAL DSH sidebar panel is switched on.
+     *
+     * GLOBAL, not per region — one nav row, one page, no region axis — so the
+     * same value rides on every region's answer and the card reads it off the
+     * active tab. Absent reads as OFF, matching the schema's
+     * `default(false)`: the row claims a `sidebar.panellist` seat every bundle
+     * shares, so a Host that cannot answer must not be read as consent.
+     */
+    sidebarPanelEnabled?: boolean
     /** See the signed-in variant: the last upstream-asserted quota exhaustion. */
     lastQuotaExhaustion?: QoderWebQuotaExhaustion
     message?: string
@@ -1164,6 +1174,15 @@ export type QoderWebUsage =
     showCreditsInMainUi?: boolean
     /** See the signed-out variant: WHERE this region's readout sits. */
     creditPosition?: QoderCreditPosition
+    /**
+     * Whether the OPTIONAL DSH sidebar panel is switched on.
+     *
+     * GLOBAL like the switch above: one nav row and one page serve both
+     * regions, so the value rides on every region's answer and the card reads
+     * it off the active tab. Absent reads as OFF — a global sidebar seat is
+     * never granted by omission.
+     */
+    sidebarPanelEnabled?: boolean
     /**
      * The last upstream-asserted quota exhaustion on the chat path, or absent
      * when upstream never said so this process. Region-level on purpose —
@@ -1425,6 +1444,48 @@ export function nextRegionCreditPosition(
  */
 export function regionCreditsShownOf(value: unknown, region: QoderWebRegion): boolean {
   return regionSlotOf(value, region)['showCreditsInMainUi'] !== false
+}
+
+/**
+ * 侧边栏面板这一行的**顶层**设置字段名（不在 `regions.<region>.` 下）。
+ *
+ * 参考：dsh-connect-workbuddy 的 `Config.sidebarPanel`（PR #188，MIT,
+ * Copyright (c) 2026 LaoDing）。
+ *
+ * 与积分读数那几个开关不同，这一项**没有区域轴**：侧边栏只有一条 Qoder 行、
+ * 一个整页，不随「国内版 / 国际版」变。所以它住在配置顶层，而不是每个区域槽
+ * 各存一份——存两份就会出现「cn 开着、global 关着，那这一行到底算谁的」这种
+ * 没有答案的状态。
+ */
+export const QODER_SIDEBAR_PANEL_FIELD = 'sidebarPanel' as const
+
+/**
+ * 侧边栏那一行与它打开的整页共用的 id。
+ *
+ * `sidebar.panellist` 的 `id` 与 `main` 的 `key` **必须相同**：侧边栏按钮
+ * 点下去是「选中 id 等于自己的中央面板」（`ui-layout` 的 `panelId` 按 key
+ * 派发），两者对不上就只是一个点了没反应的按钮。
+ */
+export const QODER_SIDEBAR_PANEL_ID = 'dsh-connect-qoder' as const
+
+/**
+ * 是否在 DSH 侧边栏加一个 Qoder 面板行（+ 对应的整页）。
+ *
+ * **默认关闭**，且判据是 `=== true` 而不是 `!== false`：这一行占的是
+ * `sidebar.panellist` 这个**所有插件共用的全局座位**，点开还会接管中央面板。
+ * 打开它是对用户整个侧边栏的决定，不是对这张卡片的偏好——所以「没写过」
+ * 必须读成「没要」，升级不能替用户重新排一次侧边栏。
+ *
+ * 参考 workbuddy 的 `unwrapVolatile(current().sidebarPanel) === true`（同一条
+ * 理由）；Qoder 这边的字段同样声明成 volatile（见 `src/index.ts` 的
+ * `Config`），所以这里先解包再判。
+ */
+export function sidebarPanelEnabledOf(value: unknown): boolean {
+  const unwrapped = unwrapVolatileDeep(value)
+  const field = typeof unwrapped === 'object' && unwrapped !== null && !Array.isArray(unwrapped)
+    ? (unwrapped as Record<string, unknown>)[QODER_SIDEBAR_PANEL_FIELD]
+    : undefined
+  return unwrapVolatileDeep(field) === true
 }
 
 /**

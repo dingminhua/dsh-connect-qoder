@@ -52,6 +52,8 @@ import {
   QODER_SETTINGS_NS,
   QODER_GITHUB_URL,
   QODER_REGIONS,
+  QODER_SIDEBAR_PANEL_FIELD,
+  sidebarPanelEnabledOf,
   unwrapVolatileDeep,
   type QoderWebProbeResult,
   type QoderWebProbeOutcome,
@@ -325,10 +327,31 @@ const regionConfig = z.object({
 
 export interface Config {
   regions: Record<string, unknown>
+  /**
+   * 是否在 DSH 侧边栏放一个 Qoder 面板（行 + 整页）。**默认关闭**。
+   *
+   * 参考：dsh-connect-workbuddy 的 `Config.sidebarPanel`（PR #188，MIT，
+   * Copyright (c) 2026 LaoDing）。
+   *
+   * 为什么要用户显式打开：这一行占的是 `sidebar.panellist` —— 所有插件共用的
+   * 全局侧边栏座位，点开还会接管中央面板。打开它是对用户整个侧边栏的决定，
+   * 不是对这张卡片的偏好；「插件」页本来就能看到同一张卡片，所以默认值必须是
+   * 「不替用户动侧边栏」。缺席读作关闭（`=== true` 判据见 `status-paths.ts`）。
+   */
+  sidebarPanel?: boolean
 }
 
 export const Config: z<Config> = z.object({
   regions: asVolatile(z.dict(regionConfig).default({}).description('Per-region Qoder settings, keyed cn | global')),
+  // Volatile 的理由与 workbuddy 同名项相同：卡片上的开关写它，而一次完整插件
+  // 重载会 dispose 两个 provider 栈、掉光在飞的请求 —— 为「多一行导航」付这个
+  // 价格完全不成比例。volatile 之后写入只走 `loader/volatile-update`，
+  // 顶层值随即被重新读出（`sidebarPanelEnabledOf` 已解包）。
+  sidebarPanel: asVolatile(
+    z.boolean()
+      .default(false)
+      .description('Add a Qoder panel to the DSH sidebar: a nav row that opens the credits / accounts / model catalog as a full page. Off by default — the row claims a global sidebar seat shared by every bundle, and the Plugins page already reaches the same content.'),
+  ) as unknown as z<boolean>,
 }) as unknown as z<Config>
 
 /**
@@ -1735,6 +1758,16 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   const settingsDeps: QoderSettingsDeps = {
     describe: () => (settingsService === undefined ? [] : settingsService.describe()),
     set: async (field, value) => {
+      // `regions` 走两级合并（兄弟区域不能被吃掉）；`sidebarPanel` 是顶层标量，
+      // 没有兄弟槽，所以直接 set 到它自己那条路径上 —— 这正是 workbuddy
+      // `__save` 对 `UPSTREAM_SWITCH_FIELDS` 的处理（每个都是完整独立的值，
+      // `set` 在它自己的 path 上不可能覆盖旁边任何东西）。
+      if (field === QODER_SIDEBAR_PANEL_FIELD) {
+        const row = pluginRow()
+        if (row === undefined) throw new Error('settings namespace not yet available')
+        await settingsService!.mutate(row.ns, [{ op: 'set', path: [field], value }], undefined)
+        return
+      }
       if (field !== 'regions') throw new Error(`unsupported settings field: ${String(field)}`)
       await mutateField(field, value)
     },
@@ -1865,6 +1898,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       regionEnabled: region => regionEnabled(config, region),
       regionCreditsShown: region => regionCreditsShown(config, region),
       creditPosition: region => creditPosition(config, region),
+      // GLOBAL，所以不带区域参数。`=== true`（见 `sidebarPanelEnabledOf`），
+      // 不是 `!== false`：这一行占的是所有 bundle 共用的侧边栏座位，缺席必须
+      // 读成「没要」。字段是 volatile，所以读取时先解包。
+      sidebarPanelEnabled: () => sidebarPanelEnabledOf(config),
       lastQuotaExhaustion: region => quotaExhaustionByRegion[region],
       regionUsable: (region, usable) => {
         if (!usable) log(`region ${region} is signed out`)

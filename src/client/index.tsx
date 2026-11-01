@@ -9,13 +9,15 @@
  * @module dsh-connect-qoder/client
  */
 
-import { QODER_SETTINGS_NAMESPACE_CANDIDATES, QODER_SETTINGS_NS } from '../status-paths.ts'
+import { QODER_SETTINGS_NAMESPACE_CANDIDATES, QODER_SETTINGS_NS, QODER_SIDEBAR_PANEL_ID, QODER_USAGE_PATH, sidebarPanelEnabledOf, withQoderRegion } from '../status-paths.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-settings-plugins/client'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
+import { createElement as h } from 'react'
+import type { ReactElement } from 'react'
 import { QoderCard } from './QoderCard.tsx'
 import type { QoderCardInjected } from './QoderCard.tsx'
 import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
@@ -24,6 +26,8 @@ import type { QoderModelLabelSlots } from './QoderModelLabel.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
 import { QODER_CARD_SLOT_KEYS } from './slot-keys.ts'
+import { QODER_PLUGIN_ICON } from './icon.ts'
+import { setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted } from './panel-switch.ts'
 
 export type QoderClientContext = Context & {
   slots: Context['slots']
@@ -223,10 +227,120 @@ export function apply(ctx: QoderClientContext): void {
       registerComposerCredits(),
       registerStatsCredits(),
       registerModelLabel(),
+      // `registerPanel()` 刻意**不在**这里：它是唯一一个「只在开关打开时才存在」
+      // 的座位，因此由 {@link syncPanelRegistration} 单独持有。
     ].filter((disposer): disposer is () => void => disposer !== undefined)
 
     /** 当前绑定下已注册的槽位 disposer。 */
     let liveDisposers: Array<() => void> = []
+
+    /**
+     * 侧边栏那一行的图标（`sidebar.panellist` 的组件位置）。
+     *
+     * 侧边栏以 `{ size, active }` 在一个 `currentColor` 主题的图标格里渲染它，
+     * 所以品牌标画成一个小 `<img>`：PNG 自己的颜色读起来就是插件的身份，选中
+     * 状态由宿主围着它画。
+     *
+     * 参考：dsh-connect-workbuddy 的 `WorkBuddyPanelIcon`（PR #188，MIT，
+     * Copyright (c) 2026 LaoDing）。
+     */
+    function QoderPanelIcon(props: { size?: number }): ReactElement {
+      const edge = typeof props.size === 'number' && props.size > 0 ? props.size : 16
+      return h('img', {
+        className: 'dsm-qoder-panel-icon',
+        src: QODER_PLUGIN_ICON,
+        alt: '',
+        width: edge,
+        height: edge,
+        'aria-hidden': 'true',
+      })
+    }
+
+    /**
+     * DSH 侧边栏里的 Qoder 面板：一个 `sidebar.panellist` 行 + 一个 `main` 整页。
+     *
+     * 形态照宿主自己的 Plugins 行（`ui-plugin-manager`）：`id` 与 `main` 的
+     * `key` 必须**同值**——侧边栏按钮点下去是「选中 id 等于自己的中央面板」，
+     * 两者对不上就只是一个点了没反应的按钮。
+     *
+     * **OPT-IN**（`Config.sidebarPanel`，默认 false）。注册它不等于显示它：
+     * `ui-sidebar` 那一行是拿插槽的**注册元数据**渲染的（`usePanels` →
+     * `PanelRow`，标签取 `options.label`、图标取 `renderSlot(...)`），所以一个
+     * 返回 `null` 的组件留下的是一个空白但**仍可点击**的按钮，而不是没有按钮。
+     * 因此行只能在开关打开时注册——由 {@link syncPanelRegistration} 负责。
+     * 见 `panel-switch.ts` 里那条 store 为什么必须在入口而不在组件。
+     *
+     * 返回对话复用宿主的 layout 服务：`selectPanel(null)` 把中央那一列交回会话。
+     * 它是软探测的，所以一台不声明 `layout` 的宿主只是少一个返回按钮，不会整页
+     * 卡死（与卡片对缺失 settings 表单的降级同规）。
+     */
+    const registerPanel = (): Array<() => void> => {
+      const PANEL_ID = QODER_SIDEBAR_PANEL_ID
+      const disposers: Array<() => void> = []
+      const backToConversation = (): void => {
+        const layout = softGet('layout') as { selectPanel?: (id: string | null) => void } | undefined
+        if (layout !== undefined && typeof layout.selectPanel === 'function') layout.selectPanel(null)
+      }
+      try {
+        disposers.push(ctx.slots.inject('sidebar.panellist' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; id: string; order: number; label: () => string; locale: string }, component: unknown): () => void
+        }).register({
+          name: 'sidebar.panellist',
+          id: PANEL_ID,
+          // 1：紧挨着宿主的 Plugins 行（0）之后、`dsh-market`（1）旁边。`order`
+          // 只在本插件自己这一行有意义——别的 bundle 各报各的序，宿主的排布是
+          // 「按 order 升序、同序按注册先后」。
+          order: 1,
+          label: () => t('nav.panel'),
+          locale: namespace,
+        }, QoderPanelIcon)))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-qoder] sidebar panel row failed to register (host provider unaffected):', error)
+      }
+      try {
+        disposers.push(ctx.slots.inject('main' as never, () => (ctx.slots as unknown as {
+          register(options: { name: string; key: string; locale: string; inject: () => QoderCardInjected & { surface: 'page', backToConversation: () => void } }, component: unknown): () => void
+        }).register({
+          name: 'main',
+          key: PANEL_ID,
+          locale: namespace,
+          inject: () => settingsScope === undefined
+            ? { t, surface: 'page' as const, backToConversation }
+            : { t, settingsScope, surface: 'page' as const, backToConversation },
+        }, QoderCard)))
+      } catch (error: unknown) {
+        console.error('[dsh-connect-qoder] sidebar panel page failed to register (host provider unaffected):', error)
+      }
+      return disposers
+    }
+
+    /**
+     * 已在册的面板注册，**与 {@link liveDisposers} 分开**。
+     *
+     * 这是本插件唯一会随页面存活期来去的槽位（因为那个 opt-in 开关），单独持有
+     * 它的意义是：翻开关不会把卡片、composer 读数等五个座位一起拆掉重建——那会
+     * 让「插件」页为了一件与它无关的改动闪一下。
+     */
+    let panelDisposers: Array<() => void> = []
+
+    /**
+     * 让面板注册与 opt-in 开关保持一致。
+     *
+     * **先 dispose 再 register**，理由与 {@link rebindSlots} 相同：keyed 槽位的
+     * 同一个 `key` / `id` 不能重复注册，那次抛错会被只打日志的 try/catch 吞掉，
+     * 结果是「一个注册都没有」。
+     *
+     * 重新注册（而不是只注销）是 settings 作用域换绑之后也必须做的：渲染器按
+     * entry 身份缓存 `inject` 的结果，作用域到货之前创建的 entry 会永远拿不到它。
+     */
+    const syncPanelRegistration = (): void => {
+      for (const dispose of panelDisposers) {
+        try { dispose() } catch { /* 已被槽位服务 dispose 过 */ }
+      }
+      panelDisposers = []
+      if (!sidebarPanelWanted()) return
+      panelDisposers = registerPanel()
+    }
 
     /**
      * 用当前 `settingsScope` 重建全部槽位注册。先 dispose 旧的，再注册新的——
@@ -241,9 +355,13 @@ export function apply(ctx: QoderClientContext): void {
       try {
         console.info(
           `[dsh-connect-qoder] registered ${String(liveDisposers.length)} slots `
-            + `(settings form: ${settingsScope === undefined ? 'none — card is read-only' : 'bound'})`,
+            + `(settings form: ${settingsScope === undefined ? 'none — card is read-only' : 'bound'}, `
+            + `sidebar panel: ${sidebarPanelWanted() ? 'on' : 'off'})`,
         )
       } catch { /* 无 console 的宿主也要能注册 */ }
+      // 面板走它**自己**的开关，所以是「对齐」而不是「列在清单里」：已经打开的
+      // 面板要在这里拆掉重建，让它的 `inject` 闭包看见刚刚绑好的作用域。
+      syncPanelRegistration()
     }
 
     /**
@@ -323,6 +441,45 @@ export function apply(ctx: QoderClientContext): void {
     }
 
     bindSettingsScope()
+
+    /**
+     * 跟随 opt-in 开关，并用 Host 的答案做**种子**。
+     *
+     * 种子是一次状态读取，而不是读 settings 作用域：这个命名空间的浏览器镜像
+     * 在受影响的 0.1.7 部署上被记录为陈旧，而这里一个陈旧的 `false` 意味着那一
+     * 行永远不会出现——之后也没有任何事件去纠正它，因为 `whileServed` 只在命名
+     * 空间边缘触发、不在值变化时触发。Host 自己的答案才是权威
+     * （usage 文档上的 `sidebarPanelEnabled`），与本插件其它 Host 承载开关一致。
+     *
+     * 读取失败**不是**要展示的错误：OFF 是一个合法答案，而且事实上就是默认值，
+     * 所以一个连不上状态路由的插件只是没有那一行——用户在这里也无事可做。
+     *
+     * **订阅**才是让开关生效的东西：卡片在写入被验证之后调用
+     * `setSidebarPanelWanted`，于是那一行出现或消失都不需要刷新。`ui-layout`
+     * 会丢掉 `main` key 已不存在的 `activePanelId`，所以页面开着时关掉它，中央
+     * 那一列自己回到对话。
+     */
+    ctx.effect(
+      () => subscribeSidebarPanelWanted(() => { syncPanelRegistration() }),
+      'dsh-connect-qoder: sidebar panel opt-in',
+    )
+    // 种子优先问 SETTINGS 快照（同步、无网络），它已经有了就一定是对的；镜像
+    // 还没到货时才去问 Host 的路由。两条都不通 = 不打开。
+    try {
+      if (sidebarPanelEnabledOf(settingsScope?.getSnapshot().value) === true) setSidebarPanelWanted(true)
+    } catch { /* 没有作用域 / 读不出来：交给下面那条路由 */ }
+    if (!sidebarPanelWanted()) {
+      void (async () => {
+        try {
+          const response = await fetch(withQoderRegion(QODER_USAGE_PATH, 'cn'), {
+            headers: { accept: 'application/json' },
+          })
+          if (!response.ok) return
+          const document = await response.json() as { sidebarPanelEnabled?: unknown }
+          if (document.sidebarPanelEnabled === true) setSidebarPanelWanted(true)
+        } catch { /* 没有答案就没有那一行；开关保持关闭 */ }
+      })()
+    }
   } catch (error: unknown) {
     // Degrade silently on the page: the host provider still serves models.
     console.error('[dsh-connect-qoder] client apply failed:', error)

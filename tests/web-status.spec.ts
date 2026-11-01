@@ -886,6 +886,38 @@ describe('__save route', () => {
 })
 
 describe('buildWebUsage', () => {
+  it('侧边栏面板是 GLOBAL：打开时两份文档都带上它，关闭 / dep 缺席时都不带', async () => {
+    // 这一项没有区域轴 —— 侧边栏只有一行、一个整页。所以它必须随**每一份**
+    // 区域文档一起下发（卡片从活动 tab 读），而不是只挂在某一个区域上。
+    const on = await buildWebUsage(deps({ sidebarPanelEnabled: () => true }), 'cn')
+    expect((on as { sidebarPanelEnabled?: boolean }).sidebarPanelEnabled).toBe(true)
+    const onGlobal = await buildWebUsage(deps({ sidebarPanelEnabled: () => true }), 'global')
+    expect((onGlobal as { sidebarPanelEnabled?: boolean }).sidebarPanelEnabled).toBe(true)
+
+    // 关闭 = 字段缺席（不是 `false` 也无所谓，但绝不能是 `true`）。
+    const off = await buildWebUsage(deps({ sidebarPanelEnabled: () => false }), 'cn')
+    expect((off as { sidebarPanelEnabled?: boolean }).sidebarPanelEnabled).toBeUndefined()
+
+    // 旧宿主没接这个 dep：行为与从前逐字一致（字段缺席，卡片读作关闭）。
+    const legacy = await buildWebUsage(deps(), 'cn')
+    expect((legacy as { sidebarPanelEnabled?: boolean }).sidebarPanelEnabled).toBeUndefined()
+  })
+
+  it('signed-out 那一支同样带上 GLOBAL 开关（没账号的用户也能打开侧边栏）', async () => {
+    // 一份零账号的文档仍然要回答「侧边栏那一行开着吗」：否则用户在还没添加任何
+    // PAT 时就打不开面板，而面板正是他要去添加 PAT 的地方。
+    const signedOut = await buildWebUsage(deps({
+      store: () => ({
+        ...baseStore(),
+        accounts: async () => [],
+        resolve: async () => undefined,
+      }),
+      sidebarPanelEnabled: () => true,
+    }), 'cn')
+    expect(signedOut.status).toBe('signed-out')
+    expect((signedOut as { sidebarPanelEnabled?: boolean }).sidebarPanelEnabled).toBe(true)
+  })
+
   it('a rejected credential is REPORTED, never silently blank', async () => {
     // 回归：过期 PAT 曾表现为「积分一片空白，且没有任何提示」——上游 401 被
     // fetchUsage 静默吞成 undefined，宿主于是走成功分支写入 `{usage: undefined}`，

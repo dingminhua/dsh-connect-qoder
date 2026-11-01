@@ -1707,6 +1707,135 @@ describe('图片默认种子（issue #22）', () => {
  * （升级即静默还原）。这里把三个数字提成区域配置，**默认全 0 = 跟随宿主**，
  * 所以升级用户的行为一个字都不变。
  */
+describe('侧边栏面板的 Host 接线（真实路由，不只是 deps）', () => {
+  /**
+   * 这里钉的是**接线本身**：`Config.sidebarPanel` 读出来的值有没有真的挂到
+   * `/usage` 文档上、`/__save` 有没有真的接受这个字段。
+   *
+   * 为什么不能只测 `buildWebUsage` 与 `settingsDeps` 两个单元：两端都对、中间那根
+   * 线没接，是这类开关最典型的失效形态（卡片上看得见复选框、勾了没反应，而整套
+   * 单元测试全绿）。所以这里真实 mount 一次插件，从路由的应答里读。
+   */
+  /**
+   * 一个**有行**的 settings 服务。
+   *
+   * 顶层的 `MemorySettings` 的 `describe()` 恒返回 `[]`（它只服务于「能否解析
+   * inject」这道门），而 `__save` 的写入路径必须从 `describe()` 里找到本插件的
+   * 那一行才能 `mutate` —— 找不到就是 500「settings namespace not yet
+   * available」。所以这里换成会真的记账的那一个。
+   */
+  class RowSettings extends Service {
+    readonly writable = true
+    readonly value: Record<string, unknown>
+    constructor(ctx: Context, value: Record<string, unknown>) {
+      super(ctx, 'settings')
+      this.value = value
+    }
+    describe(): Array<{ ns: string, value: unknown }> {
+      return [{ ns: 'dsh-connect-qoder', value: this.value }]
+    }
+    async mutate(_ns: string, ops: Array<{ op: 'set', path: string[], value: unknown }>): Promise<void> {
+      for (const op of ops) this.value[op.path[0]!] = op.value
+    }
+  }
+
+  async function mountRoutes(config: Record<string, unknown>): Promise<{
+    usage: (region: 'cn' | 'global') => Promise<Record<string, unknown>>
+    save: (body: Record<string, unknown>) => Promise<{ status: number, body: unknown }>
+  }> {
+    const routes: CapturedRoute[] = []
+    // **同一份对象**既是 `apply` 的配置闭包、又是 settings 服务那一行的值：
+    // 生产环境里写入会经 Loader 把新配置送进 `config`，这亚就是一个手写的
+    // 同效果版本（否则 `/__save` 写进了 settings，插件读的却是另一份旧对象，
+    // 断言会误以为是「写入没生效」）。
+    const live = { ...config }
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(class extends RowSettings { constructor(c: Context) { super(c, live) } })
+    ctx.provide('webServer', {
+      register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+    } as never)
+    await mountQoder(ctx, live)
+    const usageRoute = routes.find(r => r.path.includes('/usage'))!
+    const saveRoute = routes.find(r => r.path.includes('__save'))!
+    return {
+      usage: async (region) => {
+        const res = fakeResponse()
+        await usageRoute.handler({ method: 'GET', url: `${usageRoute.path}?region=${region}&detail=fast`, headers: {} }, res.node)
+        return JSON.parse(String(res.body())) as Record<string, unknown>
+      },
+      save: async (body) => {
+        const res = fakeResponse()
+        await saveRoute.handler(
+          {
+            method: 'POST',
+            url: `${saveRoute.path}`,
+            headers: { origin: 'http://127.0.0.1:50450' },
+            on: (event: string, listener: (chunk?: unknown) => void) => {
+              if (event === 'data') listener(Buffer.from(JSON.stringify(body)))
+              if (event === 'end') listener()
+            },
+          },
+          res.node,
+        )
+        return { status: res.status(), body: JSON.parse(String(res.body())) }
+      },
+    }
+  }
+
+  it('配置里没写这一项时文档不带它（升级用户看到的是原样的侧边栏）', async () => {
+    const { usage } = await mountRoutes({ regions: { cn: { pat: '' } } })
+    try {
+      const doc = await usage('cn')
+      expect(doc['sidebarPanelEnabled']).toBeUndefined()
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+
+  it('配置写了 true 时 /usage 与 /__save 都认这一项', async () => {
+    const { usage, save } = await mountRoutes({ regions: { cn: { pat: '' } }, sidebarPanel: true })
+    try {
+      // GLOBAL：两个区域的文档都带（卡片从活动 tab 读）。
+      expect((await usage('cn'))['sidebarPanelEnabled']).toBe(true)
+      expect((await usage('global'))['sidebarPanelEnabled']).toBe(true)
+      // `/__save` 是卡片那种「宿主保存端点」的写入路径，必须接受这个字段 ——
+      // 此前它只认 `regions`，会回 500 `unsupported settings field`。
+      const answer = await save({ field: 'sidebarPanel', value: false })
+      expect(answer.status).toBe(200)
+      // 写完之后文档要跟着变。
+      expect((await usage('cn'))['sidebarPanelEnabled']).toBeUndefined()
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+})
+
+describe('Config.sidebarPanel —— 可选侧边栏面板的默认值', () => {
+  it('缺省解析出来是 false（升级不会替用户重新排一次侧边栏）', () => {
+    // 这一项占的是 `sidebar.panellist` —— 所有插件共用的全局座位，还带一个
+    // `main` 整页。所以 schema 的默认值必须是关闭：一份从未写过它的配置（含所有
+    // 升级上来的配置）解析后不能凭空多出一行。
+    const resolved = Qoder.Config({
+      regions: {},
+    } as never) as unknown as { sidebarPanel: unknown }
+    // volatile 字段解析成活的 `{ get() }` 引用；解包之后才是那个布尔值。
+    const unwrapped = Qoder.unwrapVolatile(resolved.sidebarPanel as never)
+    expect(unwrapped).toBe(false)
+  })
+
+  it('显式 true 能被解析保留（而不是被 schema 当成未知键丢掉）', () => {
+    const resolved = Qoder.Config({
+      regions: {},
+      sidebarPanel: true,
+    } as never) as unknown as { sidebarPanel: unknown }
+    expect(Qoder.unwrapVolatile(resolved.sidebarPanel as never)).toBe(true)
+  })
+})
+
 describe('retryPolicyOf（issue #24）', () => {
   it('三项都为 0（schema 默认）时返回 undefined，交给宿主默认', () => {
     // 这是升级安全的关键：老配置里根本没有 `retry` 这个键。
