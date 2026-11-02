@@ -305,6 +305,21 @@ export interface QoderQueueState {
   queueType?: string
   /** 上游申报的等待秒数；与 `retryAfterMs` 同源，但保留原始单位。 */
   retryAfterSeconds?: number
+  /**
+   * 上游自己说「服务本身可用吗」（issue #29）。
+   *
+   * 这个字段把两种形态分开，而它们此前被压成同一个 `queued`：
+   *
+   * - `isQueued:true` + `serviceAvailable:true` —— 服务是好的，你排在队里
+   *   （`queueCount` 通常 > 0）。等等就好，换号也有意义。
+   * - `isQueued:true` + `serviceAvailable:false` —— 上游**整体**在拒服务，
+   *   现场实测 `queueCount:0`（队列里一个人都没有）。这时换号、换 PAT 都没用
+   *   （issue #29 实测 global 区 14 个模型全 queued），把它写进账号级冷却会让
+   *   用户以为自己的凭据坏了。
+   *
+   * 缺席 = 上游没提这个字段；此时沿用旧行为（只按 `isQueued` 判排队），不推断。
+   */
+  serviceAvailable?: boolean
 }
 
 export function isQoderUpstreamError(error: unknown): error is QoderUpstreamError {
@@ -1541,8 +1556,10 @@ function envelopeRecords(detail: string): Array<Record<string, unknown>> {
 /**
  * 上游的排队状态（issue #26）。
  *
- * 判据是上游**自己说的** `isQueued: true`；`serviceAvailable: true` 是旁证
- * （服务是好的，只是排在队里）。返回 undefined 表示上游没提排队 —— 那时
+ * 判据是上游**自己说的** `isQueued: true`；`serviceAvailable` 一并带出
+ * （issue #29）：`true` 是「服务是好的，只是排在队里」，`false` 是「上游整体
+ * 在拒服务」，两者对用户的行动指导完全不同 —— 判断见
+ * {@link upstreamUnavailableOf}。返回 undefined 表示上游没提排队 —— 那时
  * 不许把任何失败说成「排队中」。
  *
  * `queueCount` 与 `retryAfterSeconds` 一并带出：前者让用户看到「排在第 1027
@@ -1555,14 +1572,38 @@ export function queueOf(detail: string): QoderQueueState | undefined {
     const count = record.queueCount
     const queueType = record.queueType
     const seconds = record.retryAfterSeconds
+    // issue #29：`serviceAvailable` 与 `isQueued` 在同一个信封里，此前读到了
+    // 却不带出来，于是「上游整体不可用」被压成「你的账号在排队」。
+    const serviceAvailable = record.serviceAvailable
     return {
       isQueued,
       ...typeof count === 'number' && Number.isFinite(count) && count >= 0 ? { queueCount: count } : {},
       ...typeof queueType === 'string' && queueType !== '' ? { queueType } : {},
       ...typeof seconds === 'number' && Number.isFinite(seconds) && seconds > 0 ? { retryAfterSeconds: seconds } : {},
+      ...typeof serviceAvailable === 'boolean' ? { serviceAvailable } : {},
     }
   }
   return undefined
+}
+
+/**
+ * 上游是不是在说「**整体**拒服务」，而不是「你这个账号在排队」（issue #29）。
+ *
+ * 判据只认上游自己给的字段，且必须是 `isQueued: true` + 显式的
+ * `serviceAvailable: false` 两条同时成立：
+ *
+ * - 只有 `isQueued` 而没有 `serviceAvailable` ⇒ **不是**这个结论（上游没说，
+ *   不推断；退回旧的「排队」语义）。
+ * - `serviceAvailable: true` ⇒ 服务是好的，就是排队，正常等即可。
+ *
+ * 为什么要分开：现场证据（issue #29）里 `queueCount: 0` 与
+ * `serviceAvailable: false` 同时出现 —— 队列里一个人都没有，是上游整体在拒。
+ * 这种形态下换号、换 PAT 都无效，把它记成账号级冷却会误导用户去重配凭据。
+ */
+export function upstreamUnavailableOf(queue: QoderQueueState | undefined): boolean {
+  if (queue === undefined) return false
+  if (queue.isQueued !== true) return false
+  return queue.serviceAvailable === false
 }
 
 /**

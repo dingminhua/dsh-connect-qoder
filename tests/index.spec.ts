@@ -995,6 +995,32 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
     expect(probe!.atMs).toBeGreaterThanOrEqual(before)
     expect(probe!.atMs).toBeLessThanOrEqual(Date.now())
   })
+
+  // issue #29：同一个 `isQueued: true` 有两种形态，对用户的行为指导相反。
+  it('排队且服务可用 ⇒ queued（等等就好）', () => {
+    const probe = Qoder.liveRequestProbe('transient', '10605', undefined, {
+      retryAfterMs: 30_000,
+      queue: { isQueued: true, queueCount: 12, queueType: 'p3', serviceAvailable: true },
+    })
+    expect(probe?.outcome).toBe('queued')
+    expect(probe?.retryAtMs).toBeGreaterThan(Date.now())
+  })
+
+  it('排队但 serviceAvailable:false ⇒ unavailable（上游整体拒服务，换号换 PAT 都没用）', () => {
+    // issue #29 的现场形态：queueCount 为 0，队列里一个人都没有。
+    const probe = Qoder.liveRequestProbe('transient', '10605', undefined, {
+      retryAfterMs: 30_000,
+      queue: { isQueued: true, queueCount: 0, queueType: 'p3', serviceAvailable: false },
+    })
+    expect(probe?.outcome).toBe('unavailable')
+  })
+
+  it('上游没提 serviceAvailable 时仍按 queued（不推断）', () => {
+    const probe = Qoder.liveRequestProbe('transient', '10605', undefined, {
+      queue: { isQueued: true, queueCount: 3 },
+    })
+    expect(probe?.outcome).toBe('queued')
+  })
 })
 
 // ==========================================================================
@@ -1888,6 +1914,30 @@ describe('retryPolicyOf（issue #24）', () => {
       regions: { cn: { retry: { maxRetries: 3, mode: 'always' } } },
     }, 'cn')
     expect(policy?.mode).toBe('normal')
+  })
+})
+
+describe('queueWaitMsOf（issue #29）', () => {
+  it('没有配置时给出默认上限 —— 排队等待默认开着', () => {
+    // 为什么默认开着：宿主的阶梯前两次一定短于上游申报的 30 秒，不在这层等掉
+    // 就等于每次都在对方说「别来」的窗口里敲门（issue #29 的 28 次实测）。
+    expect(Qoder.queueWaitMsOf({}, 'cn')).toBe(60_000)
+    expect(Qoder.queueWaitMsOf({ regions: { cn: {} } }, 'cn')).toBe(60_000)
+  })
+
+  it('配 0 表示关掉（失败原样交给宿主的重试阶梯）', () => {
+    expect(Qoder.queueWaitMsOf({ regions: { cn: { retry: { queueWaitMs: 0 } } } }, 'cn')).toBeUndefined()
+  })
+
+  it('配正数就用它，且两个区域各配各的', () => {
+    const config = { regions: { cn: { retry: { queueWaitMs: 5_000 } }, global: { retry: { queueWaitMs: 90_000 } } } }
+    expect(Qoder.queueWaitMsOf(config, 'cn')).toBe(5_000)
+    expect(Qoder.queueWaitMsOf(config, 'global')).toBe(90_000)
+  })
+
+  it('非法值（负数/非数字）回落到默认，而不是变成「关掉」', () => {
+    expect(Qoder.queueWaitMsOf({ regions: { cn: { retry: { queueWaitMs: -1 } } } }, 'cn')).toBe(60_000)
+    expect(Qoder.queueWaitMsOf({ regions: { cn: { retry: { queueWaitMs: 'soon' } } } }, 'cn')).toBe(60_000)
   })
 })
 

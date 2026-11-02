@@ -5,6 +5,7 @@ import {
   failoverReasonText,
   queuedFailoverNoticeText,
   shouldAnnounceFailover,
+  upstreamDownFailoverNoticeText,
 } from '../src/failover-notice.ts'
 import type { UpstreamErrorKind } from '../src/upstream.ts'
 
@@ -127,5 +128,21 @@ describe('issue #26：排队的换号提示', () => {
 
   it('transient 那一档本身仍然说「上游暂时异常」（别把这一档改坏）', () => {
     expect(failoverReasonText('transient')).toBe('上游暂时异常')
+  })
+
+  // issue #29：`serviceAvailable: false` 的排队是「上游整体拒服务」，措辞必须
+  // 与普通排队不同 —— 用户看到「排队中」会去换 PAT，而换 PAT 没用。
+  it('上游整体不可用时明说「不是该账号的问题」', () => {
+    const text = upstreamDownFailoverNoticeText({ accountName: 'A', accountId: 'acc-a' })
+    expect(text).toContain('上游整体不可用')
+    expect(text).toContain('不是该账号的问题')
+    // 不能沿用「排队中」：那暗示换号/等待有意义。
+    expect(text).not.toContain('上游排队中')
+    expect(text).toContain('「A」')
+  })
+
+  it('两种措辞互不覆盖（排队仍是排队）', () => {
+    expect(queuedFailoverNoticeText({ accountName: 'A', accountId: 'acc-a' }))
+      .not.toBe(upstreamDownFailoverNoticeText({ accountName: 'A', accountId: 'acc-a' }))
   })
 })

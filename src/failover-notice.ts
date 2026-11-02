@@ -66,6 +66,23 @@ export function queuedFailoverNoticeText(
 }
 
 /**
+ * 「上游整体不可用」时的换号提示（issue #29）。
+ *
+ * 与 {@link queuedFailoverNoticeText} 刻意不同：那条说「排队中」，暗示「等一下
+ * 就好、换号有意义」；这条必须让用户明白**换号也没用**，因为他手上唯一能做的
+ * 错误动作就是去换 PAT。现场证据（issue #29）里 `queueCount: 0` +
+ * `serviceAvailable: false`，用户正是先去换了 PAT 才发现不是自己的问题。
+ */
+export const UPSTREAM_DOWN_REASON_TEXT = '上游整体不可用'
+
+export function upstreamDownFailoverNoticeText(
+  failed: { accountName: string; accountId: string },
+): string {
+  const label = accountLabelOf(failed.accountName, failed.accountId)
+  return `「${label}」${UPSTREAM_DOWN_REASON_TEXT}（不是该账号的问题），已改用池中另一个账号回答。`
+}
+
+/**
  * 账号在提示里怎么称呼。
  *
  * 账号名可能为空（env 路径下 `accountName` 是空串），也可能就是内部 id。

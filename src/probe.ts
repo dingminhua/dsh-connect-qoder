@@ -208,12 +208,16 @@ export interface QoderProbeError {
    * 上游说「我在排队」的证据，issue #26。
    *
    * 缺席 = 上游没提排队；这时不许把失败说成「排队中」。
+   *
+   * `serviceAvailable` 一并带出（issue #29）：`false` 表示上游整体在拒服务，
+   * 与「你的账号在排队」是两件事。
    */
   queue?: {
     isQueued: boolean
     queueCount?: number
     queueType?: string
     retryAfterSeconds?: number
+    serviceAvailable?: boolean
   }
 }
 
@@ -230,7 +234,13 @@ export interface QoderProbeError {
 export function outcomeOfFailure(error: QoderProbeError): { outcome: QoderProbeOutcome, notFound?: boolean } {
   // 排队优先于 kind：`transient` 是 10605 的通用分类，但**上游自己说了在排队**
   // 时，那才是更具体的事实。
-  if (error.queue?.isQueued === true) return { outcome: 'queued' }
+  //
+  // 但要先分形态（issue #29）：`serviceAvailable: false` 是「上游整体在拒服务」
+  // （现场 `queueCount: 0`），既不是「你的账号在排队」，也不是「连不上上游」。
+  // 归到 `unavailable` 比 `queued` 更接近事实 —— 用户不该为此去换 PAT。
+  if (error.queue?.isQueued === true) {
+    return { outcome: error.queue.serviceAvailable === false ? 'unavailable' : 'queued' }
+  }
   switch (error.kind) {
     case 'auth': return { outcome: 'credential-rejected' }
     case 'rate-limited': return { outcome: 'rate-limited' }
@@ -341,12 +351,14 @@ export async function probeModel(input: {
     })
   } catch (error: unknown) {
     // 探针自己抛错（Host 那边应当自己接住上游错误，这里是兜底）：能看出排队
-    // 证据就照实说排队，别退回「连不上上游」（issue #26）。
-    const thrown = error as { queue?: { isQueued?: boolean, queueCount?: number, queueType?: string }, retryAfterMs?: number }
+    // 证据就照实说排队，别退回「连不上上游」（issue #26）。`serviceAvailable`
+    // 为 false 时是「上游整体拒服务」，仍归 `unavailable`（issue #29）。
+    const thrown = error as { queue?: { isQueued?: boolean, queueCount?: number, queueType?: string, serviceAvailable?: boolean }, retryAfterMs?: number }
     const queued = thrown.queue?.isQueued === true
+    const upstreamDown = queued && thrown.queue?.serviceAvailable === false
     return {
       modelId: input.modelKey,
-      outcome: queued ? 'queued' : 'unavailable',
+      outcome: queued && !upstreamDown ? 'queued' : 'unavailable',
       message: redactUpstreamText(error instanceof Error ? error.message : String(error)),
       ...queued
         ? {

@@ -14,6 +14,7 @@ import {
   retryAfterMsOf,
   retryAfterMsOfHeader,
   isQoderUpstreamError,
+  upstreamUnavailableOf,
   QoderUpstreamError,
   QoderUpstreamClient,
   QODER_REGIONS,
@@ -1446,6 +1447,28 @@ describe('issue #26：排队信封（message 是对象的那种）', () => {
     expect(queue?.queueCount).toBe(1027)
     expect(queue?.queueType).toBe('p3')
     expect(queue?.retryAfterSeconds).toBe(30)
+    // issue #29：同一个信封里上游还说了「服务是好的」。
+    expect(queue?.serviceAvailable).toBe(true)
+  })
+
+  it('serviceAvailable 缺席时不推断（不许把「没说」当成任何一种结论）', () => {
+    const queue = queueOf('{"isQueued":true,"queueCount":3,"retryAfterSeconds":30}')
+    expect(queue?.isQueued).toBe(true)
+    expect(queue?.serviceAvailable).toBeUndefined()
+    // 上游只说了 isQueued，没有 serviceAvailable ⇒ 不判定为「整体不可用」。
+    expect(upstreamUnavailableOf(queue)).toBe(false)
+  })
+
+  it('upstreamUnavailableOf 只认 isQueued:true + serviceAvailable:false（issue #29）', () => {
+    // issue #29 的现场形态：队列里一个人都没有，但上游整体在拒服务。
+    const down = queueOf('{"isQueued":true,"queueCount":0,"retryAfterSeconds":30,"serviceAvailable":false}')
+    expect(down?.queueCount).toBe(0)
+    expect(upstreamUnavailableOf(down)).toBe(true)
+    // 服务是好的那种排队：正常等，不是「整体不可用」。
+    expect(upstreamUnavailableOf(queueOf(QUEUE_ENVELOPE))).toBe(false)
+    // 缺席、没排队、undefined 都不算。
+    expect(upstreamUnavailableOf(undefined)).toBe(false)
+    expect(upstreamUnavailableOf({ isQueued: false, serviceAvailable: false })).toBe(false)
   })
 
   it('上游没提排队就是 undefined（不许把任何失败说成排队）', () => {

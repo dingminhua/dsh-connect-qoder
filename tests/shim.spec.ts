@@ -1025,6 +1025,10 @@ describe('issue #26：shim 把排队证据递给宿主', () => {
     } as unknown as QoderUpstreamClient
     const shim = await startShim({
       upstream,
+      // issue #29 之后 shim 会先自己等掉上游申报的时长再重发；这个用例要钉的是
+      // 「排队证据有没有递给宿主」，所以把等待关掉，否则一条永不恢复的上游会
+      // 让用例等满 30 秒。
+      queueWaitMaxMs: 0,
       onServingFailure: (_id, _kind, _message, context) => {
         seen.push({ queue: context?.queue, retryAfterMs: context?.retryAfterMs })
       },
@@ -1047,5 +1051,81 @@ describe('issue #26：shim 把排队证据递给宿主', () => {
     })
     await chat(shim, {})
     expect(seen[0]?.queue).toBeUndefined()
+  })
+})
+
+describe('issue #29：排队时 shim 自己等掉申报的时长，再交给宿主', () => {
+  /** 一个「第一次排队、第二次成功」的上游，并记录每次调用的时刻。 */
+  function queuedThenOk(retryAfterMs: number, calls: number[] = []): QoderUpstreamClient {
+    return {
+      chatStream: async (_credential: string, _modelKey: string, _messages: unknown, options: { onDelta: (d: Delta) => void }) => {
+        calls.push(Date.now())
+        if (calls.length === 1) {
+          throw new QoderUpstreamError(
+            'transient',
+            '上游信封错误: HTTP 4xx {"code":"10605"}',
+            502,
+            '10605',
+            retryAfterMs,
+            { isQueued: true, queueCount: 0, queueType: 'p3', retryAfterSeconds: retryAfterMs / 1000, serviceAvailable: false },
+          )
+        }
+        options.onDelta(delta('Hello'))
+      },
+    } as unknown as QoderUpstreamClient
+  }
+
+  it('等满上游申报的时长后重发一次，这次不把失败交给宿主', async () => {
+    const calls: number[] = []
+    const failures: string[] = []
+    const shim = await startShim({
+      upstream: queuedThenOk(120, calls),
+      onServingFailure: (_id, kind) => { failures.push(kind) },
+    })
+    const resp = await chat(shim, {})
+    // 宿主看到的是 200（排队被插件消化掉了），而不是一次 502。
+    expect(resp.status).toBe(200)
+    expect(calls).toHaveLength(2)
+    // 等待是**上游申报的那个时长**，不是宿主的 5 秒阶梯。
+    expect(calls[1]! - calls[0]!).toBeGreaterThanOrEqual(110)
+    expect(failures).toEqual([])
+  })
+
+  it('申报值超过上限时不等待，原样交给宿主（不做「只等一半」）', async () => {
+    const calls: number[] = []
+    const shim = await startShim({
+      // 上限压到 50ms，申报 5 秒 —— 远超上限。
+      queueWaitMaxMs: 50,
+      upstream: queuedThenOk(5_000, calls),
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(502)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('每个请求只等一次：连续排队就把失败交给宿主，不无限等', async () => {
+    const calls: number[] = []
+    const upstream = {
+      chatStream: async () => {
+        calls.push(Date.now())
+        throw new QoderUpstreamError(
+          'transient', 'still queued', 502, '10605', 60,
+          { isQueued: true, queueCount: 5, retryAfterSeconds: 0.06, serviceAvailable: true },
+        )
+      },
+    } as unknown as QoderUpstreamClient
+    const shim = await startShim({ upstream, queueWaitMaxMs: 1_000 })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(502)
+    // 两次：第一次排队 → 等 → 重发；第二次仍排队但额度用完 ⇒ 交回宿主。
+    expect(calls).toHaveLength(2)
+  })
+
+  it('queueWaitMaxMs: 0 时完全关掉等待（退回旧行为）', async () => {
+    const calls: number[] = []
+    const shim = await startShim({ queueWaitMaxMs: 0, upstream: queuedThenOk(120, calls) })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(502)
+    expect(calls).toHaveLength(1)
   })
 })

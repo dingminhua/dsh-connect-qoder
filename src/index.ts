@@ -26,7 +26,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { AdapterRegistrationHandle, DirectoryRegistrationHandle } from '@deepseek-ai/dsh-llm'
 import { QoderUpstreamClient } from './upstream.ts'
-import { failoverNoticeText, queuedFailoverNoticeText } from './failover-notice.ts'
+import { failoverNoticeText, queuedFailoverNoticeText, upstreamDownFailoverNoticeText } from './failover-notice.ts'
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind, QoderCampaignFeed } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
@@ -229,13 +229,34 @@ const poolConfig = z.object({
  * 之外的手段（本版不提供）。理由：把 0 解释成「关」会让**升级用户**的中文
  * 配置（schema 默认 0）一上来就关掉全部重试，那是静默的行为变化。
  */
+/**
+ * 「上游排队时插件自己等多久」的默认上限（毫秒，issue #29）。
+ *
+ * 取 60 秒：上游实测申报值多为 30 秒（`queueType: p3`），留一倍余量；再长的
+ * 申报值不做截断等待，原样交回宿主决定。
+ */
+const DEFAULT_QUEUE_WAIT_MS = 60_000
+
 const regionRetryConfig = z.object({
-  /** 最多重试几次（0 = 跟随宿主默认）。 */
-  maxRetries: z.number().step(1).min(0).default(0).description('最多原地重试几次（0 = 跟随宿主默认）'),
+  /** 最多重试几次（0 = 跟随宿主默认）。 */  maxRetries: z.number().step(1).min(0).default(0).description('最多原地重试几次（0 = 跟随宿主默认）'),
   /** 首次退避毫秒（0 = 跟随宿主默认）。 */
   initialDelayMs: z.number().min(0).default(0).description('首次退避毫秒（0 = 跟随宿主默认）'),
   /** 退避上限毫秒（0 = 跟随宿主默认）。 */
   maxDelayMs: z.number().min(0).default(0).description('退避上限毫秒（0 = 跟随宿主默认）'),
+  /**
+   * 上游说「排队中、等 N 秒再来」时，插件自己在转发层等掉这一次的上限（毫秒，
+   * issue #29）。0 = 关掉（把失败原样交给宿主的重试阶梯）。
+   *
+   * 为什么需要它：宿主的重试阶梯是**递增**的（5s → 10s → 20s → 30s），而上游
+   * 申报的等待是定值（实测 30 秒）。于是前两次重试必然短于申报值 —— 现场实测
+   * 28 次重试、296 秒白等，且 11 次是在上游说「等 30 秒」后 5 秒内重发的。
+   * `pi-ai` 路由又没有 `providerRetryAfterMs` 通道（issue #24 已复核），插件
+   * 无法让宿主精确等待，只能在自己这一层等。
+   *
+   * 默认 60000：覆盖实测的 30 秒申报值并留余量；超过它的申报值不截断等待，
+   * 原样交给宿主。
+   */
+  queueWaitMs: z.number().min(0).default(60_000).description('上游排队时插件自己等待的上限毫秒（0 = 关掉）'),
 })
 
 const regionConfig = z.object({
@@ -445,8 +466,30 @@ export function retryPolicyOf(
   }
 }
 
-/** 某区域是否在主界面显示积分（opt-out）。 */
-function regionCreditsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+/**
+ * 某区域「上游排队时插件自己等多久」的上限（毫秒，issue #29）。
+ *
+ * 返回 `undefined` 表示关掉（0）：失败原样交给宿主的重试阶梯。本地读取而不是
+ * 依赖 schema 默认值 —— 这样在设置存在之前写下的配置读出来是「关」还是「60 秒」
+ * 由这里一句话决定，不随 schema 默认值漂移。
+ *
+ * 为什么默认开着：宿主的阶梯前两次一定短于上游申报的 30 秒（见 issue #29 的
+ * 28 次重试实测），不在这层等掉就等于每次都在对方说「别来」的窗口里敲门。
+ */
+export function queueWaitMsOf(
+  config: { regions?: Record<string, unknown> | null },
+  region: QoderRegion,
+): number | undefined {
+  const state = regionStateOf(config, region)
+  const raw = (state.retry ?? {}) as Record<string, unknown>
+  const value = raw.queueWaitMs
+  if (typeof value === 'number' && Number.isFinite(value) && value >= 0) {
+    return value > 0 ? value : undefined
+  }
+  return DEFAULT_QUEUE_WAIT_MS
+}
+
+/** 某区域是否在主界面显示积分（opt-out）。 */function regionCreditsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
   const state = regionStateOf(config, region)
   return state.showCreditsInMainUi !== false
 }
@@ -937,6 +980,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
           : { accountId: serving.id, accountName: serving.accountName, pat: serving.pat }
       },
       failoverAccount: async tried => nextFailoverCredential(region, tried),
+      // 上游说「排队中、等 N 秒」时，在这一层等掉（issue #29）：
+      // 宿主的重试阶梯是递增的（5s → 10s → 20s），前两次一定短于上游申报的
+      // 30 秒；`pi-ai` 路由又没有 `providerRetryAfterMs` 通道，插件只能自己等。
+      queueWaitMaxMs: queueWaitMsOf(config, region) ?? 0,
       onServingFailure: (accountId, kind, message, context) => {
         // 区域级通知先记（与池无关）：池关着时这是 code 110 唯一的 UI 出口。
         const exhaustion = liveQuotaExhaustion(kind, message, context, Date.now())
@@ -972,10 +1019,18 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 宿主的调度决定；这条是插件**已经**自作主张换了号，用户有权知道。不提示
       // 的话，用户看到一段正常回答，既不知道换过号，也不知道自己选的账号已经
       // 出问题，下次还会踩进去。
-      failoverNotice: (from, _to, kind, context) =>
-        context?.queue?.isQueued === true
-          ? queuedFailoverNoticeText({ accountName: from.accountName, accountId: from.accountId })
-          : failoverNoticeText({ accountName: from.accountName, accountId: from.accountId }, kind),
+      //
+      // 三种措辞（issue #29）：上游整体不可用 → 明说「不是该账号的问题」；
+      // 单纯排队 → 「排队中」；其余走 kind 的通用理由。
+      failoverNotice: (from, _to, kind, context) => {
+        const label = { accountName: from.accountName, accountId: from.accountId }
+        if (context?.queue?.isQueued === true && context.queue.serviceAvailable === false) {
+          return upstreamDownFailoverNoticeText(label)
+        }
+        return context?.queue?.isQueued === true
+          ? queuedFailoverNoticeText(label)
+          : failoverNoticeText(label, kind)
+      },
       // 同一个事实只说一次：一次 Agent 回合有十几轮调用，每轮都以同样的方式
       // 换号时，用户不该读到十几条一模一样的引用条。
       hasAnnouncedFailover: (from, to, kind) =>
@@ -2135,14 +2190,21 @@ export function liveRequestProbe(
     /** 上游申报的等待时长（毫秒），issue #26。 */
     retryAfterMs?: number | undefined
     /** 上游说「我在排队」的证据，issue #26。 */
-    queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number } | undefined
+    queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number, serviceAvailable?: boolean } | undefined
   },
 ): QoderPoolProbe | undefined {
   // 排队优先（issue #26）：上游明说「在排队、服务是好的、30 秒后再来」，
   // 那就不该被记成「连不上上游」（`unavailable`）。上游自己的话比 kind 更具体。
+  //
+  // 但「排队」有两个形态，必须分开（issue #29）：
+  // - `serviceAvailable: true` → `queued`：等一等就好，换号也有意义；
+  // - `serviceAvailable: false` → `unavailable`：上游整体在拒服务
+  //   （现场 `queueCount: 0`），换号、换 PAT 都无效。记成账号级 `queued`
+  //   会让用户以为自己的凭据坏了。
   const queued = context?.queue?.isQueued === true
+  const upstreamDown = queued && context?.queue?.serviceAvailable === false
   const outcome = queued
-    ? 'queued'
+    ? upstreamDown ? 'unavailable' : 'queued'
     : kind === 'auth' ? credentialOutcomeOf(context) : FAIL_OVER_OUTCOME[kind]
   if (outcome === undefined) return undefined
   const now = Date.now()

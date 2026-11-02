@@ -40,7 +40,7 @@ import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { timingSafeEqual } from 'node:crypto'
 import { randomBytes } from 'node:crypto'
-import type { QoderUpstreamClient, QoderChatDelta, UpstreamErrorKind } from './upstream.ts'
+import type { QoderUpstreamClient, QoderChatDelta, QoderQueueState, UpstreamErrorKind } from './upstream.ts'
 import { QoderUpstreamError, isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { shouldAnnounceFailover } from './failover-notice.ts'
@@ -98,7 +98,7 @@ export interface QoderShimOptions {
        *
        * 缺席 = 上游没提排队；这时不许把失败说成「排队中」。
        */
-      queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number } | undefined
+      queue?: QoderQueueState | undefined
     },
   ) => void
   /**
@@ -144,7 +144,7 @@ export interface QoderShimOptions {
      * 排队在 kind 那一层是 `transient`，光看 kind 只能说「上游暂时异常」——
      * 而上游逐字说的是「在排队，服务是好的」。措辞归宿主，所以证据递给它。
      */
-    context?: { queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number } | undefined },
+    context?: { queue?: QoderQueueState | undefined },
   ) => string | undefined
   /** 模型显示名 → Qoder 内部 key。未知时原样发送。 */
   modelKeyOf?: (displayName: string) => string | undefined
@@ -163,6 +163,23 @@ export interface QoderShimOptions {
    * 上游限流按请求体积触发，零间隔连环重试会让每个候选都撞同一堵墙。
    */
   failoverGapMs?: number
+  /**
+   * 上游说「在排队、等 N 秒再来」时，shim 自己先等掉这一次的上限，毫秒
+   * （issue #29）。默认 {@link QUEUE_WAIT_MAX_MS}，测试注入 0 关闭或注入小值。
+   *
+   * ## 为什么要在 shim 里等，而不是把失败交给宿主
+   *
+   * 宿主的重试阶梯是**递增**的（5s → 10s → 20s → 30s，带抖动）。上游明确说
+   * 「等 30 秒」时，前两次重试一定短于 30 秒 —— issue #29 的现场是 28 次重试、
+   * 296 秒白等，其中 11 次是在上游说「等 30 秒」之后 5 秒内就重发的。
+   *
+   * 更关键的是：`pi-ai` 那条路由**没有** `providerRetryAfterMs` 通道（issue
+   * #24 已复核），插件无法让宿主精确等待。所以在自己这一层等掉上游要求的时长，
+   * 是唯一能让「等 30 秒」真的等于 30 秒的办法，而且不消耗宿主的重试预算。
+   *
+   * 上限之外（或等过一次仍排队）就原样抛给宿主 —— 此时宿主至少还有剩余预算。
+   */
+  queueWaitMaxMs?: number
   /** 请求体字节上限（默认 64MB，对齐 workbuddy）。测试可注入小值。 */
   requestBodyLimit?: number
   userTypeOf?: () => string | undefined
@@ -192,6 +209,16 @@ const REQUEST_BODY_LIMIT = 64 * 1024 * 1024
  * 更多喘息空间。等待是可中断的：客户端断开就立刻停，而不是睡满全程。
  */
 const FAILOVER_ACCOUNT_GAP_MS = 2_000
+
+/**
+ * 排队时 shim 自己最多等多久（issue #29）。
+ *
+ * 取 60 秒：上游实测申报值多为 30 秒（`queueType: p3`），留一倍余量给
+ * 「申报 45 秒」这类形态；再长的等待对用户来说已经等于卡死，交给宿主重试环
+ * 与用户自己决定更诚实。超过这个值就原样抛给宿主，不做截断等待 ——
+ * 「只等一半再重发」正是 issue #29 抱怨的那种行为。
+ */
+const QUEUE_WAIT_MAX_MS = 60_000
 
 /**
  * 浏览器 Origin（存在时）必须指向回环。非浏览器客户端（插件自己的 fetch、
@@ -606,6 +633,15 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     const created = Math.floor(Date.now() / 1000)
     const tried: string[] = []
     const gapMs = options.failoverGapMs ?? FAILOVER_ACCOUNT_GAP_MS
+    const queueWaitMaxMs = options.queueWaitMaxMs ?? QUEUE_WAIT_MAX_MS
+    /**
+     * 本轮请求是否已经用掉了「排队自己等一次」的额度（issue #29）。
+     *
+     * 每个**请求**只等一次：上游说「等 30 秒」，我们等 30 秒后重发；若重发
+     * 仍排队，就原样交给宿主 —— 继续等会让用户面对一条永远不返回的请求，
+     * 而宿主至少还能用剩余的重试预算做决定。
+     */
+    let queueWaited = false
     // 换号成功后置为提示文案，在写出首帧时一次性消费（置回 undefined）。
     //
     // ⚠️ 采集时机在**换号之后**，不是每轮开头：首轮还没失败，开头采集拿不到
@@ -702,6 +738,32 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           // 拼接的回答）。
           writeErrorChunk(res, requestId, created, model, error)
           return
+        }
+        // 上游说「在排队、等 N 秒再来」时，先自己等掉这一次再重发（issue #29）。
+        //
+        // 判据只有两条，都来自上游自己的字段：`queue.isQueued === true` 且申报了
+        // 正的等待时长。**不看 `serviceAvailable`** —— 那是给「要不要换号」用的
+        // （见 {@link upstreamUnavailableOf}），而排队本身无论上游整体可用与否，
+        // 「等它说的那几秒再试一次」都是比宿主 5 秒阶梯更接近上游意愿的行为。
+        //
+        // 三道闸门保证不会把请求变成永远不返回：
+        // ① 每个请求只等一次（`queueWaited`）；② 申报值必须 ≤ 上限；
+        // ③ 等待可中断（客户端断开立即放弃）。
+        if (
+          !queueWaited
+          && isQoderUpstreamError(error)
+          && error.queue?.isQueued === true
+          && queueWaitMaxMs > 0
+          && error.retryAfterMs !== undefined
+          && error.retryAfterMs > 0
+          && error.retryAfterMs <= queueWaitMaxMs
+        ) {
+          queueWaited = true
+          const waitMs = error.retryAfterMs
+          logger(`shim: upstream queued, waiting ${waitMs}ms before retrying ${key}`)
+          await sleepAbortable(waitMs, controller.signal)
+          if (controller.signal.aborted) return
+          continue
         }
         if (isQoderUpstreamError(error) && isFailoverEligible(error.kind) && !controller.signal.aborted) {
           // 每一次失败尝试都记测量，包括没有后继可试的最后一次——那正是下一个
