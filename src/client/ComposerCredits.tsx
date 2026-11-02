@@ -370,21 +370,56 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                 浮层上，等于给了一个看得见结果、却打不开设置的地方。
                 没有 `openSettings`（宿主没挂 Plugins 页）时整颗按钮不渲染：
                 一个点了没反应的按钮，比没有按钮更糟。 */}
-            {openSettings === undefined
-              ? null
-              : (
-                  <button
-                    type="button"
-                    className="dsm-qoder-composer-panel-settings"
-                    title={t('composer.openSettingsHint')}
-                    onClick={() => {
-                      setOpen(false)
-                      openSettings()
-                    }}
-                  >
-                    {t('composer.openSettings')}
-                  </button>
-                )}
+            {/* 右对齐：设置入口。**一个**外壳负责 `margin-left:auto`，让页头
+                始终是「标题 … [设置]」；宿主没有去处的路由时（不渲染按钮）也不会
+                留下一个奇怪的悬空定位。 */}
+            <span className="dsm-qoder-composer-panel-actions">
+              {openSettings === undefined
+                ? null
+                : (
+                    <button
+                      type="button"
+                      className="dsm-qoder-composer-panel-settings"
+                      title={t('composer.openSettingsHint')}
+                      onClick={() => {
+                        setOpen(false)
+                        openSettings()
+                      }}
+                    >
+                      {/* 齿轮：标签只有一个词，而下划线单词会读成「碰巧能点的
+                          正文」。`aria-hidden` 是必须的 —— 按钮自己的文字已经
+                          报了名，图标不能再被播报一次。
+                          1.5px 描边而不是 1.3：11px 下齿轮的齿会糊成一个灰盘，
+                          在标签旁边看成一块污渍；12px + 1.5 才让齿留得住 ——
+                          形状本身就是可点击性。 */}
+                      <svg
+                        className="dsm-qoder-composer-panel-settings-icon"
+                        viewBox="0 0 16 16"
+                        width="12"
+                        height="12"
+                        fill="none"
+                        aria-hidden="true"
+                        focusable="false"
+                      >
+                        <path
+                          d="M8 10.2a2.2 2.2 0 1 0 0-4.4 2.2 2.2 0 0 0 0 4.4Z"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                        />
+                        <path
+                          d="M12.9 9.6a1.2 1.2 0 0 0 .24 1.32l.04.04a1.4 1.4 0 1 1-1.98 1.98l-.04-.04a1.2 1.2 0 0 0-1.32-.24 1.2 1.2 0 0 0-.72 1.1v.12a1.4 1.4 0 1 1-2.8 0v-.07a1.2 1.2 0 0 0-.78-1.1 1.2 1.2 0 0 0-1.32.24l-.04.04a1.4 1.4 0 1 1-1.98-1.98l.04-.04a1.2 1.2 0 0 0 .24-1.32 1.2 1.2 0 0 0-1.1-.72h-.12a1.4 1.4 0 1 1 0-2.8h.07a1.2 1.2 0 0 0 1.1-.78 1.2 1.2 0 0 0-.24-1.32l-.04-.04a1.4 1.4 0 1 1 1.98-1.98l.04.04a1.2 1.2 0 0 0 1.32.24h.05a1.2 1.2 0 0 0 .72-1.1v-.12a1.4 1.4 0 1 1 2.8 0v.07a1.2 1.2 0 0 0 .72 1.1 1.2 1.2 0 0 0 1.32-.24l.04-.04a1.4 1.4 0 1 1 1.98 1.98l-.04.04a1.2 1.2 0 0 0-.24 1.32v.05a1.2 1.2 0 0 0 1.1.72h.12a1.4 1.4 0 1 1 0 2.8h-.07a1.2 1.2 0 0 0-1.1.72Z"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      <span className="dsm-qoder-composer-panel-settings-label">
+                        {t('composer.openSettings')}
+                      </span>
+                    </button>
+                  )}
+            </span>
           </div>
           {signedOut
             ? <p className="dsm-qoder-composer-panel-empty">{t('composer.signedOut')}</p>

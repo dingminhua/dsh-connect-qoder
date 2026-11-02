@@ -532,8 +532,15 @@ describe('composer 面板的点色', () => {
     ], async (panel, counts) => {
       const button = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-settings')!
       expect(button).not.toBeNull()
+      // 标签只算文字：齿轮是 aria-hidden 的 svg，不参与 textContent。
       expect(button.textContent).toBe(t('composer.openSettings'))
       expect(button.disabled).toBe(false)
+      // 齿轮在场且**不被播报**：按钮自己的文字已经报了名，图标再报一次就是噪音。
+      const icon = button.querySelector('svg.dsm-qoder-composer-panel-settings-icon')
+      expect(icon).not.toBeNull()
+      expect(icon!.getAttribute('aria-hidden')).toBe('true')
+      // 右对齐靠外壳的 auto margin，不靠按钮自己 —— 按钮缺席时标题不该移位。
+      expect(button.parentElement?.className).toBe('dsm-qoder-composer-panel-actions')
       // 旧的批量按钮不再存在。
       expect(panel.querySelector('button.dsm-qoder-composer-panel-refresh')).toBeNull()
       await act(async () => { button.click() })
@@ -553,6 +560,9 @@ describe('composer 面板的点色', () => {
       { id: 'a-cur', accountName: 'cur', selected: true, current: true },
     ], async (panel) => {
       expect(panel.querySelector('button.dsm-qoder-composer-panel-settings')).toBeNull()
+      // 但那个外壳**仍在**：页头排布在两种情形下必须一致，否则按钮消失时
+      // 标题会因为 auto margin 一起消失而左移。
+      expect(panel.querySelector('.dsm-qoder-composer-panel-actions')).not.toBeNull()
     })
   })
 

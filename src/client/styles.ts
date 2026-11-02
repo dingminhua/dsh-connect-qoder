@@ -695,20 +695,47 @@ export const QODER_COMPOSER_CSS = `
   font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#444);
 }
 .dsm-qoder-composer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
-.dsm-qoder-composer-panel-title{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
-/* 设置入口。类名与旧的「刷新积分 / 一键测试」不同：那颗按钮已经不存在了，
-   沿用同一个类名只会让后来的人以为它还在做那件事。样式本身没变 —— 面板页头
-   右侧那颗小按钮就该长这样。 */
+/* nowrap 不是洁癖：页头是一个标题加一颗 11px 的控件挤在约 250px 的浮层里，
+   设置按钮一进来，标题当场折成两行（workbuddy 在真机 Desktop 上量到过
+   「WB AI」/「积分」断开）。标题是这一行里唯一必须保持单行的东西，它后面
+   跟着的东西按构造都是短的。 */
+.dsm-qoder-composer-panel-title{flex:none;white-space:nowrap;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,CanvasText)}
+/* 页头右侧控件的外壳。**不是**给按钮本身加 auto margin：那颗按钮并非总在
+   （宿主没有去处的路由时根本不渲染），而一个始终存在的外壳让页头在两种情形下
+   排布完全一致 —— 否则按钮消失时标题会因为 auto margin 的消失而左移。 */
+.dsm-qoder-composer-panel-actions{flex:none;margin-left:auto;display:flex;align-items:center}
+/* 安静的**药丸**，不是带框的按钮，也不是下划线链接（对齐 workbuddy 实测结论）：
+   下划线会让一个单词的标签读成「碰巧能点的正文」，13px 页头里根本不像控件；
+   带框按钮又太吵，13px 标题旁边一颗带框按钮读成工具栏。品牌色 10% 底色让它
+   静止时就有形状 —— 可点击性正该在这个时刻被看见，而不是悬停之后。
+   边框只在 hover/focus 出现，那里才真的需要提示。 */
 .dsm-qoder-composer-panel-settings{
-  appearance:none;flex:none;margin-left:auto;padding:3px 10px;
-  border:1px solid var(--dsw-alias-border-l2,rgba(127,127,127,.34));
-  border-radius:7px;background:transparent;
-  color:var(--dsw-alias-label-secondary,#444);
-  font:inherit;font-size:11px;line-height:16px;cursor:pointer;
+  appearance:none;flex:none;
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px 3px 6px;
+  border:1px solid transparent;border-radius:999px;
+  background:rgba(86,134,254,.10);
+  color:var(--dsw-alias-brand-primary,#5686fe);
+  font:inherit;font-size:11px;line-height:16px;font-weight:500;
+  cursor:pointer;
+  transition:background-color .12s ease,border-color .12s ease,color .12s ease;
 }
-.dsm-qoder-composer-panel-settings:hover:not(:disabled){border-color:var(--dsw-alias-label-dimmed,rgba(127,127,127,.6));color:var(--dsw-alias-label-primary,CanvasText)}
+.dsm-qoder-composer-panel-settings:hover{
+  background:rgba(86,134,254,.18);
+  border-color:rgba(86,134,254,.34);
+  color:var(--dsw-alias-brand-primary,#5686fe);
+}
+.dsm-qoder-composer-panel-settings:active{background:rgba(86,134,254,.26)}
 .dsm-qoder-composer-panel-settings:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-.dsm-qoder-composer-panel-settings:disabled{opacity:.5;cursor:default}
+/* 齿轮不许被压扁：flex 子项默认会 shrink，标签换成更长的词（「Settings」对
+   「设置」）时，窄浮层里的图标会被挤成椭圆。 */
+.dsm-qoder-composer-panel-settings-icon{flex:none;display:block}
+/* 标签永不换行：16px 高的药丸里折成两行会把页头撑高，下面的表格就脱开了。 */
+.dsm-qoder-composer-panel-settings-label{flex:none;white-space:nowrap}
+/* 减弱动效：这个颜色过渡是装饰，关掉之后 hover 态依然完整可见。 */
+@media (prefers-reduced-motion:reduce){
+  .dsm-qoder-composer-panel-settings{transition:none}
+}
 .dsm-qoder-composer-panel-table{
   width:100%;border-collapse:collapse;
   font-size:12px;line-height:18px;
