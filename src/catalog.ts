@@ -23,19 +23,146 @@ export interface QoderFallbackModel {
   priceFactor?: number
   maxInputTokens?: number
   maxOutputTokens?: number
+  /** 上游声明的思考强度档位（`thinking_config.enabled.efforts` 的键，已按强度升序）。 */
+  thinkingEfforts?: string[]
+  /** 上游标为默认的档位（`efforts[x].is_default`）。 */
+  defaultThinkingEffort?: string
+  /** 上游声明可完全关闭思考（`thinking_config.disabled` 存在）。 */
+  canDisableThinking?: boolean
 }
 
+/**
+ * 静态兜底目录（网关不可达时保底）。
+ *
+ * ## 这张表的依据
+ *
+ * 每一行都抄自**上游 `model/list` 的实测结果**（2026-11-02，cn 与 global 两区
+ * 各抓一次，`/tmp/dump-full.mjs` 探针）。不是凭模型名推的，也不是抄旧版本。
+ *
+ * 它此前已经**整体过期**：表里的 `qmodel_latest` / `qmodel_preview` /
+ * `qmodel` / `q36fmodel` / `gm51model` 五个 key 在上游**已经不存在**了
+ * （上游换成了 `qmodel_38max` / `qfmodel` / `gmodel`），模型名也停在
+ * Qwen3.7-Max、GLM-5.2、MiniMax-M2.7 那一代。网关不可达时兜出来的目录因此
+ * 一半是**上游没有的模型**。
+ *
+ * ## 为什么兜底目录也要照抄上游的思考声明
+ *
+ * 兜底目录不是「随便列几个模型」——它会被当成真的目录注册给 DSH
+ * （`src/index.ts` 的 `configuredModels` 在既无存档又无实时目录时用它）。所以它
+ * 的每一项都必须能回答与上游同样的三个问题：这个模型支不支持思考、有哪些档位、
+ * 能不能关掉。
+ *
+ * MiniMax 是这件事的现成例子：上游对 `mmodel` 声明 `is_reasoning: false` 且
+ * **根本没有** `thinking_config` 字段（旧兜底表却写着 `isReasoning: true`）。
+ * 兜底目录若继续这么写，一个网关不可达的用户就会看到一个「上游没有的档位」。
+ *
+ * ## 两区的差异怎么处理
+ *
+ * 实测两区的档位表**完全一致**，只有 `is_reasoning` 在三个模型上相反
+ * （`dfmodel` / `fast` / `kmodel`）——而这三个模型**都有** `thinking_config`，
+ * 所以 `supportsThinkingOf` 按 `thinking_config` 判时结论相同（见该函数的
+ * 注释：只把 false 补成 true，绝不把 true 降成 false）。
+ *
+ * 因此这张表按 **`thinking_config` 说了算**：有档位就是推理模型，无论
+ * `is_reasoning` 写的是什么。`isReasoning` 只在**既无档位、又无 disabled**
+ * 时才为 false（那才是「上游明确说它不思考」）。
+ *
+ * ## 兜底目录不声明的字段
+ *
+ * `contextTiers` **不**在这里写：兜底表只保底「有哪些模型」，窗口档位在拉不到
+ * 目录时无从得知，写死一档反而会让卡片渲染出一个上游没有的预算下拉
+ * （`parseUpstreamModel` 的 `tiersField` 也是「只有一档就不写」）。
+ */
 export const QODER_FALLBACK_MODELS: QoderFallbackModel[] = [
-  { key: 'qmodel_latest', displayName: 'Qwen3.7-Max', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'qmodel_preview', displayName: 'Qwen3.8-Max-Preview', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'qmodel', displayName: 'Qwen3.7-Plus', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'q36fmodel', displayName: 'Qwen3.6-Flash', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'dmodel', displayName: 'DeepSeek-V4-Pro', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'dfmodel', displayName: 'DeepSeek-V4-Flash', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'gm51model', displayName: 'GLM-5.2', isVl: true, isReasoning: true, maxInputTokens: 200_000 },
-  { key: 'kmodel', displayName: 'Kimi-K2.7-Code', isVl: true, isReasoning: true, maxInputTokens: 256_000 },
-  { key: 'mmodel', displayName: 'MiniMax-M2.7', isVl: false, isReasoning: true, maxInputTokens: 200_000 },
+  // ── cn 与 global 共有的 ──
+  {
+    key: 'qmodel_38max', displayName: 'Qwen3.8-Max', isVl: true, isReasoning: true,
+    priceFactor: 0.5, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'medium', 'xhigh'], defaultThinkingEffort: 'medium',
+    canDisableThinking: true,
+  },
+  {
+    key: 'qfmodel', displayName: 'Qwen3.8-Flash', isVl: true, isReasoning: true,
+    priceFactor: 0, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'medium', 'xhigh'], defaultThinkingEffort: 'medium',
+    canDisableThinking: true,
+  },
+  {
+    key: 'dmodel', displayName: 'DeepSeek-V4-Pro', isVl: true, isReasoning: true,
+    priceFactor: 0.5, maxInputTokens: 180_000,
+    thinkingEfforts: ['high', 'max'], defaultThinkingEffort: 'max',
+    canDisableThinking: true,
+  },
+  {
+    key: 'dfmodel', displayName: 'DeepSeek-Flash', isVl: true, isReasoning: true,
+    priceFactor: 0.1, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'high', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: true,
+  },
+  {
+    key: 'gmodel', displayName: 'GLM-5.3', isVl: true, isReasoning: true,
+    priceFactor: 0.8, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'high', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: false,
+  },
+  {
+    key: 'gfmodel', displayName: 'GLM-5.3-Flash', isVl: true, isReasoning: true,
+    priceFactor: 0.1, maxInputTokens: 180_000,
+    thinkingEfforts: ['high', 'max'], defaultThinkingEffort: 'max',
+    canDisableThinking: false,
+  },
+  {
+    key: 'kmodel_latest', displayName: 'Kimi-K3.1-Pro', isVl: true, isReasoning: true,
+    priceFactor: 1, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'high', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: false,
+  },
+  {
+    key: 'kmodel', displayName: 'Kimi-K2.8-Preview', isVl: true, isReasoning: true,
+    priceFactor: 0.8, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'high', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: false,
+  },
+  {
+    // MiniMax：上游 `is_reasoning: false` 且**没有** `thinking_config` 字段，
+    // 所以它没有档位、也没有 off 档。老兜底表写的 `isReasoning: true` 是上游
+    // 早已不承认的旧声明（那时它还是 MiniMax-M2.7）。
+    key: 'mmodel', displayName: 'MiniMax-M3.1-Flash', isVl: true, isReasoning: false,
+    priceFactor: 0.1, maxInputTokens: 180_000,
+    canDisableThinking: false,
+  },
+  {
+    key: 'fast', displayName: 'Fast', isVl: true, isReasoning: false,
+    priceFactor: 0.8, maxInputTokens: 200_000,
+    canDisableThinking: false,
+  },
+
+  // ── 仅国际版下发（cn 没有这几条）──
+  {
+    key: 'ultimate', displayName: 'Ultimate', isVl: true, isReasoning: true,
+    priceFactor: 2, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: false,
+  },
+  {
+    key: 'efficient', displayName: 'Efficient', isVl: true, isReasoning: false,
+    priceFactor: 0.3, maxInputTokens: 200_000,
+    canDisableThinking: false,
+  },
+  {
+    key: 'smodel', displayName: 'Sonus', isVl: true, isReasoning: true,
+    priceFactor: 8, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: false,
+  },
+  {
+    key: 'cmodel', displayName: 'Cantus', isVl: true, isReasoning: true,
+    priceFactor: 4, maxInputTokens: 180_000,
+    thinkingEfforts: ['low', 'medium', 'high', 'xhigh', 'max'], defaultThinkingEffort: 'high',
+    canDisableThinking: false,
+  },
 ]
+
 
 // ---------------------------------------------------------------------------
 // 模型信息（DSH 侧）
@@ -284,7 +411,22 @@ function tiersField(tiers: number[] | undefined): { contextTiers?: number[] } {
   return tiers === undefined || tiers.length <= 1 ? {} : { contextTiers: tiers }
 }
 
-/** 把 fallback 条目解析成模型信息。 */
+/**
+ * 把 fallback 条目解析成模型信息。
+ *
+ * 思考相关的三个字段与上游走**同一套语义**（否则兜底目录就会变成「另一个
+ * 真相」）：
+ *
+ * - `supportsThinking` —— 有档位就是推理模型；没有档位时按条目自报的
+ *   `isReasoning`（上游对 `mmodel` 明确说 false）；
+ * - `thinkingEfforts` / `defaultThinkingEffort` —— 上游声明的档位，原样带上；
+ * - `canDisableThinking` —— 上游声明了 `disabled` 才是 true。**没有声明时是
+ *   false**，而不是老写法的 `true`：老写法给**每一个**模型都发 off 档，包括
+ *   MiniMax 这种上游根本没提思考的模型 —— 而 `qoderThinkingLevelMap` 只在
+ *   有真实档位时才返回 map，off 档也就跟着不出现，所以这里 false 与 true
+ *   在运行时等价；但它诚实，且让 `offDefaultFor` 的语义（「上游**显式**声明
+ *   才给」）在兜底路径上同样成立。
+ */
 export function fallbackModelInfo(m: QoderFallbackModel): QoderModelInfo {
   return {
     key: m.key,
@@ -293,8 +435,10 @@ export function fallbackModelInfo(m: QoderFallbackModel): QoderModelInfo {
     contextWindow: m.maxInputTokens ?? QODER_DEFAULT_CONTEXT,
     maxOutputTokens: m.maxOutputTokens ?? 32_768,
     supportsImages: m.isVl,
-    supportsThinking: m.isReasoning,
-    canDisableThinking: true,
+    supportsThinking: m.thinkingEfforts !== undefined || m.isReasoning,
+    canDisableThinking: m.canDisableThinking === true,
+    ...m.thinkingEfforts === undefined ? {} : { thinkingEfforts: m.thinkingEfforts },
+    ...m.defaultThinkingEffort === undefined ? {} : { defaultThinkingEffort: m.defaultThinkingEffort },
     isDefault: false,
     isFree: false,
     isNew: false,

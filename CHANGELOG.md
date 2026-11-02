@@ -73,6 +73,42 @@
     - 现在两张表（设置卡片的、composer 读数的）都走同一个注入器：存在就**更新
       内容并纠正打标**，不存在才新建。宿主重建后浏览器里的样式与代码同一版。
 
+### 修复
+
+- **静态兜底目录整体对齐上游实测**（网关不可达时用的那张表）。
+  - **依据是实测**：2026-11-02 用探针拉 cn 与 global 两区的 `model/list` 原始行，
+    逐字段抄下来（不是凭模型名推，也不是抄旧版本）。
+  - **这张表此前整体过期**：`qmodel_latest` / `qmodel_preview` / `qmodel` /
+    `q36fmodel` / `gm51model` 五个 key 上游**已经不存在**（上游换成了
+    `qmodel_38max` / `qfmodel` / `gmodel`），模型名也停在 Qwen3.7-Max、GLM-5.2、
+    MiniMax-M2.7 那一代。网关不可达时兜出来的目录有一半是**上游没有的模型**。
+  - **思考声明照抄上游**：每个条目带上上游的档位表、默认档与「能否关掉思考」。
+    - **MiniMax 现在与上游一致**：上游对 `mmodel`（MiniMax-M3.1-Flash）声明
+      `is_reasoning: false` 且**根本没有** `thinking_config` 字段，所以它没有档位、
+      也没有 off 档。老兜底表写的 `isReasoning: true` 是上游早已不承认的旧声明
+      （那时它还是 M2.7）——一个网关不可达的用户会看到一个上游从未提供过的档位。
+    - `canDisableThinking` 从「一律 true」改成「上游声明了 `disabled` 才是 true」。
+      老写法给**每一个**模型都发 off 档，包括 MiniMax 这种上游根本没提思考的。
+    - 两区的档位表实测**完全一致**；只有三个模型的 `is_reasoning` 相反，而它们
+      都有 `thinking_config`，所以结论按 `thinking_config` 判时相同（只把 false
+      补成 true，绝不把 true 降成 false）。
+  - `contextTiers` **不**写进兜底表：拉不到目录时无从得知窗口档位，写死一档
+    反而会让卡片渲染出一个上游没有的预算下拉。
+
+### 测试
+
+- `tests/catalog.spec.ts` 新增「静态兜底目录」一组（6 条）：表里每个 key 都是
+  上游真实存在的（不再有过期 key）、模型名与上游一致、档位与默认档与上游一致
+  （顺序按强度升序）、**投影后**的模型带着档位（不是只在表里写着）、MiniMax 与
+  上游一致（不是推理模型、没档位）、兜底模型仍能拿到真实档位表（不是全 null 的
+  map——那会让 DSH 内核判定整条 provider 路由作废）。
+- 变异验证：把 MiniMax 改回 `isReasoning: true` → 1 条转红；把兜底表退回过期
+  key → 4 条转红；把投影层的档位丢掉 → 1 条转红（这条最初**漏过**，是补断言
+  才抓住的：断言只在表里写，等于没断投影）。
+- 顺带更新两处钉着旧事实的断言：`tests/catalog.spec.ts` 的显示名（Qwen3.7-Max
+  → Qwen3.8-Max）、`tests/index.spec.ts` 的 provider 模型 id（`qmodel_latest` →
+  `qmodel_38max`）。
+
 ### 测试
 
 - 新增 `tests/style-injector.spec.tsx`（5 条）：样式表按 **npm 包名** 打标（宿主

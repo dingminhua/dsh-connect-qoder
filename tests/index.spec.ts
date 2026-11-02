@@ -133,8 +133,10 @@ describe('Qoder provider registration', () => {
     })
 
     // 每区域服务自己的 fallback 目录。
+    // 断言的是**上游真实存在的**模型 key —— `qmodel_latest`（Qwen3.7-Max）
+    // 早已不在上游目录里，兜底表里留着它就等于凭空造一个模型。
     const cnModels = await ctx.llm.listModels('qoder')
-    expect(cnModels.map(m => m.id)).toContain('qmodel_latest')
+    expect(cnModels.map(m => m.id)).toContain('qmodel_38max')
     expect(cnModels.map(m => m.id)).toContain('dmodel')
     const globalModels = await ctx.llm.listModels('qoder-global')
     expect(globalModels.length).toBeGreaterThan(0)

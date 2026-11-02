@@ -234,7 +234,7 @@ describe('保存的目录条目：客户端输出与读取端判据必须对齐'
     expect(entry.contextWindow).toBe(400_000)
   })
 
-  it('兜底目录（未声明档位）也能被投影，且不产生 schema 不认的键', () => {
+  it('兜底目录也能被投影，且不产生 schema 不认的键', () => {
     const rows: QoderWebModel[] = QODER_FALLBACK_MODELS.map(info => {
       const m = fallbackModelInfo(info)
       return {
@@ -252,10 +252,23 @@ describe('保存的目录条目：客户端输出与读取端判据必须对齐'
     const declared = new Set(declaredModelKeys())
     for (const entry of payload.lastCatalog as unknown as Array<Record<string, unknown>>) {
       expect(Object.keys(entry).filter(key => !declared.has(key))).toEqual([])
-      // 兜底目录没声明档位 → 条目不带 `thinkingEfforts`（而不是带一个 `[]`）。
-      expect('thinkingEfforts' in entry).toBe(false)
       expect(typeof entry['maxOutputTokens']).toBe('number')
     }
+    // 兜底目录现在**照抄上游**，所以档位是逐模型声明的：有档位的条目带
+    // `thinkingEfforts`，上游没声明档位的（MiniMax / Fast / Efficient）不带
+    // —— 而不是带一个 `[]`。
+    const entries = payload.lastCatalog as unknown as Array<Record<string, unknown>>
+    const withEfforts = entries.filter(entry => entry['thinkingEfforts'] !== undefined)
+    const withoutEfforts = entries.filter(entry => entry['thinkingEfforts'] === undefined)
+    expect(withEfforts.length).toBeGreaterThan(0)
+    expect(withoutEfforts.length).toBeGreaterThan(0)
+    for (const entry of withoutEfforts) {
+      expect(Array.isArray(entry['thinkingEfforts'])).toBe(false)
+    }
+    // MiniMax 是上游明确不提供思考的那一条：它既没有档位，也不该被标成支持。
+    const minimax = entries.find(entry => entry['key'] === 'mmodel')!
+    expect(minimax['thinkingEfforts']).toBeUndefined()
+    expect(minimax['supportsThinking']).toBe(false)
   })
 
   it('活动规则随条目往返，读回的形状与写下去的一致', () => {

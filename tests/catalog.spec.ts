@@ -170,9 +170,10 @@ describe('model parsing', () => {
 
 describe('display names', () => {
   it('embeds the credit multiplier like the Qoder menu', () => {
-    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 0.79 })).toBe('Qwen3.7-Max · x0.79')
+    // 用「Qwen3.8-Max」这一条（兜底表的第一行）：它现在是上游真实的模型名。
+    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 0.79 })).toBe('Qwen3.8-Max · x0.79')
     // 倍率 1 也照写——Qoder 自家菜单如此，workbuddy 的选择器同名规则也不省略 1。
-    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 1 })).toBe('Qwen3.7-Max · x1.00')
+    expect(modelDisplayName({ ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), priceFactor: 1 })).toBe('Qwen3.8-Max · x1.00')
   })
 })
 
@@ -394,5 +395,116 @@ describe('档位改写表（400K → 500K，用户要求 2026-10-24）', () => {
     }))
     expect(info.contextWindow).toBe(200_000)
     expect(info.contextTiers).toEqual([200_000, 1_000_000])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// 静态兜底目录（网关不可达时保底）
+// ---------------------------------------------------------------------------
+
+describe('静态兜底目录', () => {
+  /**
+   * 兜底目录**照抄上游实测**，而不是抄旧版本。
+   *
+   * 事实来源：2026-11-02 用探针（`/tmp/dump-full.mjs`）拉 cn 与 global 两区的
+   * `model/list` 原始行，逐字段抄下来。下表是那两次抓取的结果。
+   */
+  const UPSTREAM_FACTS: Record<string, {
+    name: string
+    vl: boolean
+    /** 上游 `thinking_config.enabled.efforts` 的键（无则 undefined）。 */
+    efforts?: string[]
+    defaultEffort?: string
+    /** 上游 `thinking_config.disabled` 是否存在。 */
+    canOff: boolean
+  }> = {
+    qmodel_38max: { name: 'Qwen3.8-Max', vl: true, efforts: ['xhigh', 'low', 'medium'], defaultEffort: 'medium', canOff: true },
+    qfmodel: { name: 'Qwen3.8-Flash', vl: true, efforts: ['xhigh', 'low', 'medium'], defaultEffort: 'medium', canOff: true },
+    dmodel: { name: 'DeepSeek-V4-Pro', vl: true, efforts: ['high', 'max'], defaultEffort: 'max', canOff: true },
+    dfmodel: { name: 'DeepSeek-Flash', vl: true, efforts: ['high', 'low', 'max'], defaultEffort: 'high', canOff: true },
+    gmodel: { name: 'GLM-5.3', vl: true, efforts: ['high', 'low', 'max'], defaultEffort: 'high', canOff: false },
+    gfmodel: { name: 'GLM-5.3-Flash', vl: true, efforts: ['high', 'max'], defaultEffort: 'max', canOff: false },
+    kmodel_latest: { name: 'Kimi-K3.1-Pro', vl: true, efforts: ['high', 'low', 'max'], defaultEffort: 'high', canOff: false },
+    kmodel: { name: 'Kimi-K2.8-Preview', vl: true, efforts: ['high', 'low', 'max'], defaultEffort: 'high', canOff: false },
+    // 上游对 MiniMax 明确 `is_reasoning: false`，且**没有** `thinking_config`。
+    mmodel: { name: 'MiniMax-M3.1-Flash', vl: true, canOff: false },
+    fast: { name: 'Fast', vl: true, canOff: false },
+    ultimate: { name: 'Ultimate', vl: true, efforts: ['xhigh', 'high', 'low', 'max', 'medium'], defaultEffort: 'high', canOff: false },
+    efficient: { name: 'Efficient', vl: true, canOff: false },
+    smodel: { name: 'Sonus', vl: true, efforts: ['xhigh', 'high', 'low', 'max', 'medium'], defaultEffort: 'high', canOff: false },
+    cmodel: { name: 'Cantus', vl: true, efforts: ['xhigh', 'high', 'low', 'max', 'medium'], defaultEffort: 'high', canOff: false },
+  }
+
+  it('表里的每一个 key 都是上游真实存在的（不再有过期的 key）', () => {
+    // 旧表里的 `qmodel_latest` / `qmodel_preview` / `qmodel` / `q36fmodel` /
+    // `gm51model` 五个 key 上游早已不存在，兜底出来的目录有一半是幻觉。
+    const keys = QODER_FALLBACK_MODELS.map(m => m.key)
+    for (const key of keys) {
+      expect(UPSTREAM_FACTS[key], `兜底表里的 ${key} 必须是上游存在的模型`).toBeDefined()
+    }
+    expect(keys).toEqual(Object.keys(UPSTREAM_FACTS))
+  })
+
+  it('模型名与上游一致', () => {
+    for (const m of QODER_FALLBACK_MODELS) {
+      expect(m.displayName, `${m.key} 的显示名`).toBe(UPSTREAM_FACTS[m.key]!.name)
+    }
+  })
+
+  it('档位与默认档与上游一致（顺序按强度升序）', () => {
+    const EFFORT_ORDER = ['minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    for (const m of QODER_FALLBACK_MODELS) {
+      const fact = UPSTREAM_FACTS[m.key]!
+      const sorted = fact.efforts === undefined
+        ? undefined
+        : [...fact.efforts].sort((a, b) => EFFORT_ORDER.indexOf(a) - EFFORT_ORDER.indexOf(b))
+      expect(m.thinkingEfforts, `${m.key} 的档位表`).toEqual(sorted)
+      expect(m.defaultThinkingEffort, `${m.key} 的默认档`).toBe(fact.defaultEffort)
+      expect(m.canDisableThinking, `${m.key} 能否关掉思考`).toBe(fact.canOff)
+    }
+  })
+
+  it('投影后的模型带着档位（不是只在表里写着）', () => {
+    // 上一条断言的是**表里的原始条目**；这一条断言**投影后的结果**。
+    // 两者必须都断：表里写了档位、而 `fallbackModelInfo` 忘了带出去，兜底目录
+    // 就会在网关不可达时丢掉全部思考档位 —— 而那正是这张表存在的意义。
+    for (const m of QODER_FALLBACK_MODELS) {
+      const fact = UPSTREAM_FACTS[m.key]!
+      const info = fallbackModelInfo(m)
+      expect(info.thinkingEfforts, `${m.key} 投影后的档位表`).toEqual(m.thinkingEfforts)
+      expect(info.defaultThinkingEffort, `${m.key} 投影后的默认档`).toBe(fact.defaultEffort)
+      expect(info.canDisableThinking, `${m.key} 投影后能否关掉思考`).toBe(fact.canOff)
+      // 支持思考 = 有档位，或者是上游明确声明的推理模型。
+      expect(info.supportsThinking, `${m.key} 投影后是否支持思考`)
+        .toBe(m.thinkingEfforts !== undefined || m.isReasoning)
+    }
+  })
+
+  it('MiniMax 与上游一致：不是推理模型，也没有档位', () => {
+    // 这一条是用户问的那件事：上游对 MiniMax-M3.1-Flash 声明
+    // `is_reasoning: false` 且没有 `thinking_config`。兜底表此前写的是
+    // `isReasoning: true` —— 那是上游早已不承认的旧声明（那时它还是 M2.7）。
+    const minimax = QODER_FALLBACK_MODELS.find(m => m.key === 'mmodel')!
+    expect(minimax.isReasoning).toBe(false)
+    expect(minimax.thinkingEfforts).toBeUndefined()
+    const info = fallbackModelInfo(minimax)
+    expect(info.supportsThinking).toBe(false)
+    expect(info.thinkingEfforts).toBeUndefined()
+    expect(info.canDisableThinking).toBe(false)
+  })
+
+  it('兜底出来的模型仍然能拿到真实的档位表（不是全 null 的 map）', () => {
+    // DSH 内核对推理元数据是硬校验：档位表全 null 会让整条 provider 路由作废。
+    // 兜底目录若丢掉了档位，网关不可达时 DSH 会直接报「Provider is not configured」。
+    for (const m of QODER_FALLBACK_MODELS) {
+      const info = fallbackModelInfo(m)
+      const map = qoderThinkingLevelMap(info)
+      if (info.thinkingEfforts === undefined) {
+        expect(map, `${m.key} 没有档位时应返回 undefined（而不是全 null 的 map）`).toBeUndefined()
+      } else {
+        expect(map, `${m.key} 必须有真实档位`).toBeDefined()
+        expect(Object.values(map!).filter(v => v !== null).length).toBeGreaterThan(0)
+      }
+    }
   })
 })
