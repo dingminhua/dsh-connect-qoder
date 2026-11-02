@@ -418,6 +418,12 @@ export const en = {
   'composer.signedOut': 'Not signed in',
   'composer.openSettings': 'Settings',
   'composer.openSettingsHint': 'Open this plugin\'s settings page (account pool, model catalog, diagnostics)',
+  // 页头左侧那颗：刷新（重测玩家池成员）。它与右侧「设置」是**两件事**：
+  // 这颗改的是「此刻的结论」，那颗改的是「以后怎么跑」。
+  'composer.refreshPool': 'Refresh',
+  'composer.refreshingPool': 'Refreshing…',
+  'composer.refreshPoolHint': 'Probe every pool member once; the dots and reasons become what this run measured',
+  'composer.poolTestFailed': 'Could not run the pool test',
   'composer.refreshFailed': 'Could not refresh credits',
   'composer.lastRefresh': 'Last refreshed',
   'composer.dataStale': 'not updated',
@@ -816,6 +822,10 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.signedOut': '未登录',
   'composer.openSettings': '设置',
   'composer.openSettingsHint': '打开本插件的设置页（账号池、模型目录、诊断）',
+  'composer.refreshPool': '刷新',
+  'composer.refreshingPool': '正在刷新…',
+  'composer.refreshPoolHint': '对玩家池每个成员各发一次试问，测完圆点与原因就是这一轮的结论',
+  'composer.poolTestFailed': '玩家池刷新失败',
   'composer.refreshFailed': '积分刷新失败',
   'composer.lastRefresh': '最近刷新',
   'composer.dataStale': '未更新',

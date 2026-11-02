@@ -21,8 +21,11 @@ import { createPortal } from 'react-dom'
 import { useAnchoredPosition, useDismissOnOutsidePointer } from './popover.ts'
 import {
   QODER_ACCOUNT_CREDITS_PATH,
+  QODER_POOL_PATH,
   QODER_USAGE_PATH,
   withQoderRegion,
+  withQoderRegionAndAction,
+  withQoderRouteAction,
 } from '../status-paths.ts'
 import { writeAccountSlot } from './account-selection.ts'
 import type { QoderAccountScope } from './account-selection.ts'
@@ -79,12 +82,6 @@ export interface ComposerCreditsProps extends Partial<ComposerCreditsInjected> {
    * mount it has nowhere to go. When absent the button is not rendered at all —
    * a control that visibly does nothing is worse than one that is simply not
    * there.
-   *
-   * The panel used to carry a "Test all" button here instead. That action still
-   * exists on the account pool's own toolbar (`row.poolTestAll`), where the
-   * per-account result table it feeds is also rendered; keeping a second copy
-   * floating in the composer panel made the popover look like the settings
-   * surface it could never actually open.
    */
   openSettings?: () => void
 }
@@ -139,6 +136,10 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const [failed, setFailed] = useState(false)
   const [lastRefresh, setLastRefresh] = useState<number | undefined>(undefined)
   const [open, setOpen] = useState(false)
+  /** A pool batch (probe every member) is in flight. */
+  const [testing, setTesting] = useState(false)
+  /** The last pool batch failed to start. */
+  const [testFailed, setTestFailed] = useState(false)
   const inFlight = useRef(false)
   const mounted = useRef(true)
   const rootRef = useRef<HTMLSpanElement | null>(null)
@@ -262,6 +263,67 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     }
   }
 
+  /**
+   * 「刷新」：把玩家池里的每个成员真跑一次探针。
+   *
+   * 面板回答的是「谁在服务、还剩多少」，而圆点与第二行的原因（被拒绝／用量
+   * 达上限／限流 · 约 N 分钟后解禁）全部来自**探针结论**——只读余额读不出
+   * 「还能不能用」。所以这颗按钮真正该做的是重测一遍：探针写回宿主快照之后，
+   * 颜色与原因才是刚测出来的，而不是打开面板那一刻的旧账。
+   *
+   * 走的是设置页账号池工具栏那条**同一条**路（`POST /pool?action=test`），
+   * 不另造一条：两条路测出来的结论必须一致，否则同一个号在两处显示不同。
+   *
+   * 批量是**串行**的真实探针（一个号十几秒到几十秒），因此不干等整批响应：
+   * 边跑边读宿主的**只读**进度（`action=progress`，不碰上游），每落一行就把
+   * 账号表重取一次，用户能看着圆点一行一行翻新。整批结束（成功或失败）后再补
+   * 最后一读 —— 成败都补：失败时探针可能已经落了一部分，至少别让表格停在
+   * 测试前的旧账上。
+   */
+  const runTestAll = async (): Promise<void> => {
+    if (activeRegion === undefined || testing || busy || switchingId !== undefined) return
+    setTesting(true)
+    setTestFailed(false)
+    setFailed(false)
+    let cursor = 0
+    const pull = async (): Promise<void> => {
+      if (activeRegion === undefined) return
+      try {
+        const response = await fetch(withQoderRegionAndAction(QODER_POOL_PATH, activeRegion, 'progress'), { credentials: 'same-origin' })
+        if (!response.ok) return
+        const raw = await response.json().catch(() => ({})) as Record<string, unknown>
+        const batch = raw['batch']
+        if (typeof batch !== 'object' || batch === null) return
+        const entry = batch as Record<string, unknown>
+        // 动作对不上就不认：上一批的残行或另一个标签页在跑的别的动作，都不该
+        // 让这里重取表格。
+        if (entry['action'] !== 'test' || !Array.isArray(entry['done'])) return
+        const done = entry['done'] as unknown[]
+        if (done.length <= cursor) return
+        cursor = done.length
+        await fetchAccountCredits()
+      } catch { /* 轮询失败不打扰用户：下一拍再试，整批响应仍是最终答案 */ }
+    }
+    let timer: number | undefined
+    try {
+      timer = window.setInterval(() => { void pull() }, 1_500)
+      const response = await fetch(withQoderRouteAction(QODER_POOL_PATH, activeRegion, 'test'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'same-origin',
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+    } catch {
+      if (mounted.current) setTestFailed(true)
+    } finally {
+      if (timer !== undefined) window.clearInterval(timer)
+      // 成败都补一读：成功时把最后一行带进来；失败时探针可能已经落了一部分，
+      // 至少别让表格停在测试前的旧账上。
+      await fetchAccountCredits()
+      if (mounted.current) setTesting(false)
+    }
+  }
+
   // Not this plugin's model: render nothing at all. 插件之间不做联动，所以别的
   // 连接器当家时这里没有该显示的读数（见 docs/DESIGN.md「边界：不做什么」）。
   if (owned === undefined) return null
@@ -326,6 +388,26 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const canSwitch = settingsScope !== undefined
 
   /**
+   * 这一区**有没有东西可刷新**。
+   *
+   * 「刷新」跑的是**玩家池**的批量探针（`POST /pool?action=test`），宿主那一侧
+   * 遍历的是「池成员」——不是面板上列出的全部账号。所以判据必须是池成员：
+   *
+   * - 池**关着**时没有成员可测（宿主侧的 `pool.test` 会一个号都不跑）；
+   * - 池开着但成员名单空时同样无事可做；
+   * - 宿主不发 `pool` 段（旧宿主）时无从得知 → 同样按「没有可测的」处理。
+   *
+   * 面板表格里的行是**账号**（含不在池里的选中号），不是池成员；用行数判会把
+   * 「池空但有一个选中号」误判成「有东西可测」。
+   *
+   * 判据为假时按钮**仍然渲染、但禁用**（而不是消失）：它在页头右侧那颗外壳里，
+   * 一颗按钮忽然消失会让标题往左跳一下；而「此刻没有可测的东西」由置灰说出来，
+   * 比让用户点了才发现没反应好。
+   */
+  const poolMembers = signedIn?.pool?.effectiveMemberAccountIds ?? signedIn?.pool?.memberAccountIds
+  const poolTestable = signedIn?.pool?.enabled === true && (poolMembers?.length ?? 0) > 0
+
+  /**
    * 页脚显示的时刻：优先用**数据的真实读取时刻**（宿主给的 `creditsAtMs`），
    * 没有才退回本组件 fetch 成功的时刻。
    *
@@ -362,17 +444,57 @@ export function ComposerCredits(props: ComposerCreditsProps) {
             <span className="dsm-qoder-composer-panel-title">
               {t(activeRegion === 'cn' ? 'composer.panelTitleCn' : 'composer.panelTitleGlobal' as QoderSettingsKey)}
             </span>
-            {/* 设置入口，而不是「一键测试」。
-                面板回答的是「谁在服务、还剩多少」，用户读完这个数字之后最可能
-                想做的事是**去改设置**（换号、开池、改阈值）。「一键测试」在三处
-                都有，而按账号的结论表只在设置页的账号池里 —— 把批量动作放在这个
-                浮层上，等于给了一个看得见结果、却打不开设置的地方。
-                没有 `openSettings`（宿主没挂 Plugins 页）时整颗按钮不渲染：
-                一个点了没反应的按钮，比没有按钮更糟。 */}
-            {/* 右对齐：设置入口。**一个**外壳负责 `margin-left:auto`，让页头
-                始终是「标题 … [设置]」；宿主没有去处的路由时（不渲染按钮）也不会
-                留下一个奇怪的悬空定位。 */}
+            {/* 页头右侧两颗按钮：**刷新**（左，重测玩家池）与**设置**（右，
+                去插件自己的设置页）。
+                它们是**两件事**：刷新改的是「此刻的结论」（圆点与原因），设置改
+                的是「以后怎么跑」（换号、开池、改阈值）。所以顺序是「先看结论、
+                再去改配置」。
+                没有 `openSettings`（宿主没挂 Plugins 页）时**只**渲染刷新那颗：
+                一个点了没反应的按钮，比没有按钮更糟；而刷新这一颗不依赖任何宿主
+                服务，它走的是本插件自己的池路由。 */}
+            {/* 右对齐：**一个**外壳负责 `margin-left:auto`，让页头
+                始终是「标题 … [刷新][设置]」；宿主没有去处的路由时（不渲染设置
+                按钮）也不会留下一个奇怪的悬空定位。 */}
             <span className="dsm-qoder-composer-panel-actions">
+              <button
+                type="button"
+                className="dsm-qoder-composer-panel-refresh"
+                // 池关着、或这一区一个成员都没有时就没有「刷新」可言：按钮禁用，
+                // 而不是点下去才发现什么也没发生。
+                disabled={testing || busy || switchingId !== undefined || !poolTestable}
+                title={t('composer.refreshPoolHint')}
+                onClick={() => { void runTestAll() }}
+              >
+                {/* 循环箭头：这是「重新测一遍」，不是「重读余额」。`aria-hidden`
+                    —— 按钮自己的文字已经报了名，图标再报一次就是噪音。
+                    1.5px 描边：11px 下细描边会糊成一个灰点。 */}
+                <svg
+                  className={`dsm-qoder-composer-panel-refresh-icon${testing ? ' dsm-qoder-composer-panel-refresh-icon-spin' : ''}`}
+                  viewBox="0 0 16 16"
+                  width="12"
+                  height="12"
+                  fill="none"
+                  aria-hidden="true"
+                  focusable="false"
+                >
+                  <path
+                    d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                  />
+                  <path
+                    d="M13.2 1.9v2.9h-2.9"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+                <span className="dsm-qoder-composer-panel-refresh-label">
+                  {testing ? t('composer.refreshingPool') : t('composer.refreshPool')}
+                </span>
+              </button>
               {openSettings === undefined
                 ? null
                 : (
@@ -503,6 +625,11 @@ export function ComposerCredits(props: ComposerCreditsProps) {
           </div>
           {failed || signedIn?.refreshError !== undefined
             ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshFailed')}</p>
+            : null}
+          {/* 批量探针失败单独一行：它与「积分读不出来」是两件事 —— 读数可能好好的，
+              而这次重测没跑起来。用户需要知道圆点为什么还是旧的。 */}
+          {testFailed
+            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.poolTestFailed')}</p>
             : null}
         </div>,
         document.body,

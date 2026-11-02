@@ -353,12 +353,27 @@ describe('composer 面板的点色', () => {
     offModelKeys: [],
     imageModelKeys: [],
     credits: { total: 165, packages: [], expiringSoon: 0 },
+    // 玩家池：页头那颗「刷新」判的是**池成员**（宿主侧的 `pool.test` 遍历的
+    // 就是它），不是面板上列出的账号行。
+    pool: {
+      enabled: true,
+      checkinSupported: true,
+      targetModelId: 'qmodel_38max',
+      targetModelSource: 'preferred',
+      memberAccountIds: ['a-cur'],
+      effectiveMemberAccountIds: ['a-cur'],
+      accounts: [],
+    },
   }
 
   /**
    * 挂载 → 开面板 → 把面板交给断言回调 → 拆卸。
-   * `counts.accountCredits` 数账号表请求次数、`counts.test` 数「一键测试」的
-   * 探针请求次数（两者都是既有回归点）。
+   * `counts.accountCredits` 数账号表请求次数、`counts.test` 数页头那颗「刷新」
+   * 的探针请求次数（两者都是既有回归点）。
+   *
+   * `pool` 覆盖 usage 文档里的玩家池段（`undefined` = 宿主不发这一段，例如旧
+   * 宿主）。「刷新」判的是**池成员**（宿主侧的 `pool.test` 遍历的就是它），不是
+   * 面板上列出的账号行 —— 所以这两者必须能分别设定。
    */
   async function withPanel(
     rows: Record<string, unknown>[],
@@ -368,8 +383,11 @@ describe('composer 面板的点色', () => {
      * `pluginNavigation`，那时这颗按钮根本不该存在，而这个默认值正是那种形态。
      */
     openSettings?: () => void,
+    /** 覆盖 usage 文档里的 `pool` 段；`undefined` = 用默认那份（有成员）。 */
+    pool?: Record<string, unknown> | undefined,
   ): Promise<void> {
     const counts = { accountCredits: 0, test: 0 }
+    const document_ = pool === undefined ? doc : { ...doc, pool }
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input)
       const method = (init?.method ?? 'GET').toUpperCase()
@@ -377,7 +395,7 @@ describe('composer 面板的点色', () => {
         counts.accountCredits += 1
         return { ok: true, status: 200, json: async () => rows } as Response
       }
-      // 面板那颗「一键测试」走的就是设置页工具栏同一条路：POST pool?action=test。
+      // 页头那颗「刷新」走的就是设置页账号池工具栏同一条路：POST pool?action=test。
       if (url.includes('/pool') && url.includes('action=test') && method === 'POST') {
         counts.test += 1
         return { ok: true, status: 200, json: async () => ({ action: 'test', rows: [] }) } as Response
@@ -386,7 +404,7 @@ describe('composer 面板的点色', () => {
       if (url.includes('/pool') && url.includes('action=progress')) {
         return { ok: true, status: 200, json: async () => ({}) } as Response
       }
-      return { ok: true, status: 200, json: async () => doc } as Response
+      return { ok: true, status: 200, json: async () => document_ } as Response
     }))
     const container = document.createElement('div')
     document.body.appendChild(container)
@@ -522,35 +540,90 @@ describe('composer 面板的点色', () => {
     })
   })
 
-  it('页头那颗按钮是「设置」，点了就打开插件设置页', async () => {
-    // 它此前是「一键测试」：一个批量探针动作。但那件事在设置页的账号池工具栏上
-    // 本来就有（`row.poolTestAll`），而**按账号的结论表**也只在那里 —— 在浮层里
-    // 放一个只会测、却打不开设置的动作，是这块面板离「设置」最远的一处。
+  it('页头有两颗按钮：左边「刷新」（重测玩家池），右边「设置」（打开插件设置页）', async () => {
     let opened = 0
     await withPanel([
       { id: 'a-cur', accountName: 'cur', selected: true, current: true },
     ], async (panel, counts) => {
-      const button = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-settings')!
-      expect(button).not.toBeNull()
+      // 右那颗：设置。
+      const settings = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-settings')!
+      expect(settings).not.toBeNull()
       // 标签只算文字：齿轮是 aria-hidden 的 svg，不参与 textContent。
-      expect(button.textContent).toBe(t('composer.openSettings'))
-      expect(button.disabled).toBe(false)
+      expect(settings.textContent).toBe(t('composer.openSettings'))
+      expect(settings.disabled).toBe(false)
       // 齿轮在场且**不被播报**：按钮自己的文字已经报了名，图标再报一次就是噪音。
-      const icon = button.querySelector('svg.dsm-qoder-composer-panel-settings-icon')
+      const gear = settings.querySelector('svg.dsm-qoder-composer-panel-settings-icon')
+      expect(gear).not.toBeNull()
+      expect(gear!.getAttribute('aria-hidden')).toBe('true')
+      // 右对齐靠外壳的 auto margin，不靠按钮自己 —— 按钮缺席时标题不该移位。
+      expect(settings.parentElement?.className).toBe('dsm-qoder-composer-panel-actions')
+
+      // 左那颗：刷新。它走的是**玩家池**的批量探针 —— 与设置页账号池工具栏
+      // 那颗「一键测试所有账号」同一条路（POST /pool?action=test），所以两处
+      // 测出来的结论必然一致。
+      const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
+      expect(refresh).not.toBeNull()
+      expect(refresh.textContent).toBe(t('composer.refreshPool'))
+      expect(refresh.disabled).toBe(false)
+      // 循环箭头同样不被播报。
+      const icon = refresh.querySelector('svg.dsm-qoder-composer-panel-refresh-icon')
       expect(icon).not.toBeNull()
       expect(icon!.getAttribute('aria-hidden')).toBe('true')
-      // 右对齐靠外壳的 auto margin，不靠按钮自己 —— 按钮缺席时标题不该移位。
-      expect(button.parentElement?.className).toBe('dsm-qoder-composer-panel-actions')
-      // 旧的批量按钮不再存在。
-      expect(panel.querySelector('button.dsm-qoder-composer-panel-refresh')).toBeNull()
-      await act(async () => { button.click() })
+      // **顺序**：刷新在左、设置在右（先看结论，再去改配置）。
+      const actions = panel.querySelector('.dsm-qoder-composer-panel-actions')!
+      expect(Array.from(actions.children).map(child => child.className)).toEqual([
+        'dsm-qoder-composer-panel-refresh',
+        'dsm-qoder-composer-panel-settings',
+      ])
+
+      await act(async () => { refresh.click() })
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      // 它发的是批量探针请求。
+      expect(counts.test).toBe(1)
+      // 点「刷新」**不**关面板：用户要看的就是圆点一行一行翻新。
+      expect(document.querySelector('.dsm-qoder-composer-panel')).not.toBeNull()
+
+      await act(async () => { settings.click() })
       await act(async () => { await new Promise(r => setTimeout(r, 0)) })
       expect(opened).toBe(1)
-      // 点它不再发任何探针请求。
-      expect(counts.test).toBe(0)
-      // 面板自己先关闭：设置页会接管中央面板，浮层留在半空只会挡路。
+      // 面板自己先关闭：设置页要接管中央面板，浮层留在半空只会挡路。
       expect(document.querySelector('.dsm-qoder-composer-panel')).toBeNull()
     }, () => { opened += 1 })
+  })
+
+  it('池关着 / 没有成员时，「刷新」那颗是禁用的（而不是点下去才发现没事可做）', async () => {
+    // 三种「没有可测的东西」：宿主不发 pool 段（旧宿主）、池关着、池开着但成员
+    // 名单空。它们都该得到同一颗置灰的按钮。
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+    ], async (panel) => {
+      const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
+      expect(refresh).not.toBeNull()
+      expect(refresh.disabled).toBe(true)
+    }, undefined, {
+      enabled: false,
+      checkinSupported: true,
+      targetModelId: 'qmodel_38max',
+      targetModelSource: 'preferred',
+      memberAccountIds: ['a-cur'],
+      effectiveMemberAccountIds: ['a-cur'],
+      accounts: [],
+    })
+
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+    ], async (panel) => {
+      const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
+      expect(refresh.disabled).toBe(true)
+    }, undefined, {
+      enabled: true,
+      checkinSupported: true,
+      targetModelId: 'qmodel_38max',
+      targetModelSource: 'preferred',
+      memberAccountIds: [],
+      effectiveMemberAccountIds: [],
+      accounts: [],
+    })
   })
 
   it('宿主没挂 Plugins 页时，页头不渲染那颗按钮（而不是渲染一个点了没反应的）', async () => {
@@ -563,6 +636,8 @@ describe('composer 面板的点色', () => {
       // 但那个外壳**仍在**：页头排布在两种情形下必须一致，否则按钮消失时
       // 标题会因为 auto margin 一起消失而左移。
       expect(panel.querySelector('.dsm-qoder-composer-panel-actions')).not.toBeNull()
+      // 「刷新」不依赖任何宿主服务（走本插件自己的池路由），所以它照常在。
+      expect(panel.querySelector('button.dsm-qoder-composer-panel-refresh')).not.toBeNull()
     })
   })
 

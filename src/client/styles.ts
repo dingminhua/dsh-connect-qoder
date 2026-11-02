@@ -736,6 +736,42 @@ export const QODER_COMPOSER_CSS = `
 @media (prefers-reduced-motion:reduce){
   .dsm-qoder-composer-panel-settings{transition:none}
 }
+/* 「刷新」颗按钮：与「设置」同族（药丸），但**更安静**。
+   两颗按钮在页头右侧并排，「设置」是设置页的入口（常会点），「刷新」是一次
+   性的重测动作（少用）。所以后者用次级色（label-secondary）而不是品牌色：
+   两个同浓度的品牌色药丸并排，会让人以为它们是同一类动作。 */
+.dsm-qoder-composer-panel-refresh{
+  appearance:none;flex:none;
+  display:inline-flex;align-items:center;gap:4px;
+  padding:3px 8px 3px 6px;
+  border:1px solid transparent;border-radius:999px;
+  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));
+  color:var(--dsw-alias-label-secondary,#444);
+  font:inherit;font-size:11px;line-height:16px;font-weight:500;
+  cursor:pointer;
+  transition:background-color .12s ease,border-color .12s ease,color .12s ease;
+}
+.dsm-qoder-composer-panel-refresh:hover:not(:disabled){
+  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));
+  border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));
+  color:var(--dsw-alias-label-primary,CanvasText);
+}
+.dsm-qoder-composer-panel-refresh:active:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}
+.dsm-qoder-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
+/* 禁用时不是「按不动的按钮」，而是「此刻没有可测的东西」：玩家池关着、或这一区
+   一个成员都没有，那就没有刷新可言。 */
+.dsm-qoder-composer-panel-refresh:disabled{opacity:.45;cursor:default}
+/* 循环箭头同样不许被压扁（与齿轮同一条理由）。 */
+.dsm-qoder-composer-panel-refresh-icon{flex:none;display:block}
+/* 在飞时转起来：用户看着一个不动的按钮等了半分钟，会以为它没点上。 */
+.dsm-qoder-composer-panel-refresh-icon-spin{animation:dsm-qoder-composer-panel-spin 1.1s linear infinite}
+@keyframes dsm-qoder-composer-panel-spin{to{transform:rotate(360deg)}}
+/* 标签永不换行（与设置按钮同一条理由）。 */
+.dsm-qoder-composer-panel-refresh-label{flex:none;white-space:nowrap}
+@media (prefers-reduced-motion:reduce){
+  .dsm-qoder-composer-panel-refresh{transition:none}
+  .dsm-qoder-composer-panel-refresh-icon-spin{animation:none}
+}
 .dsm-qoder-composer-panel-table{
   width:100%;border-collapse:collapse;
   font-size:12px;line-height:18px;
