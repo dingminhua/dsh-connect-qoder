@@ -73,6 +73,7 @@ import { QODER_PAT_ENV_VARS } from '../credentials.ts'
 import type { QoderRegion } from '../upstream.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
 import { QODER_CARD_CSS } from './styles.ts'
+import { installPluginStyle } from './style-injector.ts'
 import { imageDefaultFor, modalityKeyOf, nativeModalityOf } from '../native-modality.ts'
 import { promoDisplayAt } from '../promo.ts'
 import { promoBadgeLabel, promoBadgeTooltip, hostLanguage } from './promo-badge.ts'
@@ -103,20 +104,15 @@ export type QoderCardProps =
 
 const POLL_INTERVAL_MS = 60_000
 
-/** Inject or refresh the shared card CSS for the current client bundle. */
-if (typeof document !== 'undefined') {
-  const cssId = 'dsh-connect-qoder/client.css'
-  const existing = document.querySelector<HTMLStyleElement>(`style[data-plugin-css="${cssId}"]`)
-  if (existing !== null) {
-    existing.textContent = QODER_CARD_CSS
-  } else {
-    const styleTag = document.createElement('style')
-    styleTag.dataset.plugin = 'dsh-connect-qoder'
-    styleTag.dataset.pluginCss = cssId
-    styleTag.textContent = QODER_CARD_CSS
-    document.head.appendChild(styleTag)
-  }
-}
+/**
+ * Inject or refresh the shared card CSS for the current client bundle.
+ *
+ * `installPluginStyle` refreshes an existing sheet in place instead of
+ * skipping it: the Host rebuilds this bundle and re-imports it, and a sheet
+ * that is only appended-when-absent would keep the FIRST version for the
+ * rest of the session.
+ */
+installPluginStyle('dsh-connect-qoder/client.css', QODER_CARD_CSS)
 
 /** One region's unsaved model edits; switching tabs never drops these. */
 export interface QoderDraft {

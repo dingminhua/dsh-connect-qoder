@@ -29,6 +29,7 @@ import type { QoderAccountScope } from './account-selection.ts'
 import { exclusionText } from './exclusion-text.ts'
 import { accountStateTone, accountStateColor } from './account-state.ts'
 import { QODER_COMPOSER_CSS } from './styles.ts'
+import { installPluginStyle } from './style-injector.ts'
 import type { QoderWebAccountCredit, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
 import type { QoderSettingsKey, Translate } from './locales.ts'
 
@@ -38,17 +39,15 @@ import type { QoderSettingsKey, Translate } from './locales.ts'
  * Same idempotent pattern as the card's injection: the classes are attached to
  * DOM this component owns, and `QODER_CARD_CSS` only loads when the settings
  * card does — which is not guaranteed on a host where the card is never rendered.
+ *
+ * The sheet is **refreshed in place**, not appended only when absent. The Host
+ * rebuilds this bundle and re-imports it, which re-runs this code; with an
+ * append-only sheet the browser would keep the very first version of the
+ * stylesheet for the rest of the session. That is precisely what left this
+ * plugin's "Settings" button rendering with the browser's default button
+ * chrome while the CSS on disk already carried the intended pill styling.
  */
-if (typeof document !== 'undefined') {
-  const cssId = 'dsh-connect-qoder/composer-credits.css'
-  if (!document.querySelector(`style[data-plugin-css="${cssId}"]`)) {
-    const styleTag = document.createElement('style')
-    styleTag.dataset.plugin = 'dsh-connect-qoder'
-    styleTag.dataset.pluginCss = cssId
-    styleTag.textContent = QODER_COMPOSER_CSS
-    document.head.appendChild(styleTag)
-  }
-}
+installPluginStyle('dsh-connect-qoder/composer-credits.css', QODER_COMPOSER_CSS)
 
 /** Automatic refresh period. Five minutes, matching a credit balance's actual rate of change. */
 export const COMPOSER_CREDITS_REFRESH_INTERVAL_MS = 300_000
