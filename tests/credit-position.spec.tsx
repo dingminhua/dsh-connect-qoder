@@ -33,6 +33,7 @@ import {
 } from '../src/status-paths.ts'
 import { ComposerCreditsGate, composerCreditsRegionOf } from '../src/client/ComposerCreditsGate.tsx'
 import { ComposerCredits } from '../src/client/ComposerCredits.tsx'
+import { QODER_COMPOSER_CSS } from '../src/client/styles.ts'
 
 const act: typeof actFromReact = ((React as unknown as { act?: typeof actFromReact }).act
   ?? actTestUtils) as typeof actFromReact
@@ -563,7 +564,7 @@ describe('composer 面板的点色', () => {
       // 测出来的结论必然一致。
       const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
       expect(refresh).not.toBeNull()
-      expect(refresh.textContent).toBe(t('composer.refreshPool'))
+      expect(refresh.textContent).toBe(t('composer.refresh'))
       expect(refresh.disabled).toBe(false)
       // 循环箭头同样不被播报。
       const icon = refresh.querySelector('svg.dsm-qoder-composer-panel-refresh-icon')
@@ -591,29 +592,14 @@ describe('composer 面板的点色', () => {
     }, () => { opened += 1 })
   })
 
-  it('池关着 / 没有成员时，「刷新」那颗是禁用的（而不是点下去才发现没事可做）', async () => {
-    // 三种「没有可测的东西」：宿主不发 pool 段（旧宿主）、池关着、池开着但成员
-    // 名单空。它们都该得到同一颗置灰的按钮。
+  it('没有池成员时，「刷新」那颗是禁用的（而不是点下去才发现没事可做）', async () => {
+    // 两种「没有可测的东西」：宿主不发 pool 段（旧宿主）、池成员名单空。它们都
+    // 该得到同一颗置灰的按钮。
     await withPanel([
       { id: 'a-cur', accountName: 'cur', selected: true, current: true },
     ], async (panel) => {
       const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
       expect(refresh).not.toBeNull()
-      expect(refresh.disabled).toBe(true)
-    }, undefined, {
-      enabled: false,
-      checkinSupported: true,
-      targetModelId: 'qmodel_38max',
-      targetModelSource: 'preferred',
-      memberAccountIds: ['a-cur'],
-      effectiveMemberAccountIds: ['a-cur'],
-      accounts: [],
-    })
-
-    await withPanel([
-      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
-    ], async (panel) => {
-      const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
       expect(refresh.disabled).toBe(true)
     }, undefined, {
       enabled: true,
@@ -622,6 +608,31 @@ describe('composer 面板的点色', () => {
       targetModelSource: 'preferred',
       memberAccountIds: [],
       effectiveMemberAccountIds: [],
+      accounts: [],
+    })
+  })
+
+  it('池关着时「刷新」那颗**照样可点**（手动动作不受池开关约束）', async () => {
+    // 宿主的 `pool.test` 走 `scope = prefs.memberAccountIds`——它**不看**池的开关：
+    // 池的开关管的是「插件要不要替用户自动选号/换号」，不是「用户能不能对勾选过
+    // 的号点一下测试」（workbuddy 在那边把这条写成了显式理由）。
+    // 若这里按 `pool.enabled` 判定，池关着的用户就点不到那颗按钮，而宿主明明会
+    // 照跑 —— 按钮会「点不动」，但请求其实是能发的。
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+    ], async (panel, counts) => {
+      const refresh = panel.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-refresh')!
+      expect(refresh.disabled).toBe(false)
+      await act(async () => { refresh.click() })
+      await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+      expect(counts.test).toBe(1)
+    }, undefined, {
+      enabled: false,
+      checkinSupported: true,
+      targetModelId: 'qmodel_38max',
+      targetModelSource: 'preferred',
+      memberAccountIds: ['a-cur'],
+      effectiveMemberAccountIds: ['a-cur'],
       accounts: [],
     })
   })
@@ -672,5 +683,69 @@ describe('composer 面板的点色', () => {
     expect(button).not.toBeNull()
     await act(async () => { button!.click() })
     expect(opened).toBe(1)
+  })
+})
+
+/**
+ * 页头控件的 CSS 契约。
+ *
+ * 与组件测试同一条纪律，但断的是**样式表本身**：组件测试跑在 jsdom 里，而 jsdom
+ * 不做样式计算，所以「按钮用了哪个类」能断，「那颗药丸有没有底色」断不了 —— 它
+ * 只会读到类名。
+ *
+ * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
+ *   —— 同款契约测试（`tests/settings-route.spec.tsx` 的「settings control CSS
+ *   contract」一组）。
+ */
+describe('页头控件的 CSS 契约', () => {
+  const ruleOf = (className: string): string =>
+    new RegExp(`\\.${className.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\{([^}]*)\\}`).exec(QODER_COMPOSER_CSS)?.[1] ?? ''
+
+  it('页头渲染的每个类都有对应规则（没规则的类 = 浏览器默认按钮）', () => {
+    for (const name of [
+      'dsm-qoder-composer-panel-actions',
+      'dsm-qoder-composer-panel-settings',
+      'dsm-qoder-composer-panel-settings-icon',
+      'dsm-qoder-composer-panel-settings-label',
+      'dsm-qoder-composer-panel-refresh',
+      'dsm-qoder-composer-panel-refresh-icon',
+      'dsm-qoder-composer-panel-refresh-label',
+    ]) {
+      expect(QODER_COMPOSER_CSS, `${name} 应当有规则`).toContain(`.${name}{`)
+    }
+  })
+
+  it('「刷新」是**透明底**的安静药丸，「设置」才是有底色的那颗', () => {
+    // 参照图（workbuddy 真实宿主里的渲染）：刷新是灰字透明底，设置是淡紫底深色字。
+    // 两个一样响的胶囊会让页头读成一条工具栏，而「设置」是那个离开面板的动作。
+    const refresh = ruleOf('dsm-qoder-composer-panel-refresh')
+    expect(refresh).toContain('background:transparent')
+    expect(refresh).not.toContain('background:rgba')
+    // 文字用次级色。
+    expect(refresh).toContain('color:var(--dsw-alias-label-secondary')
+    // 设置那颗有底色（品牌色 10%）。
+    expect(ruleOf('dsm-qoder-composer-panel-settings')).toContain('background:rgba(86,134,254,.10)')
+  })
+
+  it('右对齐由**外壳**负责，不是按钮自己', () => {
+    // 外壳总是渲染，按钮不是（宿主没有去处的路由时不渲染）。把 auto margin 放在
+    // 按钮上，就等于让页头排布取决于宿主恰好提供不提供那条路由。
+    const wrapper = ruleOf('dsm-qoder-composer-panel-actions')
+    expect(wrapper).toContain('margin-left:auto')
+    expect(wrapper).toContain('display:flex')
+    expect(ruleOf('dsm-qoder-composer-panel-settings')).not.toContain('margin-left:auto')
+    expect(ruleOf('dsm-qoder-composer-panel-refresh')).not.toContain('margin-left:auto')
+  })
+
+  it('批次在飞时箭头会转，且减弱动效下**不消失**（它是「还活着」的唯一提示）', () => {
+    expect(QODER_COMPOSER_CSS).toContain('.dsm-qoder-composer-panel-refresh-icon-spin{animation:')
+    // 减弱动效下改成变暗，而不是 `animation:none` 之后什么都不剩。样式表里有**两段**
+    // `prefers-reduced-motion` 块（设置按钮一段、刷新按钮一段），所以逐段看。
+    const blocks = QODER_COMPOSER_CSS.match(/@media \(prefers-reduced-motion:reduce\)\{[^@]*?\n\}/g) ?? []
+    const mentions = blocks.some(block => block.includes('dsm-qoder-composer-panel-refresh-icon-spin'))
+    expect(mentions, '减弱动效的块里必须有刷新箭头那条规则').toBe(true)
+    // 变暗，而不是消失。
+    const dimmed = blocks.find(block => block.includes('dsm-qoder-composer-panel-refresh-icon-spin')) ?? ''
+    expect(dimmed).toContain('opacity:')
   })
 })

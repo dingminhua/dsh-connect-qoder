@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest'
 
-import { qoderLocales, render } from '../src/client/locales.ts'
+import { qoderLocales, render, en, zh } from '../src/client/locales.ts'
 
 type Lang = 'zh' | 'en'
 
@@ -130,5 +130,46 @@ describe('两个模型徽标的悬停文案', () => {
       // 悬停若不说清状态，读者会以为现在就在打折。
       expect(pending).toMatch(lang === 'zh' ? /未生效|还没/ : /not active|not yet|starts/i)
     }
+  })
+})
+
+/**
+ * 页头那颗「刷新」的文案。
+ *
+ * 断言的是**真实**的 locale 表（不是测试替身 `t`——它只回显 key，永远看不见缺
+ * 翻译或丢掉成本说明的提示）。
+ *
+ * 为什么提示里必须写明成本：「刷新」听起来是免费重读，而它底下是一批真实的探测
+ * ——花积分、最长约一分钟。让人意外掏钱的控件，比标签长一点的控件更糟。
+ */
+describe('页头「刷新」控件的文案', () => {
+  it('标签按**结果**命名，不按机制命名（机制是探测，读者要的是「这张表变最新」）', () => {
+    for (const dictionary of [en, zh]) {
+      // 卡片里还有逐账号的「测试」，标签写成「测试」会被读成「测当前账号」。
+      expect(dictionary['composer.refresh']).not.toContain('test')
+      expect(dictionary['composer.refresh']).not.toContain('测')
+      expect(dictionary['composer.refresh'].length).toBeGreaterThan(0)
+    }
+  })
+
+  it('提示里必须同时说出机制与代价（探测 + 积分）', () => {
+    for (const dictionary of [en, zh]) {
+      const hint = dictionary['composer.refreshHint']
+      expect(hint.length).toBeGreaterThan(20)
+    }
+    expect(en['composer.refreshHint']).toMatch(/probe/i)
+    expect(en['composer.refreshHint']).toMatch(/credit/i)
+    expect(zh['composer.refreshHint']).toMatch(/探测/)
+    expect(zh['composer.refreshHint']).toMatch(/积分/)
+  })
+
+  it('账号状态刷新失败与积分刷新失败是**两条**不同的消息', () => {
+    // 两行都写「刷新失败」会让读者分不清是哪一次刷新坏了 —— 积分读取失败与
+    // 账号状态重测是两件事，共用一个 key 就等于把其中一条永久藏起来。
+    expect(en['composer.refreshAccountsFailed']).not.toBe(en['composer.refreshFailed'])
+    expect(zh['composer.refreshAccountsFailed']).not.toBe(zh['composer.refreshFailed'])
+    // 账号那条要说清是「账号状态」这一层。
+    expect(en['composer.refreshAccountsFailed']).toMatch(/account/i)
+    expect(zh['composer.refreshAccountsFailed']).toMatch(/账号/)
   })
 })

@@ -736,41 +736,45 @@ export const QODER_COMPOSER_CSS = `
 @media (prefers-reduced-motion:reduce){
   .dsm-qoder-composer-panel-settings{transition:none}
 }
-/* 「刷新」颗按钮：与「设置」同族（药丸），但**更安静**。
-   两颗按钮在页头右侧并排，「设置」是设置页的入口（常会点），「刷新」是一次
-   性的重测动作（少用）。所以后者用次级色（label-secondary）而不是品牌色：
-   两个同浓度的品牌色药丸并排，会让人以为它们是同一类动作。 */
+/* 「刷新」颗按钮：**透明底**的安静药丸，hover 才出色。
+   它与「设置」是**不同的视觉权重**：设置是品牌色底的胶囊（它离开面板），刷新
+   作用于下面的表（本地、可重复）。两个一样响的胶囊会让页头读成一条工具栏。
+   逐字对齐 dsh-connect-workbuddy 的同名控件（acc8f2f / 92078a8），那边在真实
+   宿主里的渲染就是本图参照的样子：刷新是灰字透明底，设置是淡紫底深色字。 */
 .dsm-qoder-composer-panel-refresh{
   appearance:none;flex:none;
   display:inline-flex;align-items:center;gap:4px;
-  padding:3px 8px 3px 6px;
+  padding:3px 8px 3px 6px;margin-right:6px;
   border:1px solid transparent;border-radius:999px;
-  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));
+  background:transparent;
   color:var(--dsw-alias-label-secondary,#444);
   font:inherit;font-size:11px;line-height:16px;font-weight:500;
   cursor:pointer;
   transition:background-color .12s ease,border-color .12s ease,color .12s ease;
 }
 .dsm-qoder-composer-panel-refresh:hover:not(:disabled){
-  background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14));
+  background:rgba(127,127,127,.10);
   border-color:var(--dsw-alias-border-l2,rgba(127,127,127,.34));
   color:var(--dsw-alias-label-primary,CanvasText);
 }
-.dsm-qoder-composer-panel-refresh:active:not(:disabled){background:var(--dsw-alias-interactive-bg-hover,rgba(127,127,127,.14))}
+.dsm-qoder-composer-panel-refresh:active:not(:disabled){background:rgba(127,127,127,.16)}
 .dsm-qoder-composer-panel-refresh:focus-visible{outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:1px}
-/* 禁用时不是「按不动的按钮」，而是「此刻没有可测的东西」：玩家池关着、或这一区
-   一个成员都没有，那就没有刷新可言。 */
-.dsm-qoder-composer-panel-refresh:disabled{opacity:.45;cursor:default}
+/* 批次在飞时按钮是禁用的，而一颗**仍然在 hover 时亮起来**的禁用控件会招来第二次
+   按压——那次按压会被忽略，用户只会更困惑。 */
+.dsm-qoder-composer-panel-refresh:disabled{cursor:default;opacity:.6}
 /* 循环箭头同样不许被压扁（与齿轮同一条理由）。 */
 .dsm-qoder-composer-panel-refresh-icon{flex:none;display:block}
-/* 在飞时转起来：用户看着一个不动的按钮等了半分钟，会以为它没点上。 */
-.dsm-qoder-composer-panel-refresh-icon-spin{animation:dsm-qoder-composer-panel-spin 1.1s linear infinite}
-@keyframes dsm-qoder-composer-panel-spin{to{transform:rotate(360deg)}}
+/* 在飞时转起来：用户看着一个不动的按钮等了半分钟，会以为它没点上。
+   一圈 900ms：快到读得出在动，慢到不像渲染故障。 */
+.dsm-qoder-composer-panel-refresh-icon-spin{animation:dsm-qoder-panel-refresh-spin .9s linear infinite}
+@keyframes dsm-qoder-panel-refresh-spin{to{transform:rotate(360deg)}}
 /* 标签永不换行（与设置按钮同一条理由）。 */
 .dsm-qoder-composer-panel-refresh-label{flex:none;white-space:nowrap}
+/* 减弱动效下不转，但箭头**不许消失** —— 它是「批次还活着」的唯一提示。改为变暗，
+   而真正的指示是文案（「正在刷新…」）。 */
 @media (prefers-reduced-motion:reduce){
   .dsm-qoder-composer-panel-refresh{transition:none}
-  .dsm-qoder-composer-panel-refresh-icon-spin{animation:none}
+  .dsm-qoder-composer-panel-refresh-icon-spin{animation:none;opacity:.55}
 }
 .dsm-qoder-composer-panel-table{
   width:100%;border-collapse:collapse;

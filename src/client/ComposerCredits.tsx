@@ -391,21 +391,26 @@ export function ComposerCredits(props: ComposerCreditsProps) {
    * 这一区**有没有东西可刷新**。
    *
    * 「刷新」跑的是**玩家池**的批量探针（`POST /pool?action=test`），宿主那一侧
-   * 遍历的是「池成员」——不是面板上列出的全部账号。所以判据必须是池成员：
+   * 遍历的是「池成员」（`scope = prefs.memberAccountIds`）——不是面板上列出的
+   * 全部账号。所以判据必须是**池成员**：
    *
-   * - 池**关着**时没有成员可测（宿主侧的 `pool.test` 会一个号都不跑）；
-   * - 池开着但成员名单空时同样无事可做；
+   * - 成员名单空时无事可做；
    * - 宿主不发 `pool` 段（旧宿主）时无从得知 → 同样按「没有可测的」处理。
    *
    * 面板表格里的行是**账号**（含不在池里的选中号），不是池成员；用行数判会把
    * 「池空但有一个选中号」误判成「有东西可测」。
+   *
+   * **刻意不看池的开关。** 宿主那一侧的手动动作是**不受池开关约束**的（workbuddy
+   * 同规，并写明了理由）：池的开关管的是「插件要不要替用户自动选号/换号」，不是
+   * 「用户能不能对勾选过的号点一下测试」。若这里按 `pool.enabled` 判定，池关着的
+   * 用户就点不到那颗按钮——而宿主明明会照跑（`scope` 只看成员名单）。
    *
    * 判据为假时按钮**仍然渲染、但禁用**（而不是消失）：它在页头右侧那颗外壳里，
    * 一颗按钮忽然消失会让标题往左跳一下；而「此刻没有可测的东西」由置灰说出来，
    * 比让用户点了才发现没反应好。
    */
   const poolMembers = signedIn?.pool?.effectiveMemberAccountIds ?? signedIn?.pool?.memberAccountIds
-  const poolTestable = signedIn?.pool?.enabled === true && (poolMembers?.length ?? 0) > 0
+  const poolTestable = (poolMembers?.length ?? 0) > 0
 
   /**
    * 页脚显示的时刻：优先用**数据的真实读取时刻**（宿主给的 `creditsAtMs`），
@@ -462,14 +467,20 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                 // 池关着、或这一区一个成员都没有时就没有「刷新」可言：按钮禁用，
                 // 而不是点下去才发现什么也没发生。
                 disabled={testing || busy || switchingId !== undefined || !poolTestable}
-                title={t('composer.refreshPoolHint')}
+                title={t('composer.refreshHint')}
+                aria-label={t('composer.refreshHint')}
                 onClick={() => { void runTestAll() }}
               >
-                {/* 循环箭头：这是「重新测一遍」，不是「重读余额」。`aria-hidden`
-                    —— 按钮自己的文字已经报了名，图标再报一次就是噪音。
+                {/* 循环箭头：这是「重新测一遍」，不是「重读余额」。在批次在飞时
+                    **转起来**：一颗禁用按钮配一个不动的图标读起来像坏了，而串行
+                    批次足够长，「我这一下到底按上了吗」是个真问题。
+                    `aria-hidden` —— 按钮自己带着 aria-label，标签文字也报了名，
+                    图标再报一次就是噪音。
                     1.5px 描边：11px 下细描边会糊成一个灰点。 */}
                 <svg
-                  className={`dsm-qoder-composer-panel-refresh-icon${testing ? ' dsm-qoder-composer-panel-refresh-icon-spin' : ''}`}
+                  className={testing
+                    ? 'dsm-qoder-composer-panel-refresh-icon dsm-qoder-composer-panel-refresh-icon-spin'
+                    : 'dsm-qoder-composer-panel-refresh-icon'}
                   viewBox="0 0 16 16"
                   width="12"
                   height="12"
@@ -478,13 +489,13 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                   focusable="false"
                 >
                   <path
-                    d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9"
+                    d="M13.3 8a5.3 5.3 0 1 1-1.55-3.75"
                     stroke="currentColor"
                     strokeWidth="1.5"
                     strokeLinecap="round"
                   />
                   <path
-                    d="M13.2 1.9v2.9h-2.9"
+                    d="M13.4 2.2v2.9h-2.9"
                     stroke="currentColor"
                     strokeWidth="1.5"
                     strokeLinecap="round"
@@ -492,7 +503,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                   />
                 </svg>
                 <span className="dsm-qoder-composer-panel-refresh-label">
-                  {testing ? t('composer.refreshingPool') : t('composer.refreshPool')}
+                  {testing ? t('composer.refreshing') : t('composer.refresh')}
                 </span>
               </button>
               {openSettings === undefined
@@ -629,7 +640,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
           {/* 批量探针失败单独一行：它与「积分读不出来」是两件事 —— 读数可能好好的，
               而这次重测没跑起来。用户需要知道圆点为什么还是旧的。 */}
           {testFailed
-            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.poolTestFailed')}</p>
+            ? <p className="dsm-qoder-composer-panel-error" role="status">{t('composer.refreshAccountsFailed')}</p>
             : null}
         </div>,
         document.body,
