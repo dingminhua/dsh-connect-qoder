@@ -159,6 +159,13 @@ function mount(served: string[] = ['dsh-connect-qoder']): { live: () => string[]
           whileServed: (_namespaces: readonly string[], register: (s: ReadonlySet<string>) => () => void) => register(new Set(served)),
         }
       : undefined),
+    // `ctx.inject(['pluginNavigation'], …)` 在这里**不进入回调**：这台宿主没挂
+    // Plugins 页。桩必须提供这个方法，否则 apply 会抛在调用处、被外层 try/catch
+    // 吞掉，后面那半段（侧边栏订阅与种子）就永远不会执行 —— 那是测试的假象，
+    // 不是产品行为。
+    inject: (deps: string[], run: (scope: unknown) => unknown) => {
+      if (!Array.isArray(deps) || !deps.includes('pluginNavigation')) return
+    },
     effect: (run: () => unknown) => { run() },
     locale: { register: () => () => {}, bind: () => keyT },
     slots: stub.slots,

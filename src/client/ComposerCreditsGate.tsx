@@ -92,10 +92,18 @@ export interface ComposerCreditsGateProps {
    * from a test.
    */
   useProjection?: (key: 'modelSelection') => unknown
+  /**
+   * Open this plugin's settings page; forwarded to {@link ComposerCredits}.
+   *
+   * **这个转发不是可有可无的样板**：漏掉它，入口把 `openSettings` 传进来、
+   * 面板里却永远收不到，按钮就不渲染 —— 而两侧各自都有测试、各自都是绿的。
+   * 这一层只做判定，但它站在 props 的必经之路上。
+   */
+  openSettings?: () => void
 }
 
 export function ComposerCreditsGate(props: ComposerCreditsGateProps) {
-  const { t, position, settingsScope, useProjection } = props
+  const { t, position, settingsScope, useProjection, openSettings } = props
   const [, setRevision] = useState(0)
   useEffect(
     () => {
@@ -116,7 +124,7 @@ export function ComposerCreditsGate(props: ComposerCreditsGateProps) {
   if (regionCreditPositionOf(scopeValueOf(settingsScope), region) !== (position ?? 'composer')) return null
 
   const provider = selectedProviderOf(projection)
-  return <ComposerCredits t={t} {...provider === undefined ? {} : { provider }} region={region} {...settingsScope === undefined ? {} : { settingsScope }} />
+  return <ComposerCredits t={t} {...provider === undefined ? {} : { provider }} region={region} {...settingsScope === undefined ? {} : { settingsScope }} {...openSettings === undefined ? {} : { openSettings }} />
 }
 
 function subscribeScope(scope: ComposerScopeLike & { subscribe?: (l: () => void) => () => void }, setRevision: (fn: (v: number) => number) => void): (() => void) | undefined {

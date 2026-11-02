@@ -97,14 +97,25 @@ function slotsStub() {
   }
 }
 
-/** 跑一次真实 apply，返回可观测面。 */
+/**
+ * 跑一次真实 apply，返回可观测面。
+ *
+ * `pluginNavigation` 走的是 **`ctx.inject([...])` 子作用域**，不是 `ctx.get()`：
+ * 那个服务由 ui-plugin-manager 在自己的 slot 生成器里 `reflect.provide`，加载顺序
+ * 由 profile 决定，所以 `ctx.get()` 在 apply 时刻必然拿不到它。桩必须模拟同一套
+ * 机制 —— 有服务就同步调一次回调，没服务就干脆不调（真实 cordis 正是如此）。
+ */
 function mount(forms: any, pluginNavigation?: { openBundle(name: string): void }) {
   const stub = slotsStub()
   const effects: Array<{ run: () => unknown; label: string | undefined; disposer: unknown }> = []
   const ctx: any = {
-    get: (name: string) => (name === 'configForms'
-      ? forms
-      : name === 'pluginNavigation' ? pluginNavigation : undefined),
+    get: (name: string) => (name === 'configForms' ? forms : undefined),
+    inject: (deps: string[], run: (scope: any) => unknown) => {
+      if (!Array.isArray(deps) || !deps.includes('pluginNavigation')) return
+      // 服务缺席时不进入回调，与 cordis 一致。
+      if (pluginNavigation === undefined) return
+      return run({ ...ctx, pluginNavigation })
+    },
     effect: (run: () => unknown, label?: string) => {
       const disposer = run()
       effects.push({ run, label, disposer })
@@ -114,6 +125,41 @@ function mount(forms: any, pluginNavigation?: { openBundle(name: string): void }
   }
   apply(ctx)
   return { ...stub, effects }
+}
+
+/**
+ * 同一套 apply，但 `pluginNavigation` **可以晚到** —— 用来复现真实的加载顺序：
+ * profile 的 bundles 数组把本插件排在 ui-plugin-manager 前面，那个服务是在对方
+ * 自己的 slot 生成器里才 `reflect.provide` 的。
+ */
+function mountDeferred(forms: any) {
+  const stub = slotsStub()
+  const effects: Array<{ run: () => unknown; label: string | undefined; disposer: unknown }> = []
+  // 等服务的回调先挂起来，`deliver()` 时再跑（cordis 正是这个语义）。
+  const waiting: Array<() => void> = []
+  let navigation: { openBundle(name: string): void } | undefined
+  const ctx: any = {
+    get: (name: string) => (name === 'configForms' ? forms : undefined),
+    inject: (deps: string[], run: (scope: any) => unknown) => {
+      if (!Array.isArray(deps) || !deps.includes('pluginNavigation')) return
+      waiting.push(() => run({ ...ctx, pluginNavigation: navigation }))
+    },
+    effect: (run: () => unknown, label?: string) => {
+      const disposer = run()
+      effects.push({ run, label, disposer })
+    },
+    locale: { register: () => () => {}, bind: () => keyT },
+    slots: stub.slots,
+  }
+  apply(ctx)
+  return {
+    ...stub,
+    effects,
+    /** 宿主把 Plugins 页挂上来（等价于那个服务终于 provide 了）。 */
+    host: { attachNavigation: (service: { openBundle(name: string): void }) => { navigation = service } },
+    /** 服务到货：跑那些一直在等的回调。 */
+    deliver: () => { for (const run of waiting.splice(0)) run() },
+  }
 }
 
 describe('真实 apply() 的 settings 命名空间绑定', () => {
@@ -215,8 +261,8 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     // profile 上整个客户端插件**不会激活** —— 卡片、积分读数、模型徽标一起消失，
     // 而这里只该丢一颗「设置」按钮。
     //
-    // 这条用例跑的是真实 apply()（下面的 mount 就是这么做的，且 ctx.get 对
-    // pluginNavigation 返回 undefined），所以它断言的是产品代码本身的降级。
+    // 这条用例跑的是真实 apply()（mount 的桩对 `ctx.inject(['pluginNavigation'])`
+    // 在服务缺席时**不进入回调**，与 cordis 一致），所以断言的是产品代码本身的降级。
     const stub = formsStub({ served: ['dsh-connect-qoder'] })
     const { injected, live } = mount(stub.forms)
     expect(live()).toHaveLength(5)
@@ -242,6 +288,35 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
       .at(-1)
     expect(typeof composerProps?.openSettings).toBe('function')
     composerProps.openSettings()
+    expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
+  })
+
+  it('Plugins 页比本插件晚加载时，那颗按钮仍然会出现（服务是等来的，不是探来的）', async () => {
+    // 真实缺陷的回归。`pluginNavigation` 由 ui-plugin-manager 在自己的 slot 生成器里
+    // `reflect.provide`，而 profile 的 bundles 数组把本插件排在它前面 —— 早先那版用
+    // `ctx.get('pluginNavigation')` 在 apply 时刻探一次，必然永远是 undefined，
+    // 于是**按钮根本不渲染**，且没有任何后续机会纠正。
+    //
+    // 现在改成 `ctx.inject([...])` 子作用域：服务晚到，回调才跑，`rebindSlots()`
+    // 换掉 entry 身份让渲染器重算 inject（它按 entry 缓存，不换就一直发旧 props）。
+    const opened: string[] = []
+    const stub = formsStub({ served: ['dsh-connect-qoder'] })
+    const late = mountDeferred(stub.forms)
+    // 服务还没到：先跑一次 apply，此时**不该**有 openSettings。
+    late.host.attachNavigation({ openBundle: name => { opened.push(name) } })
+    const before = late.injected
+      .filter(e => e.slot === 'conversation.input.right')
+      .map(e => e.props())
+      .at(-1)
+    expect(before?.openSettings).toBeUndefined()
+    // 现在「宿主把 Plugins 页挂上来」。
+    late.deliver()
+    const after = late.injected
+      .filter(e => e.slot === 'conversation.input.right')
+      .map(e => e.props())
+      .at(-1)
+    expect(typeof after?.openSettings).toBe('function')
+    after.openSettings()
     expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
   })
 

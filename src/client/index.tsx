@@ -64,26 +64,23 @@ export function apply(ctx: QoderClientContext): void {
      * `openBundle(<npm 包名>)`：它选中 Plugins 面板、切到「已安装」并打开那个 bundle
      * 的详情页 —— 我们的配置卡片就渲染在那一页上。语音输入插件是同样的用法。
      *
-     * **软探测，绝不注入成硬依赖**：`inject: ['slots','locale']` 是本插件的全部依赖。
-     * 把 `pluginNavigation` 加进 inject 会让整个客户端插件在没装 Plugins 页的 profile
-     * 上**不激活**（卡片、读数、模型徽标一起消失），而这里只丢一颗按钮。拿不到就返回
-     * `undefined`，面板干脆不渲染它（一个点了没反应的按钮比没有更糟）。
+     * **不是硬依赖**：`inject: ['slots','locale']` 是本插件的全部依赖。把
+     * `pluginNavigation` 加进那份清单会让整个客户端插件在没装 Plugins 页的 profile
+     * 上**不激活**（卡片、读数、模型徽标一起消失），而这里只该丢一颗按钮。所以它
+     * 由下面那个 `ctx.inject([...])` 子作用域等：服务不到就不传 `openSettings`，
+     * 面板干脆不渲染它（一个点了没反应的按钮比没有更糟）。
+     *
+     * **也不能用 `ctx.get()` 探一次**（第一版就是这么写的，结果按钮永不出现）：
+     * 该服务由 `ui-plugin-manager` 在自己 apply 里的 `ctx.slots.inject('main',
+     * function* …)` 生成器内部 `reflect.provide`，而加载顺序由 profile 的 bundles
+     * 数组决定。本插件排在它前面，apply 那一刻它还没 provide —— 一次探测必然永远
+     * 拿到 `undefined`，且没有第二次机会。
      *
      * 包的**npm 名**（`QODER_PACKAGE_NAME`，构建期注入）而不是 Loader entry id：
      * Plugins 页按包名索引 bundle 行（`openBundle` 的参数就是它），而 entry id 是
      * 另一件事（故意不带作用域，见 `slot-keys.ts`）。
      */
-    const openPluginSettings = ((): (() => void) | undefined => {
-      const navigation = softGet('pluginNavigation') as { openBundle?: (name: string) => void } | undefined
-      if (navigation === undefined || typeof navigation.openBundle !== 'function') return undefined
-      return () => {
-        try {
-          navigation.openBundle!(QODER_PACKAGE_NAME)
-        } catch (error: unknown) {
-          console.error('[dsh-connect-qoder] could not open the settings page:', error)
-        }
-      }
-    })()
+    let openPluginSettings: (() => void) | undefined
 
     let settingsScope: QoderCardInjected['settingsScope'] | undefined
     const forms = softGet('configForms') as
@@ -476,6 +473,50 @@ export function apply(ctx: QoderClientContext): void {
     }
 
     bindSettingsScope()
+
+    /**
+     * 「设置」按钮的目的地：等宿主把 `pluginNavigation` 挂上来。
+     *
+     * **为什么不能用 `ctx.get()` 探一次**（第一版就是这么写的，结果按钮永不出现）：
+     * 那个服务由 `ui-plugin-manager` 在自己 apply 里的 `ctx.slots.inject('main',
+     * function* …)` 生成器内部 `reflect.provide`，而插件加载顺序由 profile 的
+     * bundles 数组决定。本插件排在它前面，apply 那一刻它还没 provide —— 一次探测
+     * 拿到的必然永远是 `undefined`，并且没有第二次机会。
+     *
+     * **为什么不是 `inject: ['pluginNavigation']`**：那会让整个客户端插件变成硬依赖，
+     * 在没装 Plugins 页的 profile 上**根本不激活** —— 卡片、积分读数、模型徽标一起
+     * 消失，而这里只该丢一颗按钮。`ctx.inject([...], scope => …)` 只为这个**子作用域**
+     * 等服务：服务不到，回调不跑，插件其余部分照常工作；服务晚到或消失，回调也能跟着
+     * 跑/收回。
+     *
+     * 服务到货后 `rebindSlots()`：渲染器按 entry 身份缓存 inject 结果，注册不变就
+     * 一直是旧 props（`openSettings` 缺席）。重注册换掉 entry 身份，缓存才会重算。
+     */
+    try {
+      ctx.inject(['pluginNavigation'], (scope: QoderClientContext) => {
+        const navigation = (scope as unknown as { pluginNavigation?: { openBundle?: (name: string) => void } })
+          .pluginNavigation
+        if (navigation === undefined || typeof navigation.openBundle !== 'function') return
+        openPluginSettings = () => {
+          try {
+            navigation.openBundle!(QODER_PACKAGE_NAME)
+          } catch (error: unknown) {
+            console.error('[dsh-connect-qoder] could not open the settings page:', error)
+          }
+        }
+        rebindSlots()
+        return () => {
+          openPluginSettings = undefined
+          try { rebindSlots() } catch { /* fiber 正在拆：槽位服务可能已经先走一步 */ }
+        }
+      })
+    } catch (error: unknown) {
+      // 一个等按钮的目的地失败，不该把下面那条侧边栏订阅与种子一起带走 —— 整段
+      // apply 外面只有一个只打日志的 try/catch（那正是 workbuddy #55 的形态：
+      // 一次异常让后面所有注册都消失，且页面上没有任何提示）。这里单独兜住，
+      // 代价只是按钮不出现。
+      console.error('[dsh-connect-qoder] pluginNavigation wait failed (settings button hidden):', error)
+    }
 
     /**
      * 跟随 opt-in 开关，并用 Host 的答案做**种子**。

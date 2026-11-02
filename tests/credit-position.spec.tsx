@@ -74,6 +74,7 @@ async function drawGate(input: {
   position?: 'composer' | 'stats'
   scope?: unknown
   provider?: string
+  openSettings?: () => void
 }): Promise<{ container: HTMLDivElement, drawn: number }> {
   // 读数会在挂载时取余额；空应答让这条用例只关于**席位**决定，而不是积分。
   vi.stubGlobal('fetch', vi.fn(async () => ({
@@ -90,6 +91,7 @@ async function drawGate(input: {
       t,
       ...input.position === undefined ? {} : { position: input.position },
       ...input.scope === undefined ? {} : { settingsScope: input.scope as any },
+      ...input.openSettings === undefined ? {} : { openSettings: input.openSettings },
       useProjection,
     } as any))
   })
@@ -552,5 +554,38 @@ describe('composer 面板的点色', () => {
     ], async (panel) => {
       expect(panel.querySelector('button.dsm-qoder-composer-panel-settings')).toBeNull()
     })
+  })
+
+  it('openSettings 穿过 gate 那一层到达面板（漏转发就等于按钮不存在）', async () => {
+    // 真实缺陷的回归：`ComposerCreditsGate` 只做「该不该画」的判定，但它站在
+    // props 的必经之路上。早先它收下 `openSettings` 却没往下传 —— 入口传了、
+    // 面板也支持，可按钮就是不出现，而且两侧各自的测试全绿（一个只测面板、一个
+    // 只测入口）。这条用例走的是**完整的 gate → 面板**链路，所以漏转发会红。
+    // 不用 `drawGate`：它在返回前就卸载并移除了容器，这里要一直挂着才点得到。
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ status: 'signed-out', accounts: [] }),
+    } as Response)))
+    let opened = 0
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => {
+      root.render(React.createElement(ComposerCreditsGate, {
+        t,
+        openSettings: () => { opened += 1 },
+        useProjection: () => ({ next: { provider: 'qoder' } }),
+      } as any))
+    })
+    // 空应答（signed-out），面板仍会画出自己的根节点。
+    const trigger = container.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-credits-trigger')
+    expect(trigger).not.toBeNull()
+    await act(async () => { trigger!.click() })
+    await act(async () => { await new Promise(r => setTimeout(r, 0)) })
+    const button = document.querySelector<HTMLButtonElement>('button.dsm-qoder-composer-panel-settings')
+    expect(button).not.toBeNull()
+    await act(async () => { button!.click() })
+    expect(opened).toBe(1)
   })
 })
