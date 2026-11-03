@@ -193,7 +193,7 @@ The host has an in-place retry loop: when a request fails but is worth one more 
 
 Qoder occasionally answers with `RESOURCE_LIMIT` (business code `10605`) and **states how long to wait**. The plugin now writes that value into the failure text it hands the host (of the form `[upstream retry-after 5s]`), so you can see that upstream only asked for five seconds instead of just "upstream returned a 4xx".
 
-To change the budget, set three numbers (per region):
+To change the budget, set these numbers (per region):
 
 ```yaml
 regions:
@@ -202,11 +202,34 @@ regions:
       maxRetries: 4        # attempts (0 = follow the host default)
       initialDelayMs: 5000 # first backoff in ms (0 = follow the host default)
       maxDelayMs: 30000    # backoff ceiling in ms (0 = follow the host default)
+      queueWaitMs: 60000   # ceiling for waiting out an upstream queue (0 = off, default 60000)
 ```
 
-`5000 -> 30000` covers both common upstream shapes: a transient throttle (5 s) and a `queueType:p2` queue (about 30 s). **Three zeros mean "follow the host default"**, so leaving them out is equivalent to not configuring this at all.
+`5000 -> 30000` covers both common upstream shapes: a transient throttle (5 s) and a `queueType:p2` queue (about 30 s). **The first three zeros mean "follow the host default"**, so leaving them out is equivalent to not configuring this at all; the fourth one, `queueWaitMs: 0`, turns that feature **off** (see below).
 
 > Previously this was whatever the host picked; changing it meant editing the build artifact inside `node_modules` — and that silently reverts on upgrade.
+
+#### Waiting out a queue yourself (`queueWaitMs`, issue #29)
+
+**The retry budget cannot cover "upstream explicitly asked us to wait 30 seconds".** The host's ladder is increasing (5 s -> 10 s -> 20 s -> 30 s, with jitter), so its first two attempts are **always** shorter than the 30 seconds upstream asked for. Measured in the wild: one turn took 28 retries and 296 seconds of pure waiting, and 11 of those attempts fired within 5 seconds of upstream saying "wait 30 seconds".
+
+The plugin cannot make the host wait precisely: the `pi-ai` route has no `providerRetryAfterMs` channel (re-checked in issue #24 — `retry-after` appears in neither that module nor the vendor underneath it). So waiting in the forwarding layer is the only way to make "wait 30 seconds" actually mean 30 seconds without spending the host's retry budget:
+
+- upstream answers `isQueued: true` **and** states a positive wait, and that value is **<= `queueWaitMs`** ⇒ the plugin waits exactly that long and resends once; that failure is **not** handed to the host;
+- the stated value exceeds the ceiling, or the resend is still queued ⇒ it is passed to the host unchanged, so the host still has its remaining budget;
+- each request waits **once**, and the wait is interruptible (press stop and it stops at once);
+- set `queueWaitMs: 0` to turn it off and go back to "the host's ladder decides".
+
+#### Two kinds of "queued" must not be conflated (issue #29)
+
+The same `isQueued: true` has two shapes, and the plugin words them and accounts for them differently:
+
+| Upstream field | Meaning | What the plugin does |
+| --- | --- | --- |
+| `isQueued:true` + `serviceAvailable:true` | the service is fine, you are in the queue (`queueCount` is usually > 0) | recorded as **queued**, cooled down for the stated duration; switching accounts is meaningful |
+| `isQueued:true` + `serviceAvailable:false` | upstream is **refusing service overall** (measured `queueCount: 0` — nobody is in the queue) | recorded as **upstream unavailable**; the switch notice says outright that this is not the account's fault |
+
+The difference matters: for the first, "wait a bit" or "use another account" works; for the second, switching accounts — and switching PAT — does **not**. Measured: 14 models unavailable at once. Both shapes used to be reported as "queued", so users went off to re-provision their credentials for no reason.
 
 ### Ranking rules (who serves when the pool is on)
 
