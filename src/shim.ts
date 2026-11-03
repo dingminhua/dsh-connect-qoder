@@ -594,9 +594,23 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     // 线是布尔 `is_reasoning`：`off` → false；任何正档 → true；否则回落到
     // stream_options.include_reasoning。设置里为这个模型保存过档位时，档位
     // 本身即表示「开启并指定强度」，因此以它为准（除非请求明确说 off）。
+    //
+    // **没有保存值时采用请求里带下来的那一档。** 那是宿主从适配器报上去的默认档
+    // 物化出来的（`defaultEffort` → `reasoningEffort`），也就是上游自己声明的
+    // 默认档（用户实拍：「这里既然有默认设置选择的思考强度，选择的时候就应该
+    // 直接进入到这个对应的默认设置，而不是跳动到 default」）。
+    //
+    // 此前这一档被**丢掉**了：shim 只认自己那张保存表，于是界面上写着
+    // 「medium（上游默认）」、请求体里却没有档位字段 —— 上游拿到的还是它自己
+    // 的默认（碰巧一致），而用户换一个模型、宿主换一个档位，界面与实际行为就
+    // 对不上了。请求里的档位是宿主**此刻**的决定，比一张可能过期的保存表更近。
     const requestedOff = body.reasoning_effort === 'off'
-    const isReasoning = savedEffort !== undefined && !requestedOff ? true : isReasoningRequested(body)
-    const reasoningEffort = requestedOff ? undefined : savedEffort
+    const requestedEffort = typeof body.reasoning_effort === 'string' && body.reasoning_effort !== ''
+      ? body.reasoning_effort
+      : undefined
+    const effort = savedEffort ?? requestedEffort
+    const isReasoning = effort !== undefined && !requestedOff ? true : isReasoningRequested(body)
+    const reasoningEffort = requestedOff ? undefined : effort
 
     // 客户端断开要中止上游（否则上游继续烧额度），且断开前的失败不该记成账号
     // 的测量。监听**响应**的 close 而非请求的：请求流被读完后 Node 会自行

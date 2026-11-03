@@ -2032,6 +2032,11 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
             // issue #24：重试预算可配（缺省 = 宿主默认，与升级前一致）。
             retryPolicy: retryPolicyOf(config, region),
             retryPolicyPath: `dsh-connect-qoder regions.${region}.retry`,
+            // 逐模型的默认思考档位：用户在卡片里为某个模型选过档位时，那一次选择
+            // 就是这个模型的默认值；没选过的模型跟随上游自己声明的默认档
+            // （`src/default-effort.ts`）。适配器把它报给宿主，宿主的模型选择器
+            // 于是显示那一档而不是「Default」，请求里也会带上它。
+            defaultThinkingEfforts: () => thinkingEffortsOf(config, region),
           })
           stacks[region].adapter = adapters[region]
         }

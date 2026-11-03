@@ -376,3 +376,81 @@ describe('createQoderAdapter', () => {
     expect(() => q.invalidate()).not.toThrow()
   })
 })
+/**
+ * 逐模型的默认思考档位（用户实拍：「这里既然有默认设置选择的思考强度，选择的时候
+ * 就应该直接进入到这个对应的默认设置，而不是跳动到 default」）。
+ *
+ * 症状：卡片那一行明明写着「思考强度 medium（上游默认）」，而 DSH 的模型选择器
+ * 显示的是 **Default**。
+ *
+ * 根因：适配器没有把上游声明的默认档报给宿主（`reasoning.defaultEffort` 缺席），
+ * 而宿主正是从这份元数据取「当前档位」的。
+ */
+describe('逐模型的默认思考档位', () => {
+  const shim = { baseUrl: 'http://127.0.0.1:9999', secret: 'shim-secret' } as never
+
+  /** 一个声明了档位表与上游默认档的模型（Qwen 系的词表）。 */
+  const QWEN: QoderModelInfo = {
+    ...MODEL,
+    key: 'qmodel_38max',
+    displayName: 'Qwen3.8-Max',
+    thinkingEfforts: ['low', 'medium', 'xhigh'],
+    defaultThinkingEffort: 'medium',
+  }
+
+  const adapterOf = (info: QoderModelInfo, saved?: Record<string, string>): ReturnType<typeof createQoderAdapter> =>
+    createQoderAdapter({
+      shim,
+      catalog: { current: () => [info] } as never,
+      provider: 'qoder-test',
+      displayName: 'Qoder Test',
+      piAiGeneration: 'modern',
+      ...saved === undefined ? {} : { defaultThinkingEfforts: () => saved },
+    })
+
+  it('把上游声明的默认档报给宿主（选择器于是显示那一档而不是 Default）', async () => {
+    const adapter = adapterOf(QWEN)
+    const info = await adapter.adapter.resolveModel('qoder-test', 'qmodel_38max')
+    expect(info.reasoning?.defaultEffort).toBe('medium')
+    // 档位表照旧（上游声明什么就是什么）。
+    expect(info.reasoning?.efforts.map(effort => effort.id)).toContain('medium')
+  })
+
+  it('prepareCall 返回的那份也带默认档（它才是随请求走的那份）', async () => {
+    // `resolveModel` 只服务目录与选择器；`prepareCall` 返回的那份随请求走。
+    // 只改一处 ⇒ 界面是 Default、请求里却带着档位（或反过来）。
+    const adapter = adapterOf(QWEN)
+    const call = await adapter.adapter.prepareCall('qoder-test', 'qmodel_38max')
+    expect(call.model.reasoning?.defaultEffort).toBe('medium')
+  })
+
+  it('用户保存过的档位胜过上游默认档', async () => {
+    const adapter = adapterOf(QWEN, { qmodel_38max: 'xhigh' })
+    const info = await adapter.adapter.resolveModel('qoder-test', 'qmodel_38max')
+    expect(info.reasoning?.defaultEffort).toBe('xhigh')
+  })
+
+  it('保存的值不在该模型当前的档位表里时退回上游默认档（不报一个用不动的档位）', async () => {
+    // 目录换代后，用户保存的档位可能已经不在了。报一个模型**没有**的档位，宿主
+    // 会以 `UNSUPPORTED_REASONING_EFFORT` 拒掉整个请求 —— 那比显示 Default 糟。
+    const adapter = adapterOf(QWEN, { qmodel_38max: 'max' })
+    const info = await adapter.adapter.resolveModel('qoder-test', 'qmodel_38max')
+    expect(info.reasoning?.defaultEffort).toBe('medium')
+  })
+
+  it('模型一个档位都没声明时不报默认档（不编一个出来）', async () => {
+    const { thinkingEfforts: _efforts, defaultThinkingEffort: _default, ...withoutLevels } = QWEN
+    const adapter = adapterOf(withoutLevels as QoderModelInfo)
+    const info = await adapter.adapter.resolveModel('qoder-test', 'qmodel_38max')
+    // 这样的模型根本不提供推理（`qoderThinkingLevelMap` 返回 undefined），
+    // 所以元数据里没有 `reasoning` 段 —— 更不该凭空多一个默认档。
+    expect(info.reasoning?.defaultEffort).toBeUndefined()
+  })
+
+  it('目录里没有的模型照旧被拒（适配器不把它变成一个假模型）', async () => {
+    // pi-ai 自己就会拒（"has no configured model"）。适配器**不该**把它救回来 ——
+    // 报一个默认档给一个不存在的模型，等于凭空造出一个能用的模型。
+    const adapter = adapterOf(QWEN)
+    await expect(adapter.adapter.resolveModel('qoder-test', 'not-in-catalog')).rejects.toThrow()
+  })
+})

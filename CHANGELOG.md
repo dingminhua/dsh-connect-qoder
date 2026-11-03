@@ -2,6 +2,49 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.17.2 (2026-11-03)
+
+> **卡片写着「medium（上游默认）」，DSH 的模型选择器却显示 Default。**
+> 上游逐模型声明了默认档，适配器没有把它报上去 —— 宿主于是不知道该用哪一档。
+> 现在选择时直接落在那一档上。
+
+### 修复
+
+- **逐模型的默认思考档位报给宿主**（用户实拍：「这里既然有默认设置选择的思考强度，
+  选择的时候就应该直接进入到这个对应的默认设置，而不是跳动到 default」）。
+  - **根因**：适配器没有 advertise `reasoning.defaultEffort`。宿主正是从这份元数据取
+    「当前档位」与选项表（`ui-model-selection` 的 `catalog.reasoningFor`），默认档
+    缺席时它只能显示 **Default** —— 尽管卡片那一行写着「medium（上游默认）」。
+  - **新增 `src/default-effort.ts`**：取值优先级是**用户保存过的档位 > 上游声明的
+    默认档 > 该模型自己声明的中档**。第三档不是「最弱的那一档」—— Qwen 系声明
+    `low/medium/xhigh`，取 `low` 等于默认关掉思考；而 `low/high/max` 那一族没有
+    `medium`，所以兜底取该模型**自己**的中档。
+  - **新增 `DefaultEffortAdapter`**（`src/adapter.ts`）：在 `resolveModel` 与
+    `prepareCall` 两处 advertise 默认档。只改一处 ⇒ 界面是 Default、请求里却带着
+    档位（或反过来）。**绝不报一个该模型没声明的档位** —— 宿主会以
+    `UNSUPPORTED_REASONING_EFFORT` 拒掉整个请求，那比显示 Default 糟得多。
+  - **不能用 `profile.reasoning` 顶上**：它是**路由级**的一个常量，而 Qoder 的档位是
+    **逐模型**的（Qwen 系 `low/medium/xhigh`，DeepSeek/GLM 系 `low/high/max`）——
+    一条常量配不上一份花名册。
+- **shim 侧不再丢掉请求里带下来的档位**（`src/shim.ts`）：此前只认自己那张保存表，
+  于是宿主物化下来的默认档被丢掉 —— 界面写着「medium（上游默认）」、请求体里却没有
+  档位字段。现在**保存值优先**（那是用户明确选过的），没有保存值时采用请求里那一份
+  （宿主此刻的决定，比一张可能过期的保存表更近）。
+
+### 测试
+
+- 新增 `tests/default-effort.spec.ts`（11 条）：档位表过滤（只保留 DSH 认识的）、
+  取值优先级（用户 > 上游 > 中档兜底）、保存值失效时退回上游默认档、一个档位都没
+  声明时不编一个出来。
+- `tests/adapter.spec.ts` 新增「逐模型的默认思考档位」一组（6 条）：默认档被报给
+  宿主、`prepareCall` 那份也带、用户保存的值胜过上游默认档、保存值不在档位表里时
+  退回上游默认档、不声明档位的模型不报默认档、目录里没有的模型照旧被拒。
+- `tests/shim.spec.ts` 新增两条：没有保存值时采用请求里带下来的档位、保存过的档位
+  仍然胜过请求里那一份。
+- 变异验证（五条）：adapter 不再 advertise → 3 条转红；只改 `resolveModel` 不改
+  `prepareCall` → 1 条转红；shim 丢掉请求里的档位 → 1 条转红；兜底档退回最弱的一档
+  → 1 条转红；保存值不覆盖上游默认档 → 2 条转红。
+
 ## 1.17.1 (2026-11-02)
 
 > **上游说「等 30 秒」，这 30 秒以前从来没被等过。**

@@ -330,6 +330,36 @@ describe('Qoder shim chat translation', () => {
     expect(calls[0]!.reasoningEffort).toBeUndefined()
   })
 
+  it('没有保存值时采用**请求里带下来的那一档**（宿主物化的默认档）', async () => {
+    // 用户实拍：「这里既然有默认设置选择的思考强度，选择的时候就应该直接进入到
+    // 这个对应的默认设置，而不是跳动到 default」。宿主把适配器报上去的
+    // `defaultEffort` 物化进每一个请求（`reasoningEffort`）—— shim 若只认自己
+    // 那张保存表，这一档就被丢掉了：界面上写着「medium（上游默认）」，请求体里
+    // 却没有档位字段。
+    const calls: ChatCall[] = []
+    const shim = await startShim({
+      upstream: stubUpstream({}, calls),
+      reasoningEffortOf: () => undefined,
+    })
+    const resp = await chat(shim, { reasoning_effort: 'medium' })
+    expect(resp.status).toBe(200)
+    expect(calls[0]!.reasoningEffort).toBe('medium')
+    // 有档位即「开启思考」。
+    expect(calls[0]!.isReasoning).toBe(true)
+  })
+
+  it('保存过的档位仍然胜过请求里带下来的那一档', async () => {
+    // 保存表是用户**明确**选过的，胜过宿主的默认档。
+    const calls: ChatCall[] = []
+    const shim = await startShim({
+      upstream: stubUpstream({}, calls),
+      reasoningEffortOf: () => 'xhigh',
+    })
+    const resp = await chat(shim, { reasoning_effort: 'medium' })
+    expect(resp.status).toBe(200)
+    expect(calls[0]!.reasoningEffort).toBe('xhigh')
+  })
+
   it('honours an explicit host "off" over the saved strength', async () => {
     // 宿主明确要求关闭思考时，保存的档位必须让位：用户此刻的意图优先于设置。
     const calls: ChatCall[] = []

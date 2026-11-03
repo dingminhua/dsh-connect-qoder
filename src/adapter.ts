@@ -16,12 +16,14 @@ import { createProvider } from '@earendil-works/pi-ai'
 import type { Api, AuthContext, Context, CredentialStore, Message, Model, Provider, ProviderStreams } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveRetryPolicy, type RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, type LlmResolvedModelInfo, type PreparedAdapterCall } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
 import type { QoderShim } from './shim.ts'
 import { modelDisplayName } from './catalog.ts'
 import type { QoderCatalog, QoderModelInfo } from './catalog.ts'
+import { defaultEffortFor } from './default-effort.ts'
 import type { QoderRegion } from './upstream.ts'
 import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
 import type { PiAiGeneration } from './pi-ai-runtime.ts'
@@ -95,6 +97,15 @@ export interface QoderAdapterOptions {
   retryPolicy?: RetryPolicyConfig | undefined
   /** 与 `retryPolicy` 配套的诊断路径（报错时指名字段所属）。 */
   retryPolicyPath?: string
+  /**
+   * 用户为每个模型保存的**默认**思考强度（模型 key → 档位名）。
+   *
+   * 一个**取值器**，不是捕获下来的快照：这是用户随时能改的设置，捕获一份会让
+   * 改动直到重载才生效。生产读的是活的区域槽；测试传字面量。
+   *
+   * 缺席的键 = 「跟随上游声明的默认档」—— 见 `src/default-effort.ts`。
+   */
+  defaultThinkingEfforts?: () => Readonly<Record<string, string | undefined>>
 }
 
 export interface QoderAdapter {
@@ -199,6 +210,84 @@ function toPiModel(
       supportsDeveloperRole: false,
     },
   } as unknown as Model<Api>
+}
+
+/**
+ * 把**逐模型**的默认档位报给宿主的适配器。
+ *
+ * ## 为什么需要它
+ *
+ * 宿主把 `reasoning.defaultEffort` **物化进每一个没指名档位的请求**
+ * （`LlmRuntime.resolveCallWithInfo`），而 DSH 的模型选择器也从同一份元数据取
+ * 「当前档位」与选项表（`ui-model-selection` 的 `catalog.reasoningFor`）。默认档
+ * 缺席时，用户看到的就是 **Default** —— 即使上游明明声明了默认档（卡片那一行
+ * 写着的「medium（上游默认）」）。
+ *
+ * 用户的原话正是这一句：「这里既然有默认设置选择的思考强度，选择的时候就应该
+ * 直接进入到这个对应的默认设置，而不是跳动到 default」。
+ *
+ * ## 为什么不能靠 `profile.reasoning`
+ *
+ * `profile.reasoning` 是**路由级**的一个常量，而 Qoder 的档位是**逐模型**的：
+ * Qwen 系 `low/medium/xhigh`，DeepSeek/GLM 系 `low/high/max`。一条常量配不上一份
+ * 花名册 —— 用它当默认，要么对某些模型报出一个它**没声明**的档位（宿主会以
+ * `UNSUPPORTED_REASONING_EFFORT` 拒掉整个请求），要么对另一些模型报出一个它声明
+ * 了却不是上游默认的档位。逐模型的答案只能逐模型给。
+ *
+ * ## 改哪两处
+ *
+ * `resolveModel` 与 `prepareCall` 都返回模型元数据，而 `prepareCall` 返回的那份
+ * 才是**真正**随请求走的那份（`resolveModel` 只服务于目录与选择器）。两处都要
+ * 改，否则界面上是 Default、请求里却带着档位（或反过来）。
+ *
+ * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
+ *   —— 它的 `EffortNormalizingAdapter` 是同一件事（它的 issue #179）。
+ */
+class DefaultEffortAdapter extends PiAiAdapter {
+  /**
+   * 一个模型在调用方没指名档位时该用哪一档；`undefined` = 该模型不提供推理。
+   *
+   * 读的是**活的**目录与**活的**保存表（见 `resolveDefaultEffort`），所以目录
+   * 刷新或用户改设置后，下一次解析就是新的答案。
+   */
+  private readonly defaultEffort: (model: string) => string | undefined
+
+  constructor(
+    config: ConstructorParameters<typeof PiAiAdapter>[0],
+    defaultEffort: (model: string) => string | undefined = () => undefined,
+  ) {
+    super(config)
+    this.defaultEffort = defaultEffort
+  }
+
+  override resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
+    return super.resolveModel(provider, model, signal).then(info => this.advertiseDefaultEffort(info))
+  }
+
+  override prepareCall(provider: string, model: string, signal?: AbortSignal): Promise<PreparedAdapterCall> {
+    return super.prepareCall(provider, model, signal).then(call => ({
+      ...call,
+      model: this.advertiseDefaultEffort(call.model),
+    }))
+  }
+
+  /**
+   * 把默认档写进模型元数据。
+   *
+   * **绝不与档位表矛盾**：报一个该模型没有的档位，宿主会以
+   * `UNSUPPORTED_REASONING_EFFORT` 拒掉整个请求 —— 那比「显示 Default」糟得多。
+   */
+  private advertiseDefaultEffort(info: LlmResolvedModelInfo): LlmResolvedModelInfo {
+    if (info.reasoning === undefined) return info
+    const effort = this.defaultEffort(info.id)
+    if (effort === undefined) return info
+    if (!info.reasoning.efforts.some(level => level.id === effort)) return info
+    if (info.reasoning.defaultEffort === effort) return info
+    return {
+      ...info,
+      reasoning: { ...info.reasoning, defaultEffort: ReasoningEffortId(effort) },
+    }
+  }
 }
 
 /**
@@ -433,12 +522,25 @@ export function createQoderAdapter(options: QoderAdapterOptions): QoderAdapter {
 
   let profiles = new Map<string, ResolvedPiAiProviderProfile>([[providerId, profile]])
 
-  const adapter = new PiAiAdapter({
+  /**
+   * 一个模型在调用方**没指名档位**时该用哪一档。
+   *
+   * 对着**活的**目录与**活的**保存表解析 —— 答案是这两样东西的函数，而它们都在
+   * 会话中途变（用户改了设置、目录刷新了）。任何一边被缓存下来，报上去的默认档
+   * 与真正跑的那一档就会分家。
+   */
+  const resolveDefaultEffort = (model: string): string | undefined => {
+    const info = catalog.current().find(entry => entry.key === model)
+    if (info === undefined) return undefined
+    return defaultEffortFor(info, options.defaultThinkingEfforts?.() ?? {})
+  }
+
+  const adapter = new DefaultEffortAdapter({
     profiles: () => profiles,
     auth: INERT_AUTH,
     resolveApiKey: async () => shim.secret,
     ...(options.resolveAttachments === undefined ? {} : { resolveAttachments: options.resolveAttachments }),
-  })
+  }, resolveDefaultEffort)
 
   return {
     adapter,
