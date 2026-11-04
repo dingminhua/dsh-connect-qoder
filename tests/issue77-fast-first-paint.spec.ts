@@ -96,7 +96,6 @@ function poolDeps(overrides: Partial<QoderPoolDeps> = {}): QoderPoolDeps {
   return {
     checkinSupported: () => true,
     preferences: () => ({ enabled: true, targetModelId: 'dfmodel', probeInputTokens: 0, memberAccountIds: ['a1', 'a2'] }),
-    catalog: () => [FREE_MODEL],
     poolProbes: () => ({} as Record<string, QoderPoolProbe>),
     credentialFor: async () => ({ pat: 'pat-a1', accountName: 'Alpha' }),
     probeOne: async () => ({ modelId: 'dfmodel', outcome: 'ok', status: 200 }),

@@ -244,7 +244,7 @@ export const en = {
   'row.poolTargetPreferred': 'Your chosen model: {model}',
   'row.poolTargetCurrentPreferred': 'Current: {model} (your choice).',
   'row.poolTargetCurrentFree': 'Current: {model} (auto-picked free model).',
-  'row.poolTargetNone': 'This region has no zero-multiplier model yet.',
+  'row.poolTargetNone': 'No zero-multiplier model to test with in this region.',
   'row.poolRank': 'Priority #{rank}',
   'row.poolRankAuto': 'Auto-ranked',
   'row.poolRankHint': 'You set this order. Requests go to the highest available account first.',
@@ -254,7 +254,7 @@ export const en = {
   'row.poolMoveUp': 'Higher priority',
   'row.poolMoveDown': 'Lower priority',
   'row.poolMoveAria': 'Priority order for {accountName}',
-  'row.poolTargetNoneHint': 'The region\'s catalog only reveals its multipliers after a model refresh. Rather than quietly spending credits on a paid model, testing stays off until a free one appears — refresh the models from the Models section, or pick a target model yourself.',
+  'row.poolTargetNoneHint': 'Two things cause this, and neither is the account: either the catalog has not revealed its multipliers yet (refresh the models in the Models section), or this region genuinely lists no multiplier-0 model right now. Your enabled models do not matter here — ticking a model only decides what the DSH picker lists, not what may be tested. Rather than quietly spending credits on a paid model, testing stays off until a free one is available; you can also pin a target model yourself.',
   'row.poolTargetStale': 'The target model you saved is no longer offered: {model}',
   'row.poolTargetStaleHint': 'The region\'s catalog changed and no longer lists this model, so testing is off rather than running against a model the upstream may not accept. Pick another target, or switch back to automatic.',
   'row.poolTargetStaleClear': 'Switch back to automatic',
@@ -341,6 +341,11 @@ export const en = {
   'row.poolLogTestDone': 'Test finished; the pool was re-ranked',
   'row.poolLogTestRowMalformed': '{accountName}: the host returned no result for this account',
   'row.poolLogBatchFailed': 'Batch failed — nothing ran: {message}',
+  // 「Host 没回这一行」与「没有任何账号被真测过」是两件事（issue #33）。
+  // 前者说这一行怎么了，后者说整批为什么一行都没有 —— 后者过去被套上
+  // 「本区域没有免费模型」，于是用户去翻模型目录，而实际可能只是成员都没有
+  // 可用的 PAT（幽灵 id 被跳过）。
+  'row.poolLogTestNoneRan': 'Nothing was tested: no checked account in this pool has a usable PAT right now.',
   'row.poolMembersTitle': 'Accounts in this pool',
   'row.poolMembersHint': 'Only checked accounts rotate, get checked in, and get tested.',
   'row.poolSelectAll': 'Select all',
@@ -656,7 +661,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolTargetPreferred': '你指定的模型：{model}',
   'row.poolTargetCurrentPreferred': '当前：{model}（你指定）。',
   'row.poolTargetCurrentFree': '当前：{model}（自动挑选的免费模型）。',
-  'row.poolTargetNone': '本区域暂时没有倍率为 0 的免费模型。',
+  'row.poolTargetNone': '本区域没有可用来测试的倍率为 0 的免费模型。',
   'row.poolRank': '第 {rank} 位',
   'row.poolRankAuto': '自动排序',
   'row.poolRankHint': '这个顺序是你手动排的。请求会优先发给排在前面且可用的账号。',
@@ -666,7 +671,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolMoveUp': '提高优先级',
   'row.poolMoveDown': '降低优先级',
   'row.poolMoveAria': '{accountName} 的优先级顺序',
-  'row.poolTargetNoneHint': '本区域的倍率要等模型目录刷新后才会出现。为了不让你在不知情的情况下花掉积分，在免费模型出现之前测试会保持关闭——请先在「模型」区刷新模型目录，或自己指定一个目标模型。',
+  'row.poolTargetNoneHint': '这有两种原因，且都不是账号的问题：要么本区域的倍率还没刷出来（去「模型」区刷新一次目录），要么本区域此刻确实一个倍率为 0 的模型都没有。「已启用模型」在这里不影响任何事 —— 勾选只决定 DSH 的选择器里列哪些，不决定能测哪些。为了不让你在不知情的情况下花掉积分，在免费模型可用之前测试会保持关闭；你也可以自己指定一个目标模型。',
   'row.poolTargetStale': '你保存的目标模型已不在目录中：{model}',
   'row.poolTargetStaleHint': '本区域的模型目录已变化，不再包含这个模型，因此测试被停用。请改选一个目标模型，或切回自动。',
   'row.poolTargetStaleClear': '切回自动',
@@ -750,6 +755,8 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolLogTestDone': '测试完成，已重新计算候选账号',
   'row.poolLogTestRowMalformed': '{accountName}：Host 未返回该账号的结果',
   'row.poolLogBatchFailed': '批量操作失败 —— 没有执行：{message}',
+  // 同英文侧：这一行没结果 ≠ 整批没有目标。
+  'row.poolLogTestNoneRan': '没有测任何账号：本池勾选的账号当前都没有可用的 PAT。',
   'row.poolMembersTitle': '本池包含的账号',
   'row.poolMembersHint': '只有勾选的账号参与轮换、签到与测试。',
   'row.poolSelectAll': '全选',

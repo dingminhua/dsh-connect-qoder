@@ -71,13 +71,13 @@ import { QoderAccountStore, type QoderStoredAccount } from './accounts.ts'
 import { QODER_CONNECT_VERSION } from './version.ts'
 import {
   exclusionOf,
+  poolModelOf,
   rankPool,
-  resolveTargetModel,
-  queuedModelIdsOf,
-  workingModelIdsOf,
+  resolvePoolTarget,
   type QoderPoolCredits,
   type QoderPoolProbe,
   type QoderPoolMember,
+  type QoderPoolModel,
   type QoderPoolTarget,
 } from './account-pool.ts'
 import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
@@ -887,6 +887,19 @@ export function apply(ctx: Context, config: Config): void {
    */
   const fullCatalog: Record<QoderRegion, readonly QoderModelInfo[]> = { cn: [], global: [] }
 
+  /**
+   * 每区域**完整**的（未勾选过滤的）目录，由 `applySelection` / `refreshRegionCatalog`
+   * 写入 —— 卡片在「本进程还没成功拉到实时目录」时的兜底。
+   *
+   * 为什么不能退回运行时目录（issue #33）：运行时目录被 `deriveCatalog` 按勾选裁过，
+   * 用它兜底会让「未勾选的模型从卡片上消失」，而这正是 `displayModels` 的注释里
+   * 说要避免的那件事 —— 注释与实现自相矛盾。更关键的是，池的目标解析（以及测试
+   * 路由）读的就是 `displayModels`：兜底一旦是被裁的那份，用户「手选了一个没勾的
+   * 模型」或「自动档唯一的免费模型没被勾」就会在**冷启动、首次实时拉取失败**这个
+   * 窗口里解不出目标，症状与 issue #33 一模一样。
+   */
+  const cardCatalog: Record<QoderRegion, readonly QoderModelInfo[]> = { cn: [], global: [] }
+
 /**
  * 卡片展示用的模型列表（workbuddy 的 `displayModels` 同规）。
  *
@@ -909,7 +922,12 @@ export function apply(ctx: Context, config: Config): void {
  */
 function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   const full = fullCatalog[region]
-  const live = full.length > 0 ? full : stacks[region].catalog.current()
+  // 兜底顺序：实时目录 → `applySelection` 写下的完整目录 → 运行时目录。
+  // 第三档只是最后一道保险（理论上 `applySelection` 在装配时就写过一次）：
+  // 它可能被裁过，但「有一份能显示的目录」仍好过空表。
+  const live = full.length > 0
+    ? full
+    : cardCatalog[region].length > 0 ? cardCatalog[region] : stacks[region].catalog.current()
   if (full.length === 0) {
     // 判据与动作打包在 serveSavedCatalog 里（空档位目录 → 触发一次拉取）。
     // 只在还没有实时目录时判：真拉到的目录没档位是上游的诚实答案，再判就是
@@ -1474,16 +1492,17 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     }
   }
 
-  /** The region's catalog projected into the pool target picker's shape. */
-  function poolModelsOf(region: QoderRegion): Array<{ id: string, name: string, creditMultiplier?: number, contextWindow: number }> {
-    return stacks[region].catalog.current().map(m => ({
-      id: m.key,
-      name: m.displayName,
-      // 「免费即 0」是 resolveTargetModel 的契约；付费模型透传真实倍率，与
-      // web-status 的两处投影同规则。
-      creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
-      contextWindow: m.contextWindow,
-    }))
+  /**
+   * The region's catalog projected into the pool target picker's shape.
+   *
+   * 读的是**卡片那一份**目录（`displayModels`，含未勾选的模型），不是运行时目录
+   * （`stacks[region].catalog`，被 `deriveCatalog` 按勾选裁剪过）。这是 issue #33
+   * 的修法：「能不能测某个模型」与「它在不在 DSH 选择器里」是两件事，勾选管的是
+   * 后者。用运行时目录会让「手选了一个没勾的模型」或「自动档唯一的免费模型没被勾」
+   * 直接解不出目标 —— 测试路由回 `rows: []`，卡片却写着「测试用模型 X」。
+   */
+  function poolModelsOf(region: QoderRegion): QoderPoolModel[] {
+    return displayModels(region).map(model => poolModelOf(model))
   }
 
   /**
@@ -1495,13 +1514,17 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
    *
    * 用户手选的模型**永远优先**（`resolveTargetModel` 里就短路了）—— 绝不因为
    * 它在排队就偷偷换人测，那会与卡片上写的「测试用模型」对不上。
+   *
+   * 解析规则与目录都走共享的 `resolvePoolTarget`：池视图（卡片）与测试路由、
+   * 请求路径的换号判据必须解出**同一个**目标，否则「卡片写 A、实测 B」这类
+   * 分叉会在别处重新长出来（issue #33）。
    */
   function poolTargetOf(region: QoderRegion): QoderPoolTarget {
-    const probes = stacks[region].poolRuntime
-    const now = Date.now()
-    return resolveTargetModel(poolModelsOf(region), poolPreferencesOf(config, region).targetModelId, {
-      avoidModelIds: queuedModelIdsOf(probes, now),
-      preferModelIds: workingModelIdsOf(probes),
+    return resolvePoolTarget({
+      catalog: poolModelsOf(region),
+      preferredId: poolPreferencesOf(config, region).targetModelId,
+      probes: stacks[region].poolRuntime,
+      nowMs: Date.now(),
     })
   }
 
@@ -1536,6 +1559,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     // 两者必须分开：卡片要看到未勾选的模型才勾得上，而档位信息只有实时目录里
     // 才有（保存的 lastCatalog 可能是旧快照，甚至被旧 schema 剥掉档位字段）。
     fullCatalog[region] = stamped
+    // 卡片在「实时目录还没到手」时的兜底也是完整目录（issue #33）：退回运行时
+    // 目录会让未勾选的模型在冷启动窗口里从卡片与目标解析里一起消失。
+    cardCatalog[region] = stamped
     stacks[region].catalog.set(deriveCatalog(stamped, saved))
     invalidateCatalog()
     return stamped
@@ -1610,6 +1636,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 这正是「保存了模型，选择器里还是一整份」的原因（用户实拍两次）。
       // 运行时目录只含勾选的；完整目录由 displayModels() 供卡片。
       const saved = new Set(enabledModelKeysOf(value, region))
+      cardCatalog[region] = stamped
       stacks[region].catalog.set(deriveCatalog(stamped, saved))
     }
     invalidateCatalog()
@@ -1648,7 +1675,6 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const store = stacks[region].store
     return {
       preferences: reg => poolPreferencesOf(config, reg),
-      catalog: reg => stacks[reg].catalog.current(),
       poolProbes: reg => stacks[reg].poolRuntime,
       credentialFor: (reg, accountId) => store.credentialFor(accountId, sourcesOf(reg)),
       probeOne: (reg, credit, modelId) => probeThrough(reg, credit, modelId),
@@ -1732,7 +1758,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   function buildPoolDeps(): QoderPoolDeps {
     return {
       preferences: region => poolPreferencesOf(config, region),
-      catalog: region => stacks[region].catalog.current(),
+      // 注意这里**没有** `catalog`：池的模型目录只有一份，就是交给卡片的
+      // `deps.catalogs`（`displayModels`，完整目录）。issue #33 的教训见
+      // `QoderPoolDeps` 里那段注释 —— 有第二份就一定会分叉。
       poolProbes: region => stacks[region].poolRuntime,
       batchProgress: region => poolBatches[region],
       memberCredits: (region, accountIds) => poolMemberCredits(region, accountIds),

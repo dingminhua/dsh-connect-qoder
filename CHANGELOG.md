@@ -2,6 +2,67 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.17.3 (2026-11-04)
+
+> **卡片写着「测试用模型：qfmodel」，点「测试」却只是闪一下。**
+> Host 每次都回了 200，只是回的是 `{"action":"test","rows":[]}`。
+> 不是网络、不是账号、不是凭据 —— 是同一个进程里有**两份模型目录**，
+> 而测试这条路径吃到的是被「已勾选模型」裁剪过的那一份。
+
+### 修复
+
+- **池的目标解析只认一份目录**（issue #33）。
+  - **根因**：`buildPoolDeps()/poolFor()` 把 `catalog` 接成
+    `stacks[region].catalog.current()` —— 那是被 `deriveCatalog` 按
+    `enabledModelKeys` 裁过的**运行时**目录（DSH 选择器读它，所以它必须裁）。
+    而卡片与 `/usage` 读的是 `displayModels(region)`（完整目录）。于是两处必然
+    分叉：目标模型只要不在 `enabledModelKeys` 里，测试路由就永远解不出目标。
+  - **两条分支同时落空**：手选模型在裁剪目录里查不到 ⇒ `stale`（`modelId`
+    缺席）；「自动」档唯一的免费模型被裁掉 ⇒ `pickFreeModel` 一个候选都没有
+    ⇒ `none`。两条都到 `target.modelId === undefined`，于是 `rows: []`。
+  - **修法不是「把两份对齐」，是只留一份**：测试路由与池视图都改读
+    `deps.catalogs`（卡片那份完整目录），并共用新增的
+    `resolvePoolTarget()` + `poolModelOf()`（投影规则也只有一份）。
+    `QoderPoolDeps.catalog` **整个删掉** —— 分叉在类型层面就不可能被接回来。
+  - 连带修掉一个相邻缺口：`displayModels()` 在「本进程还没拉到实时目录」时
+    退回**被裁剪**的运行时目录（与它自己的注释矛盾），冷启动 + 首次拉取失败
+    的窗口里会让未勾选的模型从卡片和目标解析里一起消失。现在补了
+    `cardCatalog`（`applySelection` / `refreshRegionCatalog` 写入的完整目录）
+    作中间兜底。
+  - `enabledModelKeys` 的语义不受影响：它管的仍然是「DSH 选择器里列哪些」，
+    与「允许测哪些」无关。
+- **「解析不出目标」不再伪装成「批量跑完了、一行都没有」**（issue #33 建议 2）。
+  - 此前回 `200 {rows: []}`，客户端只能渲染成 `row.poolLogTestRowMalformed`
+    ——「{accountName}：Host 未返回该账号的结果」，字面像是凭据失效 / 号不在池里，
+    把排查方向带偏。
+  - 现在回 `409` + 有区分度的 `reason`：`target-model-stale`（带
+    `staleTargetModelId`）或 `no-free-model`。客户端已有的
+    `poolErrorText` 直接把它们渲染成「目标模型已不在本区域目录中」/
+    「本区域没有可用的免费模型」。
+- **客户端文案不再把空结果归咎于「没有免费模型」**（issue #33 建议 4）。
+  - 批量 `rows: []` 的真实原因最常见的是「勾选的账号都没有可用 PAT」（幽灵 id
+    在宿主侧被跳过，那一步不产出行），而不是没有免费模型。有成员却一行都没有时
+    改说新增的 `row.poolLogTestNoneRan`。
+  - `row.poolTargetNone` / `row.poolTargetNoneHint` 重写：原来把原因单方面归给
+    「倍率要等目录刷新」，而真实现场常常是「唯一的免费模型不在目录里」。现在
+    把两种原因都写出来，并点明**勾不勾选不影响测试**。
+
+### 测试
+
+- `tests/index.spec.ts` 新增一组 **走真实 `apply()` + 真实路由** 的端到端用例
+  （3 条）：手选目标不在 `enabledModelKeys` 里照样测得出；「自动」档唯一免费模型
+  没勾选也照样解得出目标（并断言真的打了一次上游对话，而不是空转）；解析不出
+  目标时回 409 而不是 200+空数组。
+  - 为什么必须在**装配层**钉：真正的缺陷在宿主的 deps 接线上，纯逻辑测试注入的是
+    自己给的 catalog，接错线照样全绿。
+- `tests/web-status.spec.ts` 新增 4 条：`409 no-free-model`、`409
+  target-model-stale`（带那个失效 id）、目标解析读卡片目录而不是裁剪目录、
+  卡片与测试路由回报**同一个** `targetModelId`。
+- 既有「answers an empty batch when no target model can resolve」按新契约改写
+  （它钉的正是被修掉的旧行为）。
+- 变异验证：把目标解析改成「看不到免费模型」（等价于旧缺陷的后果）⇒ 上面 5 条
+  立刻转红；恢复后全绿。
+
 ## 1.17.2 (2026-11-03)
 
 > **卡片写着「medium（上游默认）」，DSH 的模型选择器却显示 Default。**

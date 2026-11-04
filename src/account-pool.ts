@@ -440,6 +440,65 @@ export function resolveTargetModel(
 }
 
 /**
+ * Project one catalog entry into the shape the target resolver reads.
+ *
+ * 只有一个投影函数，是因为这个文件里那条契约不能被抄两遍：`creditMultiplier`
+ * 的**免费语义**（`is_free` 折叠成 `0`，付费透传真实倍率，缺席不等于免费）此前在
+ * `src/index.ts` 与 `src/web-status.ts` 各写了一份「同规则」的实现——两份规则必然
+ * 漂移，而 `pickFreeModel` 只认 `=== 0`，投影一旦写歪就变成「一个免费模型都没有」。
+ *
+ * 参数是结构化的，不依赖 `QoderModelInfo`：本模块只做纯逻辑，不引入目录类型的
+ * 运行时依赖。
+ */
+export function poolModelOf(model: {
+  key: string
+  displayName: string
+  isFree?: boolean | undefined
+  priceFactor?: number | undefined
+  contextWindow: number
+}): QoderPoolModel {
+  return {
+    id: model.key,
+    name: model.displayName,
+    // 「免费即 0」是 resolveTargetModel 的契约；付费模型透传真实倍率，让选项
+    // 标签能定价（`名字 (x0.79)`）；`priceFactor` 缺席时不写字段 —— 缺席**不是**
+    // 免费，这是「绝不悄悄花用户积分」那条规矩的投影层半边。
+    ...model.isFree === true
+      ? { creditMultiplier: 0 }
+      : model.priceFactor === undefined ? {} : { creditMultiplier: model.priceFactor },
+    contextWindow: model.contextWindow,
+  }
+}
+
+/**
+ * 一个区域的**测试目标**是怎么解出来的 —— 池视图与测试路由唯一的入口。
+ *
+ * 为什么要有这个函数（issue #33）：池视图（卡片上的「测试用模型」）与测试路由
+ * 各自调一次 `resolveTargetModel`，而两边传进去的 `catalog` **不是同一份**：
+ * 卡片读完整目录，测试路由读了被 `deriveCatalog` 按勾选裁剪过的运行时目录。
+ * 于是「卡片写 X、实测 Y」不是某个分支写错了，是两份输入必然分叉 —— 只要目标
+ * 模型不在 `enabledModelKeys` 里，测试路由就永远解不出目标（`rows: []`）。
+ *
+ * 现在两处都走这里，而且**都必须**喂同一份目录（卡片那份 `displayModels`）。
+ * 目标模型是否被勾选与「能不能测它」无关：勾选管的是「DSH 选择器里列哪些」，
+ * 不是「用户允许测哪些」。
+ */
+export function resolvePoolTarget(input: {
+  /** 该区域的**展示目录**（含未勾选的模型），与卡片读到的是同一份。 */
+  catalog: readonly QoderPoolModel[]
+  /** 用户手选的目标模型 id；空串 = 「自动」。 */
+  preferredId: string | undefined
+  /** 当前的探针快照（决定「自动」这一档挑哪个）。 */
+  probes: Readonly<Record<string, QoderPoolProbe>>
+  nowMs: number
+}): QoderPoolTarget {
+  return resolveTargetModel(input.catalog, input.preferredId, {
+    avoidModelIds: queuedModelIdsOf(input.probes, input.nowMs),
+    preferModelIds: workingModelIdsOf(input.probes),
+  })
+}
+
+/**
  * Pick the free model to test against, from one region's projected catalog.
  *
  * "Free" means `creditMultiplier === 0` EXACTLY. An absent multiplier is NOT

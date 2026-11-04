@@ -626,8 +626,20 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
           // 「开始」那一行已经在按下按钮时写过了（见上面的注释）：这里只补结果，
           // 而且只补**轮询还没报过**的那些行——整批响应是权威答案，但重复的
           // 「Alpha ✓ 可用」写两遍会让日志看起来像跑了两轮。
+          //
+          // 空 `rows` 的措辞（issue #33）：它**不等于**「没有免费模型」。整批为空的
+          // 真实原因有两种，过去被压成同一句「本区域没有免费模型」，用户于是去翻
+          // 模型目录 —— 而实际最常见的是「勾选的账号都没有可用的 PAT」（幽灵 id
+          // 在宿主侧被跳过，那一步不产出行）。有成员却一行都没有时如实说这一句；
+          // 目标解不出来这种情形宿主已经回 409 走掉了（不进这个分支）。
           if (rows.length === 0) {
-            appendLog({ atMs: Date.now(), text: t('row.poolLogBatchFailed', { message: t('row.poolTargetNone') }), tone: 'warn' })
+            appendLog({
+              atMs: Date.now(),
+              text: effective.length === 0
+                ? t('row.poolLogBatchFailed', { message: t('row.poolTargetNone') })
+                : t('row.poolLogTestNoneRan'),
+              tone: 'warn',
+            })
           } else {
             for (const row of rows) logTestRowOnce(row, Date.now())
           }

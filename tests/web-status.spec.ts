@@ -120,7 +120,8 @@ function poolDeps(overrides: Partial<QoderPoolDeps> = {}): QoderPoolDeps {
   return {
     checkinSupported: () => true,
     preferences: () => ({ enabled: true, targetModelId: 'dfmodel', probeInputTokens: 0, memberAccountIds: ['pat-settings', 'pat-env'] }),
-    catalog: () => [FREE_MODEL],
+    // 没有 `catalog` 了（issue #33）：目标解析只读 `deps.catalogs`，那份完整目录
+    // 由 `deps()` 的默认值提供。
     poolProbes: () => ({} as Record<string, QoderPoolProbe>),
     credentialFor: async () => ({ pat: 'pt-settings', accountName: '' }),
     probeOne: async () => ({ modelId: 'dfmodel', outcome: 'ok', status: 200 }),
@@ -566,7 +567,7 @@ describe('pool route (test|remove)', () => {
     ]
     const d = deps({
       catalogs: { cn: { current: () => pools }, global: { current: () => pools } },
-      pool: poolDeps({ catalog: () => pools }),
+      pool: poolDeps(),
     })
     const usage = await buildWebUsage(d, 'cn')
     if (usage.status !== 'signed-in') throw new Error('expected signed-in')
@@ -589,22 +590,147 @@ describe('pool route (test|remove)', () => {
     expect(answer.rows).toHaveLength(1)
   })
 
-  it('answers an empty batch when no target model can resolve', async () => {    // 目标的求解读的是 `pool.catalog(region)`（路由层投影 `poolModelOf`），当目标
-    // 目录里没有任何免费模型时 `targetModelId` 无从解析，行必须为空、绝不调用 test。
+  it('answers 409 no-free-model when the region really has no free model', async () => {
+    // 目标解析吃的是**卡片那一份**目录（`deps.catalogs`，issue #33）：里面一个
+    // 倍率为 0 的模型都没有时，目标无从解出。此时绝不能回 `200 {rows: []}`
+    // —— 客户端只能把它渲染成「Host 未返回该账号的结果」，字面像是账号坏了。
+    // 用 409 + `reason` 作答，调用方能分清「没有可测的目标」与「测了没结果」。
     let tested = false
+    const paidOnly: QoderModelInfo[] = [{ ...FREE_MODEL, isFree: false, priceFactor: 2 }]
     const pool = poolDeps({
       preferences: () => ({ enabled: true, targetModelId: '', probeInputTokens: 0, memberAccountIds: [] }),
-      catalog: () => [{ ...FREE_MODEL, isFree: false, priceFactor: 2 }],
+      test: async () => { tested = true; return [] },
+    })
+    const captured = await mountRoutes(deps({
+      pool,
+      catalogs: { cn: { current: () => paidOnly }, global: { current: () => paidOnly } },
+    }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test`), res)
+    expect(status()).toBe(409)
+    const answer = body() as { action: string, reason?: string }
+    expect(answer.action).toBe('test')
+    expect(answer.reason).toBe('no-free-model')
+    expect(tested).toBe(false)
+  })
+
+  it('answers 409 target-model-stale when the saved target is gone', async () => {
+    // 手选了一个目录里没有的模型：`resolveTargetModel` 说 `stale`，必须如实回报
+    // 那个 id —— 回空数组会让用户以为「测过了，账号都没问题」。
+    let tested = false
+    const pool = poolDeps({
+      preferences: () => ({ enabled: true, targetModelId: 'gone-model', probeInputTokens: 0, memberAccountIds: [] }),
       test: async () => { tested = true; return [] },
     })
     const captured = await mountRoutes(deps({ pool }))
     const handler = findHandler(captured, QODER_POOL_PATH)
     const { res, status, body } = response()
     await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test`), res)
-    expect(status()).toBe(200)
-    const answer = body() as { action: string, rows: readonly unknown[] }
-    expect(answer.rows).toEqual([])
+    expect(status()).toBe(409)
+    const answer = body() as { reason?: string, staleTargetModelId?: string }
+    expect(answer.reason).toBe('target-model-stale')
+    expect(answer.staleTargetModelId).toBe('gone-model')
     expect(tested).toBe(false)
+  })
+
+  // ==========================================================================
+  // issue #33：「测试」按钮空转 —— 卡片写着「测试用模型 X」，点下去 `rows: []`。
+  //
+  // 根因是同一个进程里有两份模型目录：卡片读完整的 `displayModels`，而测试路由
+  // 读被 `deriveCatalog` 按「已勾选模型」裁剪过的运行时目录。于是只要目标模型不在
+  // `enabledModelKeys` 里（手选了一个没勾的模型，或「自动」档唯一的免费模型没被勾），
+  // 测试路由就永远解不出目标。
+  //
+  // 这两条钉住的是**输入**：路由必须读卡片那一份目录，而不是 `pool.catalog`。
+  // `pool.catalog` 仍然被故意做成「只有付费模型」—— 若哪天有人把它接回去，
+  // 这两条会立刻转红。
+  // ==========================================================================
+
+  it('resolves the target from the CARD catalog, not the trimmed runtime one (issue #33)', async () => {
+    const asked: string[] = []
+    const cardCatalog: QoderModelInfo[] = [
+      { ...FREE_MODEL, key: 'qfmodel', displayName: 'Qwen3.8-Flash', isFree: true, priceFactor: 0 },
+      { ...FREE_MODEL, key: 'dfmodel', displayName: 'DeepSeek-Flash', isFree: false, priceFactor: 0.1 },
+    ]
+    const pool = poolDeps({
+      // 运行时目录被裁剪成「只含已勾选」——这里故意只留付费模型，也就是问题现场。
+      // 「自动」档：手选为空，只能靠免费模型。
+      preferences: () => ({ enabled: true, targetModelId: '', probeInputTokens: 0, memberAccountIds: ['pat-settings'] }),
+      test: async (region, only) => {
+        asked.push(`${region}:${only ?? 'batch'}`)
+        return [{ accountId: 'pat-settings', accountName: '', result: { modelId: 'qfmodel', outcome: 'ok', status: 200 } }]
+      },
+    })
+    const captured = await mountRoutes(deps({
+      pool,
+      catalogs: { cn: { current: () => cardCatalog }, global: { current: () => cardCatalog } },
+    }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test`), res)
+    expect(status()).toBe(200)
+    const answer = body() as { modelId?: string, rows: readonly unknown[] }
+    // 关键：解出的是卡片上那个免费模型（qfmodel），而不是「没有目标」。
+    expect(answer.modelId).toBe('qfmodel')
+    expect(answer.rows).toHaveLength(1)
+    expect(asked).toEqual(['cn:batch'])
+  })
+
+  it('honours a hand-picked target model that is not in enabledModelKeys (issue #33)', async () => {
+    // 国内版的现场形态：用户手选了 `qfmodel`，但它没被勾进「已启用模型」，于是
+    // 运行时目录里根本没有它 —— 旧实现回 `stale` ⇒ `rows: []`。
+    const cardCatalog: QoderModelInfo[] = [
+      { ...FREE_MODEL, key: 'qfmodel', displayName: 'Qwen3.8-Flash', isFree: true, priceFactor: 0 },
+      { ...FREE_MODEL, key: 'dfmodel', displayName: 'DeepSeek-Flash', isFree: false, priceFactor: 0.1 },
+    ]
+    let called = false
+    const pool = poolDeps({
+      preferences: () => ({ enabled: true, targetModelId: 'qfmodel', probeInputTokens: 0, memberAccountIds: ['pat-settings'] }),
+      test: async () => {
+        called = true
+        return [{ accountId: 'pat-settings', accountName: '', result: { modelId: 'qfmodel', outcome: 'ok', status: 200 } }]
+      },
+    })
+    const captured = await mountRoutes(deps({
+      pool,
+      catalogs: { cn: { current: () => cardCatalog }, global: { current: () => cardCatalog } },
+      // 勾选集合里没有 qfmodel —— 正是问题现场。
+      enabledModelKeys: () => ['dfmodel'],
+    }))
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test`), res)
+    expect(status()).toBe(200)
+    const answer = body() as { modelId?: string, rows: readonly unknown[] }
+    expect(answer.modelId).toBe('qfmodel')
+    expect(answer.rows).toHaveLength(1)
+    expect(called).toBe(true)
+  })
+
+  it('the card and the test route report the SAME target (issue #33)', async () => {
+    // 这条是「同源」的真正判据：卡片文档里的 `pool.targetModelId` 与测试路由回给
+    // 客户端的 `modelId` 必须是同一个值。两处读不同目录时它们会分叉 —— 卡片写
+    // 「测试用模型 qfmodel」，而路由认为「没有目标」。
+    const cardCatalog: QoderModelInfo[] = [
+      { ...FREE_MODEL, key: 'qfmodel', displayName: 'Qwen3.8-Flash', isFree: true, priceFactor: 0 },
+      { ...FREE_MODEL, key: 'dfmodel', displayName: 'DeepSeek-Flash', isFree: false, priceFactor: 0.1 },
+    ]
+    const pool = poolDeps({
+      preferences: () => ({ enabled: true, targetModelId: '', probeInputTokens: 0, memberAccountIds: ['pat-settings'] }),
+    })
+    const d = deps({ pool, catalogs: { cn: { current: () => cardCatalog }, global: { current: () => cardCatalog } } })
+    const usage = await buildWebUsage(d, 'cn')
+    if (usage.status !== 'signed-in') throw new Error('expected signed-in')
+    const captured = await mountRoutes(d)
+    const handler = findHandler(captured, QODER_POOL_PATH)
+    const { res, status, body } = response()
+    await handler(request('POST', undefined, `${QODER_POOL_PATH}?region=cn&action=test`), res)
+    expect(status()).toBe(200)
+    const answer = body() as { modelId?: string }
+    expect(answer.modelId).toBe('qfmodel')
+    expect(usage.pool?.targetModelId).toBe('qfmodel')
+    expect(answer.modelId).toBe(usage.pool?.targetModelId)
   })
 
   // ==========================================================================

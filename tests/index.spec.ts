@@ -1989,3 +1989,220 @@ describe('issue #26：真实请求撞到排队', () => {
     expect(probe?.retryAtMs).toBeUndefined()
   })
 })
+
+// ============================================================================
+// issue #33：「测试」按钮空转 —— 走**真实 apply()** 的端到端回归
+//
+// 现场：`POST /pool?action=test` 恒回 `200 {"action":"test","rows":[]}`，而卡片
+// 上明明写着「测试用模型：qfmodel」。根因不是网络、不是账号、不是凭据，是同一个
+// 进程里有**两份模型目录**：
+//
+//   - 卡片 / `/usage` 的 `pool.catalog`  ← `displayModels(region)`（完整目录）
+//   - 测试路由的目标解析                  ← `pool.catalog(region)`（运行时目录，
+//     被 `deriveCatalog` 按 `enabledModelKeys` 裁过）
+//
+// 于是只要目标模型不在 `enabledModelKeys` 里，测试路由就永远解不出目标。
+//
+// 为什么必须在**这一层**钉（而不是只测 `web-status` 的纯逻辑）：真正的缺陷在
+// 宿主的 deps 装配上 —— `buildPoolDeps()` 与 `poolFor()` 各接了一份目录。
+// 纯逻辑测试注入的是自己给的 catalog，接错线它照样全绿。这组用例通过真实
+// `apply()` + 捕获到的真实路由，读的是宿主实际交出去的那一份。
+// ============================================================================
+
+describe('issue #33：池的「测试」不吃被勾选裁剪过的目录（真实 apply()）', () => {
+  /** 一个真实形状的 SSE 应答：探针只关心「有没有吐出首包」。 */
+  function sseAnswer(): Response {
+    const body = `data: ${JSON.stringify({ body: JSON.stringify({ content: 'ok' }) })}\n\n`
+    return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  }
+
+  /** 让所有上游端点都答得通；模型目录只给**两个**模型（一个免费、一个付费）。 */
+  function stubUpstream(chatCalls: string[]): typeof fetch {
+    return (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        return new Response(JSON.stringify({
+          chat: [
+            {
+              key: 'qfmodel', display_name: 'Qwen3.8-Flash', price_factor: 0,
+              is_vl: true, is_reasoning: true, is_free: true,
+              thinking_config: { enabled: { efforts: { low: {}, medium: {}, xhigh: {} } } },
+              context_config: { c200k: { token_count: 200_000 } },
+            },
+            {
+              key: 'dfmodel', display_name: 'DeepSeek-Flash', price_factor: 0.1,
+              is_vl: true, is_reasoning: true,
+              thinking_config: { enabled: { efforts: { high: {} } } },
+              context_config: { c200k: { token_count: 200_000 } },
+            },
+          ],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 100, origin: 100, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.includes('/agent_chat_generation')) {
+        chatCalls.push(url)
+        return sseAnswer()
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+  }
+
+  /** Mount apply() with a captured webServer; returns the /pool and /usage routes. */
+  async function mount(regions: Record<string, unknown>): Promise<{ pool: CapturedRoute, usage: CapturedRoute }> {
+    const routes: CapturedRoute[] = []
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('webServer', {
+      register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+    } as never)
+    await mountQoder(ctx, { regions })
+    await waitFor(() => routes.some(r => r.path.includes('/pool')))
+    return {
+      pool: routes.find(r => r.path.includes('/pool'))!,
+      usage: routes.find(r => r.path.includes('/usage'))!,
+    }
+  }
+
+  const PAT = 'pt-issue33-aaaaaaaaaaaaaaaa'
+  const ACCOUNT_ID = qoderAccountId(PAT)
+
+  it('手选的目标模型不在 enabledModelKeys 里，照样能测出结果', async () => {
+    // 国内版的现场形态：用户手选 `qfmodel`，但「已启用模型」只勾了 `dfmodel`。
+    // 旧实现：运行时目录被裁成 [dfmodel] ⇒ 目标解析 stale ⇒ `rows: []`。
+    const chatCalls: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = stubUpstream(chatCalls)
+    try {
+      const { pool, usage } = await mount({
+        cn: {
+          pat: PAT,
+          // qfmodel **不在**这里 —— 正是问题现场。
+          enabledModelKeys: ['dfmodel'],
+          pool: { enabled: true, targetModelId: 'qfmodel', memberAccountIds: [ACCOUNT_ID] },
+        },
+        global: { pat: '' },
+      })
+
+      // 卡片先说话：它写着「测试用模型 = qfmodel」。
+      const cardRes = fakeResponse()
+      await usage.handler({ method: 'GET', url: `${usage.path}?region=cn`, headers: {} }, cardRes.node)
+      const doc = JSON.parse(String(cardRes.body())) as {
+        pool?: { targetModelId?: string, targetModelSource?: string }
+      }
+      expect(doc.pool?.targetModelId).toBe('qfmodel')
+      expect(doc.pool?.targetModelSource).toBe('preferred')
+
+      // 再点「测试」：必须真的测了，而且测的就是卡片上那个模型。
+      const res = fakeResponse()
+      await pool.handler(
+        { method: 'POST', url: `${pool.path}?region=cn&action=test`, headers: { origin: 'http://127.0.0.1:19387' } },
+        res.node,
+      )
+      expect(res.status()).toBe(200)
+      const answer = JSON.parse(String(res.body())) as {
+        action: string, modelId?: string, rows?: Array<{ accountId: string }>
+      }
+      // 「卡片写 A、实测 B」这条分叉的三个面一起断言：状态、模型、行。
+      expect(answer.action).toBe('test')
+      expect(answer.modelId).toBe('qfmodel')
+      expect(answer.rows).toHaveLength(1)
+      expect(answer.rows![0]!.accountId).toBe(ACCOUNT_ID)
+      // 真打过一次上游对话（不是空转）。
+      expect(chatCalls.length).toBe(1)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('「自动」档唯一的免费模型没被勾选，测试仍然解得出目标', async () => {
+    // 国际版的现场形态：`targetModelId` 是空（自动），本区唯一的免费模型是
+    // `qfmodel`，而它不在 `enabledModelKeys` 里。旧实现：运行时目录里一个免费
+    // 模型都没有 ⇒ `source: 'none'` ⇒ `rows: []`，卡片还宣称「本区域没有免费模型」。
+    const chatCalls: string[] = []
+    const realFetch = globalThis.fetch
+    globalThis.fetch = stubUpstream(chatCalls)
+    try {
+      const { pool, usage } = await mount({
+        cn: {
+          pat: PAT,
+          enabledModelKeys: ['dfmodel'],
+          pool: { enabled: true, targetModelId: '', memberAccountIds: [ACCOUNT_ID] },
+        },
+        global: { pat: '' },
+      })
+
+      const cardRes = fakeResponse()
+      await usage.handler({ method: 'GET', url: `${usage.path}?region=cn`, headers: {} }, cardRes.node)
+      const doc = JSON.parse(String(cardRes.body())) as {
+        pool?: { targetModelId?: string, targetModelSource?: string }
+      }
+      expect(doc.pool?.targetModelSource).toBe('free')
+      expect(doc.pool?.targetModelId).toBe('qfmodel')
+
+      const res = fakeResponse()
+      await pool.handler(
+        { method: 'POST', url: `${pool.path}?region=cn&action=test`, headers: { origin: 'http://127.0.0.1:19387' } },
+        res.node,
+      )
+      expect(res.status()).toBe(200)
+      const answer = JSON.parse(String(res.body())) as { modelId?: string, rows?: unknown[] }
+      expect(answer.modelId).toBe('qfmodel')
+      expect(answer.rows).toHaveLength(1)
+      expect(chatCalls.length).toBe(1)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('解析不出目标时回 409 + reason，而不是 200 + 空数组', async () => {
+    // 目标真的解不出来（目录里一个免费模型都没有、用户也没手选）时，**不能再
+    // 用 `200 {rows: []}` 表达** —— 客户端只能把它渲染成「Host 未返回该账号的
+    // 结果」，字面像是账号坏了。用 409 + 有区分度的 reason 作答。
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        // 只有付费模型。
+        return new Response(JSON.stringify({
+          chat: [{ key: 'dfmodel', display_name: 'DeepSeek-Flash', price_factor: 0.1, is_reasoning: true }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    try {
+      const { pool } = await mount({
+        cn: { pat: PAT, enabledModelKeys: ['dfmodel'], pool: { enabled: true, targetModelId: '', memberAccountIds: [ACCOUNT_ID] } },
+        global: { pat: '' },
+      })
+      const res = fakeResponse()
+      await pool.handler(
+        { method: 'POST', url: `${pool.path}?region=cn&action=test`, headers: { origin: 'http://127.0.0.1:19387' } },
+        res.node,
+      )
+      expect(res.status()).toBe(409)
+      const answer = JSON.parse(String(res.body())) as { action?: string, reason?: string }
+      expect(answer.action).toBe('test')
+      expect(answer.reason).toBe('no-free-model')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})

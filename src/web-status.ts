@@ -64,8 +64,8 @@ import {
 } from './status-paths.ts'
 import type { QoderCampaignFeed, QoderRegion } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { resolveTargetModel, exclusionOf, rankPool, queuedModelIdsOf, workingModelIdsOf } from './account-pool.ts'
-import type { QoderPoolCredits, QoderPoolProbe } from './account-pool.ts'
+import { resolvePoolTarget, poolModelOf, exclusionOf, rankPool } from './account-pool.ts'
+import type { QoderPoolCredits, QoderPoolModel, QoderPoolProbe } from './account-pool.ts'
 import type { QoderStoredAccount } from './accounts.ts'
 import { isQoderAccountId } from './credentials.ts'
 
@@ -120,7 +120,16 @@ export interface QoderPoolDeps {
     /** 用户手动排定的优先级；空 = 完全由积分策略决定。 */
     orderAccountIds?: readonly string[]
   }
-  catalog(region: QoderRegion): readonly QoderModelInfo[]
+  // **这里刻意没有 `catalog`。**（issue #33）
+  //
+  // 它曾经存在，而且指向 `stacks[region].catalog.current()` —— 被 `deriveCatalog`
+  // 按「已勾选模型」裁剪过的运行时目录。池视图读的是 `deps.catalogs`（卡片那份
+  // 完整目录），测试路由读的是它，于是两处必然分叉：目标模型只要不在
+  // `enabledModelKeys` 里（手选了一个没勾的模型，或「自动」档唯一的免费模型没被
+  // 勾），测试就永远解不出目标 —— 卡片写着「测试用模型 X」，点下去是 `rows: []`。
+  //
+  // 修法不是「把两份对齐」，是**只留一份**：目标解析一律读 `deps.catalogs`。
+  // 这里少一个字段，那个分叉在类型层面就不可能被接回来。
   /** The measured probes currently in the runtime store. */
   poolProbes(region: QoderRegion): Record<string, QoderPoolProbe>
   /**
@@ -426,15 +435,8 @@ export function redactQoderText(text: string): string {
 }
 
 /** Project one model into the pool's target picker shape. */
-function poolModelOf(m: QoderModelInfo): { id: string, name: string, creditMultiplier?: number, contextWindow: number } {
-  return {
-    id: m.key,
-    name: m.displayName,
-    // 同 pool 视图的规则：免费折叠为 0（resolveTargetModel 只认 === 0），付费
-    // 透传真实倍率。
-    creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
-    contextWindow: m.contextWindow,
-  }
+function poolModelsOfCatalog(catalog: readonly QoderModelInfo[]): QoderPoolModel[] {
+  return catalog.map(model => poolModelOf(model))
 }
 
 // ---------------------------------------------------------------------------
@@ -639,16 +641,45 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
     }
 
     if (action === 'test') {
-      // 与池视图用**同一条**目标解析（issue #26）：两者若挑出不同的模型，卡片
-      // 上写的「测试用模型」与实际测的那个就不是一回事。
+      // 与池视图用**同一条**目标解析、**同一份**目录（issue #26 / #33）。
+      //
+      // #26 把两处的判据统一了，但两处传进去的 `catalog` 不是同一份：卡片读
+      // `deps.catalogs`（完整目录），这里读 `pool.catalog`（被 `deriveCatalog` 按
+      // 「已勾选模型」裁剪过的运行时目录）。于是只要目标模型不在
+      // `enabledModelKeys` 里 —— 手选了一个没勾的模型，或「自动」档唯一的免费模型
+      // 没被勾 —— 这里就永远解不出目标：卡片写着「测试用模型 X」，点下去却是
+      // `rows: []`（issue #33 的现场，国内版与国际版都中）。
+      //
+      // 「能不能测某个模型」与「它在不在 DSH 选择器里」是两件事：勾选管的是后者。
+      // 所以目标解析吃**卡片那一份**目录，两处输入相同，结论就不可能分叉。
       const now = Date.now()
       const poolProbes = pool.poolProbes(region)
-      const target = resolveTargetModel(pool.catalog(region).map(poolModelOf), pool.preferences(region).targetModelId, {
-        avoidModelIds: queuedModelIdsOf(poolProbes, now),
-        preferModelIds: workingModelIdsOf(poolProbes),
+      const target = resolvePoolTarget({
+        catalog: poolModelsOfCatalog(deps.catalogs[region].current()),
+        preferredId: pool.preferences(region).targetModelId,
+        probes: poolProbes,
+        nowMs: now,
       })
       if (target.modelId === undefined) {
-        return json(res, 200, { action: 'test', rows: [], modelId: undefined })
+        // 「解析不出目标」是一种**能力拒绝**，不是「批量跑完了、一行都没有」。
+        // 此前回 `200 {rows: []}`，客户端只能把它渲染成「Host 未返回该账号的
+        // 结果」—— 字面像是账号坏了（凭据失效 / 号不在池里），实际是模型目标
+        // 没解出来，排查方向被带偏（issue #33 第 4 点）。
+        //
+        // 用 409 + 有区分度的 `reason`：调用方能分清「这里没有可测的目标」与
+        // 「测了、没结果」，文案也就能说实话。
+        return json(res, 409, target.source === 'stale'
+          ? {
+              action: 'test',
+              reason: 'target-model-stale',
+              staleTargetModelId: target.staleModelId,
+              error: `the saved target model ${String(target.staleModelId)} is not offered by this region`,
+            }
+          : {
+              action: 'test',
+              reason: 'no-free-model',
+              error: 'this region has no zero-multiplier model to test with',
+            })
       }
       // `accountId` 存在时只测那一个（行级按钮）。畸形值按形状拒掉，别让它
       // 走到宿主内部才炸：与下方 delete 分支同一条规矩。
@@ -1037,21 +1068,17 @@ async function buildPoolView(
   /** 当前确实存在的账号 id —— 用来把配置里的残渣过滤掉。 */
   const knownIds = new Set(accounts.map(account => account.id))
   const targetId = prefs.targetModelId || ''
-  const targetModels = catalog.map(m => ({
-    id: m.key,
-    name: m.displayName,
-    // 「免费即 0」是 resolveTargetModel 的契约（只认 === 0）；付费模型透传真实
-    // 倍率，让选项标签能定价（`名字 (x0.79)`）。此前只写免费项，付费模型一个
-    // 数字都没有——读起来全像免费。
-    creditMultiplier: m.isFree === true ? 0 : m.priceFactor,
-    contextWindow: m.contextWindow,
-  }))
-  const target = resolveTargetModel(targetModels, prefs.targetModelId, {
-    // issue #26：「自动」这一档不再永远钉在最热门的免费模型上 —— 那个模型一旦
-    // 排队，每一次探测都撞同一个队列（整池躺了半小时）。规则与宿主侧
-    // `poolTargetOf` 逐字相同：最近测成功过的优先、跳过刚被排过队的。
-    avoidModelIds: queuedModelIdsOf(probes, now),
-    preferModelIds: workingModelIdsOf(probes),
+  // 「免费即 0」这条契约的投影只有一份（`poolModelOf`）：卡片的下拉、卡片的目标
+  // 解析、测试路由的目标解析都读它，三处不可能各写一套。
+  const targetModels = poolModelsOfCatalog(catalog)
+  const target = resolvePoolTarget({
+    // 与测试路由**逐字同源**：同一份目录（`deps.catalogs`，含未勾选的模型）、
+    // 同一条解析（issue #33）。「自动」这一档挑法的规则见 `resolvePoolTarget`：
+    // 最近测成功过的优先、跳过刚被排过队的（issue #26）。
+    catalog: targetModels,
+    preferredId: prefs.targetModelId,
+    probes,
+    nowMs: now,
   })
 
   // Membership is explicit; effective membership is what the pool can actually
