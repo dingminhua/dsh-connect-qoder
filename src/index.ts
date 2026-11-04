@@ -725,19 +725,23 @@ function configuredModels(
 }
 
 /** 把一次用量解析成卡片可渲染的积分包。 */
-function creditsOf(usage: QoderUsage): QoderWebCredits {
+export function creditsOf(usage: QoderUsage): QoderWebCredits {
   const packages: QoderWebCreditPackage[] = []
   let total = 0
   let expiringSoon = 0
   let nearestExpiryMs: number | undefined
   const SOON_MS = 3 * 24 * 3600 * 1000
+  const now = Date.now()
 
   const add = (packageName: string, remaining: number, size: number, expiresAtMs?: number): void => {
     if (size <= 0) return
     total += remaining
-    if (expiresAtMs !== undefined && remaining > 0) {
+    if (expiresAtMs !== undefined && remaining > 0 && expiresAtMs > now) {
+      // issue #31：判据必须有下界。此前是 `expiresAtMs - now < SOON_MS`，一个
+      // **已经过去**的时间戳同样满足它，于是这行会永远写「3 天内过期」，而真相
+      // 是「早过期了」—— 池排序还会把它当成最紧急的号。
       nearestExpiryMs = nearestExpiryMs === undefined ? expiresAtMs : Math.min(nearestExpiryMs, expiresAtMs)
-      if (expiresAtMs - Date.now() < SOON_MS) expiringSoon += 1
+      if (expiresAtMs - now < SOON_MS) expiringSoon += 1
     }
     packages.push({
       packageName,
@@ -1008,7 +1012,15 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         if (exhaustion !== undefined) quotaExhaustionByRegion[region] = exhaustion
         // 池关着也要记账（只进内存）：否则「这个号今天已用尽」永远不知道，
         // 每个回合都要先撞一次 110、再白等 2 秒换号。
-        const probe = liveRequestProbe(kind, message, undefined, context)
+        //
+        // issue #32：把「当日额度窗口何时结束」也递给它。真实请求撞 `110` 时
+        // 报文里没有等待时长，此前这条路径只能落一条没有 `retryAtMs` 的记录，
+        // 池子按 30 分钟兜底 —— 一个要等到次日窗口才恢复的号被每 30 分钟试探
+        // 一次。探测路径早就接了这个值（`probeThrough`），这里此前没接。
+        const probe = liveRequestProbe(kind, message, undefined, {
+          ...context,
+          ...quotaRefreshOfAccount(checkinSnapshots[region], accountId),
+        })
         if (probe === undefined || accountId === '') return
         poolRuntime[accountId] = probe
         // 持久化仍只写「池开着 + 是成员」的账号：见 `shouldRecordPoolFailure`
@@ -1163,6 +1175,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     }
     const store = stacks[region].store
     const SOON_MS = 3 * 24 * 3600 * 1000
+    const now = Date.now()
     const entries = await Promise.all(accountIds.map(async accountId => {
       const credit = await store.credentialFor(accountId, sourcesOf(region)).catch(() => undefined)
       if (credit === undefined) return undefined
@@ -1170,7 +1183,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       if (usage === undefined) return undefined
       const view = creditsOf(usage)
       const expiringSoon = view.packages.reduce(
-        (sum, pkg) => pkg.expiresAtMs !== undefined && pkg.expiresAtMs - Date.now() < SOON_MS ? sum + pkg.remain : sum,
+        // issue #31：与 `creditsOf` 同一条下界。已经过去的时间戳不算「临期」，
+        // 否则这个数字会永远带着一笔早就不存在的「3 天内过期」。
+        (sum, pkg) => pkg.expiresAtMs !== undefined && pkg.expiresAtMs > now && pkg.expiresAtMs - now < SOON_MS ? sum + pkg.remain : sum,
         0,
       )
       return [accountId, {
@@ -1932,6 +1947,8 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         // 解禁时刻：原因里写「约 N 分钟后解禁」要的就是它。只有上游明确给过
         // retryAtMs 的探针才有；缺席时面板只显示原因，不编倒计时。
         ...probe?.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs },
+        // 这个时刻是谁给的（issue #32）：上游申报 vs 签到快照推的，卡片要分开说。
+        ...probe?.retrySource === undefined ? {} : { retrySource: probe.retrySource },
         ...usage === undefined ? {} : { credits: creditsOf(usage).total },
       })
     }
@@ -2149,6 +2166,9 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // （exclusionOf 的 modelId 参数）—— 只改一侧等于没改。
       ...(result.modelId === '' ? {} : { modelId: result.modelId }),
       ...(result.retryAtMs === undefined ? {} : { retryAtMs: result.retryAtMs }),
+      // 解禁时刻的来源也要落盘（issue #32）：`retry-after` / `upstream-message`
+      // 是上游给的，`quota-refresh` 是快照推的 —— 卡片要分开说，不能混成一句。
+      ...(result.retrySource === undefined ? {} : { retrySource: result.retrySource }),
       // 排队信息（issue #26）：上游说「排在第 1027 位」是要显示给人看的。
       ...(result.queue === undefined ? {} : { queue: result.queue }),
       ...(result.message === undefined ? {} : { message: result.message }),
@@ -2224,6 +2244,18 @@ export function liveRequestProbe(
     retryAfterMs?: number | undefined
     /** 上游说「我在排队」的证据，issue #26。 */
     queue?: { isQueued: boolean, queueCount?: number, queueType?: string, retryAfterSeconds?: number, serviceAvailable?: boolean } | undefined
+    /**
+     * 「当日用量用尽」的恢复时刻（签到快照里的 `refreshAtMs`），issue #32。
+     *
+     * 真实请求撞 `110` 时，上游报文里**没有**等待时长（那是 `10605` 排队信封
+     * 才有的字段），于是这条路径此前只能落一条没有 `retryAtMs` 的记录，池子
+     * 按 30 分钟兜底 —— 一个要等到次日窗口才恢复的号，每 30 分钟被真实请求
+     * 撞一次。探测路径（`probeThrough`）早就接上了这个值，真实路径没有。
+     *
+     * 只在 `out-of-credit` 时采用，与 {@link cooldownOf} 同一顺序：上游申报的
+     * 时长优先，其次才是快照推出来的窗口时刻。
+     */
+    quotaRefreshAtMs?: number | undefined
   },
 ): QoderPoolProbe | undefined {
   // 排队优先（issue #26）：上游明说「在排队、服务是好的、30 秒后再来」，
@@ -2242,6 +2274,18 @@ export function liveRequestProbe(
   if (outcome === undefined) return undefined
   const now = Date.now()
   const retryAfterMs = context?.retryAfterMs
+  // 「什么时候能再用」有两个来源，必须分清（issue #32）：
+  // - 上游申报的等待时长（排队信封）—— 上游明说的时间；
+  // - 签到快照里的当日窗口结束时刻 —— **本地推算**的时间（上游只在活动页
+  //   给过「次日 10:00」这种口径，`110` 报文本身不带时刻）。
+  // 顺序与 `cooldownOf` 一致：申报值优先。`retrySource` 一路带到卡片，否则
+  // 用户会把「快照推的」读成「上游说的」。
+  const quotaRefreshAtMs = context?.quotaRefreshAtMs
+  const retry = retryAfterMs !== undefined && Number.isFinite(retryAfterMs) && retryAfterMs > 0
+    ? { retryAtMs: now + retryAfterMs, retrySource: 'upstream-reported' as const }
+    : outcome === 'out-of-credit' && quotaRefreshAtMs !== undefined && Number.isFinite(quotaRefreshAtMs)
+      ? { retryAtMs: quotaRefreshAtMs, retrySource: 'quota-refresh' as const }
+      : {}
   return {
     outcome,
     atMs: now,
@@ -2251,9 +2295,9 @@ export function liveRequestProbe(
     ...(modelId === undefined || modelId === '' ? {} : { modelId }),
     // 上游申报的等待时刻（issue #26）：上游说「等 30 秒」就是等 30 秒。此前这条
     // 路把申报值丢了，池子按 30 分钟兜底 —— 差 60 倍。
-    ...retryAfterMs === undefined || !Number.isFinite(retryAfterMs) || retryAfterMs <= 0
-      ? {}
-      : { retryAtMs: now + retryAfterMs },
+    // issue #32：申报值缺席时，`out-of-credit` 用签到快照的当日窗口时刻，别退
+    // 回 30 分钟。
+    ...retry,
     ...queued
       ? {
           queue: {
@@ -2402,6 +2446,20 @@ export function quotaRefreshOf(
   snapshot: Readonly<Record<string, { refreshAtMs?: number }>> | undefined,
   pat: string,
 ): { quotaRefreshAtMs?: number } {
-  const refreshAtMs = snapshot?.[qoderAccountId(pat)]?.refreshAtMs
+  return quotaRefreshOfAccount(snapshot, qoderAccountId(pat))
+}
+
+/**
+ * 同上，但键已经是**账号 id**（`pat-…`），不再从 PAT 派生。
+ *
+ * 真实请求路径（`onServingFailure`）只拿得到 `accountId`，拿不到 PAT ——
+ * 而快照本来就是按 id 存的。走 `quotaRefreshOf` 会把 `pat-abc…` 再哈希一次，
+ * 于是永远取不到，修复静默失效（issue #32 要的正是这条路径）。
+ */
+export function quotaRefreshOfAccount(
+  snapshot: Readonly<Record<string, { refreshAtMs?: number }>> | undefined,
+  accountId: string,
+): { quotaRefreshAtMs?: number } {
+  const refreshAtMs = snapshot?.[accountId]?.refreshAtMs
   return refreshAtMs === undefined ? {} : { quotaRefreshAtMs: refreshAtMs }
 }

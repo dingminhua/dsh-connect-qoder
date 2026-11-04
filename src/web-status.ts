@@ -1213,6 +1213,10 @@ async function buildPoolView(
           atMs: probe.atMs,
           ...(probe.source === undefined ? {} : { source: probe.source }),
           ...(probe.retryAtMs === undefined ? {} : { retryAtMs: probe.retryAtMs }),
+          // 时刻的来源（issue #32）：`upstream-reported` 是上游说的，
+          // `quota-refresh` 是按签到快照推的。不透传，卡片就只能把两者
+          // 显示成同一句话。
+          ...(probe.retrySource === undefined ? {} : { retrySource: probe.retrySource }),
           // 排队信息（issue #26）：卡片要显示「前面还有 N 个」。
           ...(probe.queue === undefined ? {} : { queue: probe.queue }),
           ...(probe.message === undefined ? {} : { message: probe.message }),

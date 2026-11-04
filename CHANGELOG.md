@@ -2,6 +2,68 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.17.4 (2026-11-05)
+
+> **三处「只修了一条路径」的缺口。**
+> 上游整体拒服务时，插件还在每一轮重试前白等 30 秒；
+> 真实请求撞 `110` 时，池子按 30 分钟反复试探一个要等次日窗口的号；
+> 积分行的到期日已经过去了，却照旧挂着「3 天内过期」。
+>
+> npm 上一直停在 `1.16.4`，所以这一版同时带上 `1.17.0`–`1.17.3` 的全部内容
+> （侧边栏面板、默认思考档位、池目标解析只留一份目录等），升级一次到齐。
+
+### 修复
+
+- **上游整体拒服务时不再等待**（issue #30）。
+  - **症状**：`serviceAvailable: false`（上游整体拒服务、`queueCount: 0`）时，
+    插件仍按信封里的 `retryAfterSeconds` 等满 30 秒再重发；而 `queueWaited` 是
+    **请求内**的局部变量，宿主每次重试都是新请求 —— 一条用户请求被放大成 5 次
+    30 秒的白等（#29 现场：28 次重试、纯等待 296 秒）。
+  - **根因**：等待判据只看 `isQueued`，把「上游整体不可用」也吞进了「排队」。
+    同一个 `serviceAvailable` 字段，插件在 `outcomeOfFailure`、`liveRequestProbe`、
+    `probeModel` 三处都区分了，唯独等待这一处没看 —— 是不一致，不是设计选择。
+  - **修法**：判据加 `!upstreamUnavailableOf(queue)`，与「要不要换号」共用同一个
+    纯函数。语义边界三条：`false` ⇒ 不等、直接交给宿主 / 换号链；`true` ⇒ 照旧等
+    （#29 的行为不变）；字段**缺席** ⇒ 照旧等（不推断）。
+- **真实请求路径接上「当日窗口时刻」**（issue #32）。
+  - **症状**：真实请求撞 `110`（当日用量限制）后，池记录里没有 `retryAtMs`，冷却
+    落回 `POOL_UNKNOWN_COOLDOWN_MS` = 30 分钟；30 分钟后账号回池、再撞一次 `110`，
+    一个要等到次日窗口的号被以 30 分钟为周期反复试探，每次试探都是一发真实请求。
+  - **根因**：`cooldownOf` 早就支持「`out-of-credit` 用签到快照的窗口结束时刻」，
+    `probeThrough` 也把 `quotaRefreshOf(...)` 传进去了 —— 但那只覆盖**探测路径**；
+    用户真正走的 `shim → onServingFailure → liveRequestProbe` 没有人把窗口时刻递
+    进来，而 `110` 的报文里本来就没有等待时长。
+  - **修法**：`liveRequestProbe` 的 `context` 新增 `quotaRefreshAtMs`，
+    `onServingFailure` 用新增的 `quotaRefreshOfAccount()` 从签到快照取值（按账号 id
+    直接取 —— 真实路径拿不到 PAT，走按 PAT 派生的那个会把 id 再哈希一次，永远取不到）。
+    取值顺序与 `cooldownOf` 一致：上游申报的时长优先，其次窗口时刻，且只对
+    `out-of-credit` 采用。
+  - **来源不再混为一谈**：池记录新增 `retrySource`，卡片把「上游申报的时刻」与
+    「按签到快照推算的时刻」分开说 —— 后者写成「约 N 小时后解禁（按今日额度窗口
+    推算）」，不再冒充上游的承诺。旧记录没有这个字段时仍用原句。
+- **过期时刻必须有下界**（issue #31）。
+  - **症状**：试用期结束后，池表格那行会**永久**显示「{remain} 积分 3 天内过期」，
+    而且池排序会把它当成最紧急的号。
+  - **根因**：`creditsOf` 与 `poolMemberCredits` 的判据都是
+    `expiresAtMs - Date.now() < SOON_MS`，**没有下界** —— 一个已经过去的时间戳同样
+    满足它。
+  - **修法**：两处都加 `expiresAtMs > now`；`nearestExpiryMs` 同样只在将来时记录。
+- **到期日带年份**（issue #31）。
+  - 池表格的「最近积分包 {at} 过期」此前借用探针的 `formatProbeMoment`（只有月日
+    时分），跨年时 `01/05 08:00` 是哪一年读者无从判断。新增 `formatExpiryMoment`
+    带年份，两件事不再共用同一个格式化函数。
+
+### 测试
+
+- `tests/shim.spec.ts`：`queuedThenOk()` 的帧改成可参数化（默认是真排队），拆出
+  「整体拒服务不等（`calls.length === 1`、502）」「字段缺席照旧等」两条 —— 旧用例
+  恰好用 `serviceAvailable: false` 的帧把「应该等」钉成了正确行为。
+- `tests/index.spec.ts`：新增 5 条覆盖 `liveRequestProbe` 的窗口时刻（采用 / 申报值
+  优先 / 只对 out-of-credit / 不编倒计时）与 `quotaRefreshOfAccount` 的按 id 取值；
+  新增 3 条覆盖 `creditsOf` 的过期下界（过去不计、3 天内计、更远只记最近到期）。
+- `tests/probe-label.spec.ts`：新增 4 条覆盖 `retrySource` 的文案分档与
+  `formatExpiryMoment` 的年份。
+
 ## 1.17.3 (2026-11-04)
 
 > **卡片写着「测试用模型：qfmodel」，点「测试」却只是闪一下。**

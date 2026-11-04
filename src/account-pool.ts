@@ -38,6 +38,16 @@ import type { QoderWebProbeOutcome } from './status-paths.ts'
  */
 export type QoderPoolProbeSource = 'test-batch' | 'live-request'
 
+/**
+ * 一条测量的 `retryAtMs` 是谁给的（issue #32）。
+ *
+ * `upstream-reported` 是上游自己申报的等待时长（排队信封），`quota-refresh`
+ * 是从签到快照推出来的当日窗口结束时刻 —— 后者是**本地推算**，卡片必须说清楚，
+ * 否则用户会把「我们猜的」读成「上游说的」。`retry-after` / `upstream-message`
+ * 来自探针路径（HTTP 头、失败报文里的重置句）。
+ */
+export type QoderPoolProbeRetrySource = 'retry-after' | 'upstream-message' | 'quota-refresh' | 'upstream-reported'
+
 /** One account's pool entry: what the picker needs, plus its last measurement. */
 export interface QoderPoolAccount {
   /** Stable account id (the PAT-derived id). */
@@ -68,6 +78,12 @@ export interface QoderPoolProbe {
    * ABSENT when the upstream named no time — never a locally invented one.
    */
   retryAtMs?: number
+  /**
+   * WHICH source supplied {@link retryAtMs}（issue #32）。
+   *
+   * 缺席 = 写这条记录的版本还没有这个字段（旧文件照常可读，卡片按「没说」处理）。
+   */
+  retrySource?: QoderPoolProbeRetrySource
   /**
    * 上游的排队信息（issue #26）。
    *

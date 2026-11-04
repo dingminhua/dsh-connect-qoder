@@ -884,6 +884,14 @@ describe('quotaRefreshOf：把签到快照里的开窗时刻交给探针', () =>
     expect(Qoder.quotaRefreshOf({ [PAT]: { refreshAtMs: AT } }, PAT)).toEqual({})
     expect(Qoder.quotaRefreshOf({ [ID]: { refreshAtMs: AT } }, PAT)).toEqual({ quotaRefreshAtMs: AT })
   })
+
+  // issue #32：真实请求路径只拿得到 accountId，拿不到 PAT。若这里再从 id
+  // 派生一次，键就变成 `pat-<hash(pat-…)>`，永远取不到 —— 修复静默失效。
+  it('真实请求路径按账号 id 直接取（issue #32）', () => {
+    expect(Qoder.quotaRefreshOfAccount({ [ID]: { refreshAtMs: AT } }, ID)).toEqual({ quotaRefreshAtMs: AT })
+    expect(Qoder.quotaRefreshOfAccount({ [PAT]: { refreshAtMs: AT } }, ID)).toEqual({})
+    expect(Qoder.quotaRefreshOfAccount(undefined, ID)).toEqual({})
+  })
 })
 
 describe('cooldownOf：拿到开窗时刻就用它', () => {
@@ -1020,6 +1028,81 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
       queue: { isQueued: true, queueCount: 3 },
     })
     expect(probe?.outcome).toBe('queued')
+  })
+
+  // ------------------------------------------------------------------------
+  // issue #32：`110` 的信封里没有等待时长，窗口时刻来自签到快照。
+  // ------------------------------------------------------------------------
+
+  it('out-of-credit + 窗口时刻 ⇒ retryAtMs 用它，来源标 quota-refresh', () => {
+    const AT = Date.now() + 20 * 3_600_000
+    const probe = Qoder.liveRequestProbe('quota-exhausted', '110 Billing daily count exceeded', undefined, {
+      quotaRefreshAtMs: AT,
+    })
+    expect(probe?.outcome).toBe('out-of-credit')
+    expect(probe?.retryAtMs).toBe(AT)
+    // 卡片要能说「这是按今日额度窗口推的」，而不是冒充上游的承诺。
+    expect(probe?.retrySource).toBe('quota-refresh')
+  })
+
+  it('上游申报的等待时长优先于窗口时刻（与 cooldownOf 同序）', () => {
+    const probe = Qoder.liveRequestProbe('quota-exhausted', '110', undefined, {
+      retryAfterMs: 30_000,
+      quotaRefreshAtMs: Date.now() + 20 * 3_600_000,
+    })
+    expect(probe?.retrySource).toBe('upstream-reported')
+    expect(probe?.retryAtMs).toBeGreaterThan(Date.now())
+    expect(probe?.retryAtMs).toBeLessThan(Date.now() + 60_000)
+  })
+
+  it('窗口时刻只在 out-of-credit 时采用（别的 kind 不编时刻）', () => {
+    const probe = Qoder.liveRequestProbe('rate-limited', '429', undefined, {
+      quotaRefreshAtMs: Date.now() + 3_600_000,
+    })
+    expect(probe?.outcome).toBe('rate-limited')
+    expect(probe?.retryAtMs).toBeUndefined()
+    expect(probe?.retrySource).toBeUndefined()
+  })
+
+  it('没有窗口时刻就照旧不写 retryAtMs（不编倒计时）', () => {
+    const probe = Qoder.liveRequestProbe('quota-exhausted', '110')
+    expect(probe?.retryAtMs).toBeUndefined()
+    expect(probe?.retrySource).toBeUndefined()
+  })
+})
+
+// ==========================================================================
+// issue #31：过期时刻必须有下界
+//
+// 旧判据是 `expiresAtMs - now < SOON_MS`，**没有下界**：一个已经过去的时刻
+// 同样满足它，于是「3 天内过期」会永远挂在那一行，而真相是「早过期了」。
+// ==========================================================================
+describe('creditsOf：过期时刻夹在 now 上（issue #31）', () => {
+  const NOW = Date.now()
+  const usage = (expiresAt: number): Parameters<typeof Qoder.creditsOf>[0] => ({
+    userQuota: { total: 300, used: 146 },
+    addOnQuota: { total: 800, used: 0 },
+    expiresAt,
+  })
+
+  it('已经过去的到期时刻不算「临期」，也不参与「最近到期」', () => {
+    const view = Qoder.creditsOf(usage(NOW - 86_400_000))
+    expect(view.expiringSoon).toBe(0)
+    expect(view.nearestExpiryMs).toBeUndefined()
+  })
+
+  it('3 天内的到期时刻照旧计数，并作为最近到期', () => {
+    const soon = NOW + 86_400_000
+    const view = Qoder.creditsOf(usage(soon))
+    expect(view.expiringSoon).toBe(1)
+    expect(view.nearestExpiryMs).toBe(soon)
+  })
+
+  it('超过 3 天的到期时刻不进「临期」，但仍是最近到期', () => {
+    const later = NOW + 10 * 86_400_000
+    const view = Qoder.creditsOf(usage(later))
+    expect(view.expiringSoon).toBe(0)
+    expect(view.nearestExpiryMs).toBe(later)
   })
 })
 

@@ -298,6 +298,9 @@ export const en = {
   // 原因行尾的解禁提示：「Rate limited · unblocks in about 12 min」。
   // 用相对时长而不是绝对时刻 —— 读者要的是「还要等多久」。
   'row.unlockSuffix': 'unblocks {when}',
+  // 这个时刻不是上游在这条失败里说的，而是按签到快照的当日额度窗口推的
+  // （issue #32）—— 必须与上一句分开，否则读者会把推算当成上游的承诺。
+  'row.unlockSuffixWindow': 'unblocks {when} (daily quota window)',
   'row.remainingImminent': 'any moment now',
   'row.remainingMinutes': 'in about {count} min',
   'row.remainingHours': 'in about {count} h',
@@ -712,6 +715,9 @@ export const zh: Record<QoderSettingsKey, string> = {
   // 原因行尾的解禁提示：「被限流 · 约 12 分钟后解禁」。
   // 用相对时长而不是绝对时刻 —— 读者要的是「还要等多久」。
   'row.unlockSuffix': '{when}解禁',
+  // 推算出来的时刻要标明来源（issue #32）：这是按签到快照的当日额度窗口推的，
+  // 不是上游在这条失败报文里说的。
+  'row.unlockSuffixWindow': '{when}解禁（按今日额度窗口推算）',
   'row.remainingImminent': '即将恢复',
   'row.remainingMinutes': '约 {count} 分钟后',
   'row.remainingHours': '约 {count} 小时后',

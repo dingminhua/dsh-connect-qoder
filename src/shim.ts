@@ -41,7 +41,7 @@ import type { AddressInfo } from 'node:net'
 import { timingSafeEqual } from 'node:crypto'
 import { randomBytes } from 'node:crypto'
 import type { QoderUpstreamClient, QoderChatDelta, QoderQueueState, UpstreamErrorKind } from './upstream.ts'
-import { QoderUpstreamError, isQoderUpstreamError } from './upstream.ts'
+import { QoderUpstreamError, isQoderUpstreamError, upstreamUnavailableOf } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
 import { shouldAnnounceFailover } from './failover-notice.ts'
 
@@ -755,10 +755,18 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
         }
         // 上游说「在排队、等 N 秒再来」时，先自己等掉这一次再重发（issue #29）。
         //
-        // 判据只有两条，都来自上游自己的字段：`queue.isQueued === true` 且申报了
-        // 正的等待时长。**不看 `serviceAvailable`** —— 那是给「要不要换号」用的
-        // （见 {@link upstreamUnavailableOf}），而排队本身无论上游整体可用与否，
-        // 「等它说的那几秒再试一次」都是比宿主 5 秒阶梯更接近上游意愿的行为。
+        // 判据都来自上游自己的字段：`queue.isQueued === true`、申报了正的等待
+        // 时长，且**上游不是整体拒服务**（issue #30）。
+        //
+        // 最后一条不能省：`serviceAvailable: false` 时同一个信封里 `isQueued`
+        // 照样是 `true`（现场 `queueCount: 0`、`subCode: RESOURCE_LIMIT`），但那
+        // 30 秒不是「轮到你」的时刻，只是下次探活的最早时间 —— 队列里没人，等
+        // 多久都不会轮到自己。而 `queueWaited` 是**请求内**的局部变量，宿主每次
+        // 重试都是新请求，所以「每请求只等一次」拦不住累积：一条用户请求会被
+        // 放大成 5 次 30 秒的白等（#30 现场）。
+        //
+        // 判据与「要不要换号」共用同一个纯函数，免得两处对同一个字段给出相反
+        // 的解读（#30 指出的不一致）。字段缺席时照旧等 —— 不推断。
         //
         // 三道闸门保证不会把请求变成永远不返回：
         // ① 每个请求只等一次（`queueWaited`）；② 申报值必须 ≤ 上限；
@@ -767,6 +775,7 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           !queueWaited
           && isQoderUpstreamError(error)
           && error.queue?.isQueued === true
+          && !upstreamUnavailableOf(error.queue)
           && queueWaitMaxMs > 0
           && error.retryAfterMs !== undefined
           && error.retryAfterMs > 0

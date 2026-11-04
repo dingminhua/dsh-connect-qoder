@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it } from 'vitest'
-import { probeResultView } from '../src/client/probe-label.ts'
+import { probeResultView, formatExpiryMoment } from '../src/client/probe-label.ts'
 import { exclusionText } from '../src/client/exclusion-text.ts'
 import { qoderLocales, render } from '../src/client/locales.ts'
 import type { Translate } from '../src/client/locales.ts'
@@ -71,5 +71,40 @@ describe('issue #26：中文文案说的是「排队」', () => {
 
   it('排除原因的短标签说的是「排队中」', () => {
     expect(zh['row.poolExcludedQueued']).toContain('排队')
+  })
+})
+
+describe('issue #32：推算出来的解禁时刻要标明来源', () => {
+  const zh = qoderLocales.zh
+  const AT = NOW + 20 * 3_600_000
+
+  it('上游申报的时刻用原来那句', () => {
+    const text = exclusionText(keyT, 'out-of-credit', AT, NOW, 'upstream-reported')
+    expect(text).toContain('row.unlockSuffix')
+    expect(text).not.toContain('row.unlockSuffixWindow')
+  })
+
+  it('快照推出来的时刻用带「额度窗口」的那句', () => {
+    const text = exclusionText(keyT, 'out-of-credit', AT, NOW, 'quota-refresh')
+    expect(text).toContain('row.unlockSuffixWindow')
+  })
+
+  it('来源缺席时退回原来那句（旧记录照常可读）', () => {
+    const text = exclusionText(keyT, 'out-of-credit', AT, NOW)
+    expect(text).toContain('row.unlockSuffix')
+    expect(text).not.toContain('row.unlockSuffixWindow')
+  })
+
+  it('中文文案点明「按今日额度窗口推算」，不冒充上游的承诺', () => {
+    const text = render(zh['row.unlockSuffixWindow'], { when: '约 20 小时后' })
+    expect(text).toContain('额度窗口')
+    expect(text).not.toContain('上游')
+  })
+})
+
+describe('issue #31：到期日与「恢复时刻」不是同一种显示', () => {
+  it('到期日带年份，跨年时读者能判断是哪一年', () => {
+    const at = new Date(2027, 0, 5, 8, 0).getTime()
+    expect(formatExpiryMoment(at)).toContain('2027')
   })
 })

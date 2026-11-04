@@ -751,6 +751,11 @@ export interface QoderWebAccountCredit {
    * 上游的 `retryAtMs`，没给就只显示原因、不编倒计时。
    */
   retryAtMs?: number
+  /**
+   * 这个时刻是谁给的（issue #32）：上游申报的等待时长，还是按签到快照推出来的
+   * 当日窗口结束时刻。后者是本地推算，面板要写明，不能与上游说的话混成一句。
+   */
+  retrySource?: QoderWebPoolRetrySource
 }
 
 // ---------------------------------------------------------------------------
@@ -830,6 +835,14 @@ export type QoderWebPoolExclusion =
   | 'failed'
 
 /**
+ * 一条测量的 `retryAtMs` 是谁给的（issue #32）。
+ *
+ * 与 `QoderPoolProbeRetrySource` 同义；这份声明在无 node 依赖的桥接模块里，
+ * 卡片据此决定「解禁时刻」那句话怎么说：上游说的照直说，快照推的要标明。
+ */
+export type QoderWebPoolRetrySource = 'retry-after' | 'upstream-message' | 'quota-refresh' | 'upstream-reported'
+
+/**
  * One account's row in the pool, as the card renders it.
  *
  * Ties together the three facts the card shows per account — credits, the
@@ -860,6 +873,14 @@ export interface QoderWebPoolAccount {
     source?: 'test-batch' | 'live-request'
     /** Only when the upstream named a time; never invented locally. */
     retryAtMs?: number
+    /**
+     * 这个时刻是谁给的（issue #32）。
+     *
+     * `upstream-reported` 是上游申报的等待时长；`quota-refresh` 是从签到快照
+     * 推出来的当日窗口结束时刻 —— 后者是**本地推算**，卡片必须写明，否则用户
+     * 会把「我们猜的」读成「上游说的」。缺席 = 写这条记录的版本还没有这个字段。
+     */
+    retrySource?: QoderWebPoolRetrySource
     /** Why it failed, in the upstream's own redacted words. */
     message?: string
     /**

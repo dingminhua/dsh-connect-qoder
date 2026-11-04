@@ -15,7 +15,7 @@
  * （「约 12 分钟后解禁」）——绝对时刻要读者自己拿现在减一下，而「还要等多久」
  * 才是能直接行动的数字。时刻仍来自上游（`retryAtMs`），没给就不编。
  */
-import type { QoderWebPoolExclusion } from '../status-paths.ts'
+import type { QoderWebPoolExclusion, QoderWebPoolRetrySource } from '../status-paths.ts'
 import type { Translate } from './locales.ts'
 import { remainingText } from './remaining.ts'
 
@@ -25,6 +25,7 @@ export function exclusionText(
   excludedBy: QoderWebPoolExclusion | undefined,
   retryAtMs?: number,
   nowMs: number = Date.now(),
+  retrySource?: QoderWebPoolRetrySource,
 ): string | undefined {
   const label = exclusionLabel(t, excludedBy)
   if (label === undefined) return undefined
@@ -32,7 +33,11 @@ export function exclusionText(
   // 也就没有倒计时 —— 绝不拿「30 分钟后」去安慰一个等不会好的状态。
   const remaining = retryAtMs === undefined ? '' : remainingText(t, retryAtMs, nowMs)
   if (remaining === '') return label
-  return `${label} · ${t('row.unlockSuffix', { when: remaining })}`
+  // 这个时刻是**谁**给的（issue #32）：`quota-refresh` 是按签到快照推出来的
+  // 当日窗口，不是上游在这条失败报文里说的。两者用同一句话，用户会把推算
+  // 当成上游的承诺 —— 所以后者单独一句。
+  const suffix = retrySource === 'quota-refresh' ? 'row.unlockSuffixWindow' : 'row.unlockSuffix'
+  return `${label} · ${t(suffix, { when: remaining })}`
 }
 
 /** 排除原因的固定短标签（不含时间）。 */

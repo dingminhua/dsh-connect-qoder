@@ -578,7 +578,7 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                       // 「能用的绿色圆点；当前选择的，绿色圆点加第二行提示当前选用；
                       // 不能用的红色圆点+原因」。颜色只回答能不能用，哪一个是它靠
                       // 这行字说。
-                      const excluded = exclusionText(t, row.excludedBy, row.retryAtMs)
+                      const excluded = exclusionText(t, row.excludedBy, row.retryAtMs, Date.now(), row.retrySource)
                       const mark = excluded ?? (current ? t('composer.currentPick') : undefined)
                       // 点色只有两种：能用绿、不能用红（account-state.ts 的同一判定，
                       // 与设置页大表同源）。此前它还要分辨「测过/没测过」，用户改口

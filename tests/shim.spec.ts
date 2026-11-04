@@ -1085,8 +1085,19 @@ describe('issue #26：shim 把排队证据递给宿主', () => {
 })
 
 describe('issue #29：排队时 shim 自己等掉申报的时长，再交给宿主', () => {
-  /** 一个「第一次排队、第二次成功」的上游，并记录每次调用的时刻。 */
-  function queuedThenOk(retryAfterMs: number, calls: number[] = []): QoderUpstreamClient {
+  /**
+   * 一个「第一次排队、第二次成功」的上游，并记录每次调用的时刻。
+   *
+   * `queue` 决定那条排队信封长什么样：默认是**真的在排队**（`serviceAvailable:
+   * true`、队列里有人）。issue #30 的形态（上游整体拒服务、`serviceAvailable:
+   * false`、`queueCount: 0`）必须显式传进来 —— 它曾经被当成「应该等」钉在测试
+   * 里，正是因为这里默认写了 `false` 却没人注意。
+   */
+  function queuedThenOk(
+    retryAfterMs: number,
+    calls: number[] = [],
+    queue: { queueCount?: number, serviceAvailable?: boolean } = {},
+  ): QoderUpstreamClient {
     return {
       chatStream: async (_credential: string, _modelKey: string, _messages: unknown, options: { onDelta: (d: Delta) => void }) => {
         calls.push(Date.now())
@@ -1097,7 +1108,13 @@ describe('issue #29：排队时 shim 自己等掉申报的时长，再交给宿�
             502,
             '10605',
             retryAfterMs,
-            { isQueued: true, queueCount: 0, queueType: 'p3', retryAfterSeconds: retryAfterMs / 1000, serviceAvailable: false },
+            {
+              isQueued: true,
+              queueCount: queue.queueCount ?? 3,
+              queueType: 'p3',
+              retryAfterSeconds: retryAfterMs / 1000,
+              ...queue.serviceAvailable === undefined ? {} : { serviceAvailable: queue.serviceAvailable },
+            },
           )
         }
         options.onDelta(delta('Hello'))
@@ -1109,7 +1126,7 @@ describe('issue #29：排队时 shim 自己等掉申报的时长，再交给宿�
     const calls: number[] = []
     const failures: string[] = []
     const shim = await startShim({
-      upstream: queuedThenOk(120, calls),
+      upstream: queuedThenOk(120, calls, { serviceAvailable: true }),
       onServingFailure: (_id, kind) => { failures.push(kind) },
     })
     const resp = await chat(shim, {})
@@ -1121,12 +1138,40 @@ describe('issue #29：排队时 shim 自己等掉申报的时长，再交给宿�
     expect(failures).toEqual([])
   })
 
+  it('serviceAvailable 缺席时照旧等：不推断「整体不可用」', async () => {
+    const calls: number[] = []
+    const shim = await startShim({ upstream: queuedThenOk(120, calls) })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    expect(calls).toHaveLength(2)
+  })
+
+  // issue #30：`isQueued: true` + `serviceAvailable: false` 不是「排队」。
+  // 队列里一个人都没有（`queueCount: 0`），那 30 秒只是下次探活的最早时间，
+  // 等它不会让请求前进一步；而 `queueWaited` 是请求内局部变量，宿主每次重试
+  // 都是新请求 ⇒ 每轮都白等一次。
+  it('上游整体拒服务（serviceAvailable: false）时不等，原样交给宿主', async () => {
+    const calls: number[] = []
+    const failures: string[] = []
+    const shim = await startShim({
+      upstream: queuedThenOk(120, calls, { queueCount: 0, serviceAvailable: false }),
+      onServingFailure: (_id, kind) => { failures.push(kind) },
+    })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(502)
+    // 关键：一次都没有重发，也没有把 120ms 等掉。
+    expect(calls).toHaveLength(1)
+    // 失败仍然按「排队证据 + 整体不可用」交给池子（由 liveRequestProbe 记成
+    // `unavailable`，而不是 `queued`）。
+    expect(failures).toEqual(['transient'])
+  })
+
   it('申报值超过上限时不等待，原样交给宿主（不做「只等一半」）', async () => {
     const calls: number[] = []
     const shim = await startShim({
       // 上限压到 50ms，申报 5 秒 —— 远超上限。
       queueWaitMaxMs: 50,
-      upstream: queuedThenOk(5_000, calls),
+      upstream: queuedThenOk(5_000, calls, { serviceAvailable: true }),
     })
     const resp = await chat(shim, {})
     expect(resp.status).toBe(502)

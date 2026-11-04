@@ -53,7 +53,7 @@ import { accountDotTone, accountStateColor } from './account-state.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
 import { inlineProbeReason } from './probe-reason.ts'
-import { probeLabelOf, formatProbeMoment } from './probe-label.ts'
+import { probeLabelOf, formatProbeMoment, formatExpiryMoment } from './probe-label.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
 import { remainingText, countdownText } from './remaining.ts'
@@ -998,7 +998,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
               推出，行序与宿主给的顺序一致。 */}
           {sortAccountsByOrder(pool?.accounts ?? [], orderIds).map(account => {
             const name = account.accountName === '' ? t('row.accountUnnamed') : account.accountName
-            const excluded = exclusionText(t, account.excludedBy, account.probe?.retryAtMs, nowMs)
+            const excluded = exclusionText(t, account.excludedBy, account.probe?.retryAtMs, nowMs, account.probe?.retrySource)
             const inPool = active.memberAccountIds.includes(account.accountId)
             return (
               <div
@@ -1101,7 +1101,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                   {account.expiringSoon !== undefined && account.expiringSoon > 0
                     ? <span className="dsm-qoder-pool-soon">{t('row.poolCreditSoon', { count: String(account.expiringSoon) })}</span>
                     : account.nearestExpiryMs === undefined ? null
-                      : <span className="dsm-qoder-pool-soon-plain">{t('row.poolCreditNearest', { at: formatProbeMoment(account.nearestExpiryMs) })}</span>}
+                      : <span className="dsm-qoder-pool-soon-plain">{t('row.poolCreditNearest', { at: formatExpiryMoment(account.nearestExpiryMs) })}</span>}
                 </span>
                 <span className="dsm-qoder-pool-probe" {...(account.probe?.message === undefined ? {} : { title: account.probe.message })}>
                   {/* 主行 = 结果 · 原因（workbuddy 的 probeLine 同规）：原因写进主行

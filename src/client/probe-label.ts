@@ -46,6 +46,24 @@ export function formatProbeMoment(atMs: number): string {
   }).format(new Date(atMs))
 }
 
+/**
+ * 积分到期日的本地化显示：**带年份**（issue #31）。
+ *
+ * `formatProbeMoment` 是给「几分钟到几小时后恢复」写的，月日足够；但到期日可能
+ * 跨月甚至跨年，`01/05 08:00` 是哪一年读者无从判断。所以到期日单独一个格式化
+ * 函数，而不是把探针那个借过来用。
+ */
+export function formatExpiryMoment(atMs: number): string {
+  return new Intl.DateTimeFormat(undefined, {
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(atMs))
+}
+
 /** 「何时恢复」的相对后缀（` · 约 1 小时后`），无时刻或已过期时为空串。 */
 function retrySuffix(t: Translate, untilMs: number | undefined, nowMs: number): string {
   if (untilMs === undefined) return ''
