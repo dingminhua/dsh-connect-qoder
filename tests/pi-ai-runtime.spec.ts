@@ -12,6 +12,9 @@
  * of the gate is to FOLLOW the resolution, not to freeze it.
  */
 
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import semver from 'semver'
 import { describe, expect, it } from 'vitest'
 import { generationOf, piAiRuntimeFor, piAiRuntimeInfo } from '../src/pi-ai-runtime.ts'
 
@@ -109,10 +112,23 @@ describe('piAiRuntimeInfo', () => {
   it('reads the version from the manifest owning the resolved file', () => {
     const info = piAiRuntimeInfo()
     if (!info.resolvedLocally) return
-    // Within the peer range every release spells its version 0.<minor>.<patch>;
-    // anything else means the wrong manifest was read (for instance a
-    // virtual-store parent's package.json).
-    expect(info.version).toMatch(/^0\.(8[5-7])\.\d+/u)
+    // 断言「读到的版本落在声明的 peer 范围里」，而不是写死 `0.85.x`。
+    //
+    // 原版写的是 `/^0\.(8[5-7])\.\d+/`，理由是「范围内每个版本都是 0.<minor>.<patch>」——
+    // 那句话在 1.x 进入范围后就不成立了：宿主 0.2.2-rc.1 装的是 **1.3.0**，
+    // 这条用例会在真宿主树上红（本轮实测）。判据本来就该是「在范围内」：
+    // 范围之外只可能是读错了清单（例如虚拟仓父目录的 package.json）。
+    // 于是宿主换线（0.85 → 1.x → …）时这条护栏不跟着改，只有声明变它才该变。
+    const { peerDependencies } = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    ) as { peerDependencies: Record<string, string> }
+    const declared = peerDependencies['@earendil-works/pi-ai']
+    expect(declared, 'pi-ai must stay a declared peer').toBeDefined()
+    expect(info.version).toBeDefined()
+    expect(
+      semver.satisfies(info.version as string, declared as string, { includePrerelease: true }),
+      `${info.version} must fall inside the declared pi-ai peer range`,
+    ).toBe(true)
   })
 
   it('is stable across calls (resolved once, then cached)', () => {

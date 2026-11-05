@@ -6,7 +6,7 @@
  *   （那是 0.1.7 宿主线要的）。而 0.2.1-rc.1 宿主装的是 pi-ai **1.x**，两代对
  *   上下文的读法不同。要证明「modern 分支在 1.x 上是对的」，就必须真的有一个
  *   1.x 的 api 可跑 —— 所以 `tests/fixtures/pi-ai-modern/` 是一份独立的 1.x
- *   安装（1.1.0，与 followup 文档同一个版本），只在构建请求体时被用到，不参与
+ *   安装（1.3.0，与 0.2.2-rc.1 宿主同代），只在构建请求体时被用到，不参与
  *   本仓库的解析树。
  *
  * 这一套钉的是 0.2.1-rc.1 回归的**结局**：
@@ -17,7 +17,7 @@
  *     逆折叠成扁平 envelope 交给 1.x api —— 1.x 只读 `messages`，于是线上请求
  *     **没有系统提示词、没有工具**，且不报错。
  *
- * 这里用**真实的** 1.1.0 `createModels` + 真实 `openAICompletionsApi` 复现这两格，
+ * 这里用**真实的** 1.3.0 `createModels` + 真实 `openAICompletionsApi` 复现这两格，
  * 断言线上 body。`tests/pi-ai-runtime.spec.ts` 的版本表守卫
  * 「1.x 必须判成 modern」，两者合起来才闭环。
  */
@@ -230,6 +230,14 @@ describe('fixture 可追溯', () => {
     const manifest = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
       dependencies?: Record<string, string>
     }
-    expect(manifest.dependencies?.['@earendil-works/pi-ai']).toBe('1.1.0')
+    const pinned = manifest.dependencies?.['@earendil-works/pi-ai']
+    expect(pinned, 'fixture must pin pi-ai').toBeDefined()
+    // 钉的是**确切版本**（不含 ^ ~ > 之类）：这套论证依赖「跑的是哪一版」，
+    // 用范围写就说不清了。
+    expect(pinned).toMatch(/^\d+\.\d+\.\d+$/u)
+    // 必须是 1.x —— 0.85 那一代没有 normalizeContext，跑这套证明不了 modern。
+    // 用 generationOf 判而不是写死版本号：宿主换线时改的是钉版，不是这条断言。
+    expect(generationOf(pinned as string)).toBe('modern')
+    expect((pinned as string).split('.')[0]).toBe('1')
   })
 })

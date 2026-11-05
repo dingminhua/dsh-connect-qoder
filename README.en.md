@@ -307,40 +307,32 @@ pnpm exec dsh-connect-qoder doctor --json        # machine-readable output
 
 | Host | Peer range |
 | --- | --- |
-| DSH (`@deepseek-ai/*`) | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0 \|\| >=0.2.1-rc.1 <0.3.0-0` |
+| DSH (`@deepseek-ai/*`) | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0 \|\| >=0.2.1-rc.1 <0.3.0-0 \|\| >=0.2.2-rc.1 <0.3.0-0` |
 | `@earendil-works/pi-ai` | `>=0.85.0 <0.88.0 \|\| >=1.0.0 <2.0.0` |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 
 > Enforced by `tests/dsh-line.spec.ts`. DSH only ships prereleases, and node-semver admits a prerelease **only** when some comparator in the range names that exact `major.minor.patch` tuple *and* carries a prerelease tag — so every new line needs its own branch. Writing `>=0.1.7-rc.1 <0.3.0-0` silently excludes the whole `0.2.0-rc.*` line; likewise `>=0.2.0-rc.1` does **not** cover `0.2.1-rc.1` (which Desktop 0.2.1-rc.1 ships). The upper bound must keep `-0` (`<0.3.0` blocks nothing).
 >
-> **Two semver readings coexist** (corrected by measurement in 1.1.2): **npm / pnpm installation** uses node-semver's **standard** reading, so a new patch line's rc (`0.2.2-rc.1`) really does still need a hand-added branch — that is what `UNGATED_PRERELEASES` tracks. But the **host's plugin-compatibility gate does not use the standard reading**: `dsh-app-boot` calls `semver.satisfies(v, range, { includePrerelease: true })`, under which `>=0.2.1-rc.1 <0.3.0-0` alone covers the **whole `0.2.x` line** (`0.2.2-rc.1`, `0.2.9` all pass) while `0.3.0-rc.1` is still blocked by the ceiling. 1.1.0/1.1.1 claimed "no static range can cover any `0.2.x` prerelease" — true for npm, false for the host gate, now corrected.
+> **Two semver readings coexist** (corrected by measurement in 1.1.2): **npm / pnpm installation** uses node-semver's **standard** reading, so a new patch line's rc (`0.2.2-rc.1` got its branch on 2026-11-05; `0.2.3-rc.1` is next) really does still need a hand-added branch — that is what `UNGATED_PRERELEASES` tracks. But the **host's plugin-compatibility gate does not use the standard reading**: `dsh-app-boot` calls `semver.satisfies(v, range, { includePrerelease: true })`, under which `>=0.2.1-rc.1 <0.3.0-0` alone covers the **whole `0.2.x` line** (`0.2.2-rc.1`, `0.2.9` all pass) while `0.3.0-rc.1` is still blocked by the ceiling. 1.1.0/1.1.1 claimed "no static range can cover any `0.2.x` prerelease" — true for npm, false for the host gate, now corrected.
 >
 > **pi-ai gets its own row** because it changed major: Desktop 0.2.1-rc.1 moved pi-ai from 0.85 to 1.x, and the two generations consume different context shapes (1.x normalizes in its Models layer). The declaration and the runtime detection must agree — otherwise you get the silent tool-loss bug fixed in 1.1.0. See [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md).
 
-### Current host baseline: 0.2.1-rc.5 (measured 2026-10-30)
+### Current host baseline: 0.2.2-rc.1 (measured 2026-11-05)
 
-The host moved to `0.2.1-rc.5` (`DeepSeek Harness.app`, nightly channel; every `@deepseek-ai/dsh-*` package inside `app.asar` is `0.2.1-rc.5`, bundled pi-ai is `1.1.0`). **This plugin needs no runtime code change.** The reasoning, item by item:
+The host moved to `0.2.2-rc.1` (every `@deepseek-ai/dsh-*` inside `app.asar` is `0.2.2-rc.1`, with bundled pi-ai **`1.3.0`**, cordis `4.1.0`, schemastery `3.19.0`). This round **did need adaptation**, unlike the zero-change 0.2.1 line:
 
 | Check | Result |
 | --- | --- |
-| Host packages the plugin depends on (`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings` / `dsh-atomic-write` / `dsh-attachment` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-ui-slots` / `dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-primitives`) | Byte-identical to rc.3 (only the `package.json` version differs) |
-| Bundled pi-ai | `1.1.0` (unchanged since rc.3) — `generationOf()` still reports `modern` |
-| `@deepseek-ai/schemastery` | `3.18.5` (rc.3 shipped `3.18.4`); `lib/` and `src/` are **byte-identical** between the two, only the `package.json` version differs, and it falls inside the declared `>=3.18.2 <4.0.0` |
-| rc.4 / rc.5 runtime changes | 13 commits; only 40 files changed beyond version bumps, and **none** of them is a host package this plugin imports |
-| The three slots the plugin uses | `conversation.input.model.label`, `conversation.input.right`, and `conversation.composer.dock` keep their `kind` / `scope` / registration fields / owner props **verbatim** from rc.3 to rc.5 |
-| `plugins.bundle.config` / `plugins.row.config` | The keyed-slot `key` semantics (bare package name / `<package>#<row id>`) are unchanged, so the card still mounts |
-| Actual load on rc.5 | The `Config` directory shows `include:dsh-connect-qoder` with status `schema`; all four slot occupants are `active: true`, with the model label held by `dsh-connect-qoder-client` (priority `-1`) |
-| Peer range | `evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.5')` returns `undefined` (= compatible); rc.3, rc.4 and rc.5 all pass |
-| Regression | `pnpm run typecheck` and `pnpm test` (1032 passed / 8 skipped) are green |
+| `ResolvedPiAiProviderProfile` | Gained required `maxRequestImages` / `imageOffloadCountQuantum` (a per-request image-count bound; host defaults 50 / 10). The plugin assembles this profile by hand, so the host's defaulting never runs → both are now set explicitly |
+| pi-ai 1.3.0 api input | Now a branded `TranscriptContext` (only `normalizeContext()` produces one). This only affects the legacy (0.85) re-fill branch; the assertion is confined there and documents that a 1.3.0 host cannot reach it |
+| `ctx.locale.register` | Signature widened to `Record<BuiltInLocaleId, …> & Record<LocaleId, …>`, which requires a string index signature on the argument → `QoderLocale` now carries one (bilingual stays legal; missing languages fall back to English) |
+| Peer range | Added `\|\| >=0.2.2-rc.1 <0.3.0-0`; before that npm's standard reading rejected `0.2.2-rc.1` while the host gate always admitted it |
+| modern pass-through | **No regression**: prompt and tools both survive on the real 1.3.0 stack (all four pass-through cases are green once the modern fixture moves to 1.3.0) |
+| Mid-conversation system messages | Since 0.2.2 they default to a user-role `<system-reminder>` unless the model declares `supportsMidConvoSystemMessages`; Qoder routes currently take the default |
+| Slots / events the plugin uses | `conversation.input.*`, `conversation.composer.dock`, `settings.section` and `plugins.*.config` are unchanged; `webserver/index-inject`'s new `peer` argument and `WebResourceRoute` are additive and unused here |
+| Regression | `pnpm run typecheck` (host and client projects) plus `pnpm test` are green |
 
-Every rc.4 / rc.5 change lands on a surface this plugin does not touch:
-
-- **rc.4's reasoning Body Slot field split** (`conversation.chat.reasoning.body` gains `rawText` while `text` becomes "display-ready"): the single breaking extension point this round, and the host shipped a dedicated migration note at `docs/upgrade-guide/v0.2.1-rc.4/reasoning-body-props/`. **This plugin does not register that slot** (neither `src/` nor the built `lib/client.js` registers any `conversation.chat.` key), so it is unaffected; the affected parties are wrappers such as `@deepseek-ai/dsh-experimental-cot-translation`.
-- **rc.4 moved two diagnostics from stdout to stderr** (`llm-deepseek-account`'s model listing and `mcp-client`'s resource listing), because the ACP profile reserves stdout for JSON-RPC. This plugin's Host half **never writes stdout** (it uses `ctx.logger` only; `src/bin.ts` stdout belongs to the standalone CLI), so there is no leak surface.
-- **rc.4 dropped the `session.moreViewsCurrent` locale key** and made view-tab tooltips appear only on overflow: this plugin uses neither the key nor the view tabs.
-- **rc.5 only changed reasoning display preprocessing** (`reasoningText()` unwrapping a `<signature>` envelope): this plugin emits standard `reasoning_content` deltas and never wraps them in `<signature>`.
-
-> The **environment** change that came with rc.3 (not a plugin problem): the host app directory was renamed from `DSH NEXT.app` to `DeepSeek Harness.app`, which breaks a `dsh` shim still pointing at the old path — see the note under [Installation](#installation).
+> The 0.2.1-rc.4 / rc.5 round stays documented in [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md); this round's measurements, reproduction script and open decisions are in [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md).
 
 ## Security notes
 

@@ -307,40 +307,32 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 
 | 宿主 | peer 范围 |
 | --- | --- |
-| DSH（`@deepseek-ai/*`） | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0 \|\| >=0.2.1-rc.1 <0.3.0-0` |
+| DSH（`@deepseek-ai/*`） | `>=0.1.7-rc.1 <0.2.0-0 \|\| >=0.2.0-rc.1 <0.3.0-0 \|\| >=0.2.1-rc.1 <0.3.0-0 \|\| >=0.2.2-rc.1 <0.3.0-0` |
 | `@earendil-works/pi-ai` | `>=0.85.0 <0.88.0 \|\| >=1.0.0 <2.0.0` |
 | Node.js | `^22.19.0 \|\| >=24.0.0` |
 
 > 范围由 `tests/dsh-line.spec.ts` 强制。DSH 至今只发预发布，而 node-semver 只有当范围里*某个*比较符与该版本的 `major.minor.patch` 元组完全一致、且自身也带预发布标签时，才会放行预发布版本。所以每开一条新线就得加一条分支：只写 `>=0.1.7-rc.1 <0.3.0-0` 会**静默排除整条 `0.2.0-rc.*`**（`0.2.0-rc.2` 曾是 `latest`），同理 `>=0.2.0-rc.1` 这一支**不含 `0.2.1-rc.1`**（桌面端 0.2.1-rc.1 已发布）。上界仍须带 `-0`（`<0.3.0` 不挡任何东西）。
 >
-> **两套语义并存**（1.1.2 实测更正）：npm / pnpm 安装走 node-semver **标准**语义，新补丁号的 rc（如 `0.2.2-rc.1`）**确实**仍需手工追加一条分支 —— `UNGATED_PRERELEASES` 就是这份可见的待办表。但**宿主的插件兼容门禁不是标准语义**：`dsh-app-boot` 用 `semver.satisfies(v, range, { includePrerelease: true })`，在这个语义下 `>=0.2.1-rc.1 <0.3.0-0` 一支就覆盖**整条 `0.2.x` 线**（`0.2.2-rc.1`、`0.2.9` 都放行），`0.3.0-rc.1` 仍被上界拦住。1.1.0/1.1.1 曾断言「没有任何静态范围能覆盖任意 `0.2.x` 预发布」，那句话只对 npm 成立，对宿主门禁不成立，已更正。GA 版本（如 `0.2.1`）对既有分支本来就判 true。
+> **两套语义并存**（1.1.2 实测更正）：npm / pnpm 安装走 node-semver **标准**语义，新补丁号的 rc（`0.2.2-rc.1` 已于 2026-11-05 补齐分支，下一个待补的是 `0.2.3-rc.1`）**确实**仍需手工追加一条分支 —— `UNGATED_PRERELEASES` 就是这份可见的待办表。但**宿主的插件兼容门禁不是标准语义**：`dsh-app-boot` 用 `semver.satisfies(v, range, { includePrerelease: true })`，在这个语义下 `>=0.2.1-rc.1 <0.3.0-0` 一支就覆盖**整条 `0.2.x` 线**（`0.2.2-rc.1`、`0.2.9` 都放行），`0.3.0-rc.1` 仍被上界拦住。1.1.0/1.1.1 曾断言「没有任何静态范围能覆盖任意 `0.2.x` 预发布」，那句话只对 npm 成立，对宿主门禁不成立，已更正。GA 版本（如 `0.2.1`）对既有分支本来就判 true。
 >
 > **pi-ai 单独列一行**是因为它换了主版本：0.2.1-rc.1 宿主把 pi-ai 从 0.85 换到 1.x，而两代的上下文契约不同（1.x 在 Models 层归一化）。声明与检测必须一致，否则就是 1.1.0 修掉的那个静默丢工具缺陷 —— 详见 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)。
 
-### 当前宿主基线：0.2.1-rc.5（2026-10-30 实测）
+### 当前宿主基线：0.2.2-rc.1（2026-11-05 实测）
 
-宿主升到 `0.2.1-rc.5`（`DeepSeek Harness.app`，nightly 通道；`app.asar` 内全部 `@deepseek-ai/dsh-*` 均为 `0.2.1-rc.5`，内置 pi-ai `1.1.0`）。**本插件不需要任何运行时代码改动**，理由逐条如下：
+宿主升到 `0.2.2-rc.1`（`app.asar` 内 `@deepseek-ai/dsh-*` 均为 `0.2.2-rc.1`，内置 pi-ai **`1.3.0`**、cordis `4.1.0`、schemastery `3.19.0`）。这一轮**需要适配**，与 0.2.1 线的「零改动」不同：
 
 | 检查项 | 结论 |
 | --- | --- |
-| 插件依赖的宿主包（`dsh-llm` / `dsh-llm-pi-ai` / `dsh-settings` / `dsh-atomic-write` / `dsh-attachment` / `dsh-host-webserver` / `dsh-home-paths` / `dsh-client-ui-slots` / `dsh-client-ui-settings` / `dsh-client-ui-settings-plugins` / `dsh-client-ui-renderer` / `dsh-client-locale` / `dsh-client-ui-primitives`） | 与 rc.3 **逐字节相同**（仅 `package.json` 的版本号不同） |
-| 宿主内置 pi-ai | `1.1.0`（rc.3 起未变）—— `generationOf()` 仍判 `modern` |
-| `@deepseek-ai/schemastery` | `3.18.5`（rc.3 的 `3.18.4` → `3.18.5`）；两个版本的 `lib/` 与 `src/` **逐字节相同**，只有 `package.json` 版本号不同，落在声明的 `>=3.18.2 <4.0.0` 内 |
-| rc.4 / rc.5 的运行时改动 | 共 13 个提交，非版本号改动只有 40 个文件；**没有一条**落在插件导入的宿主包上 |
-| 插件用到的三个槽位 | `conversation.input.model.label`、`conversation.input.right`、`conversation.composer.dock` 的 `kind` / `scope` / 注册字段 / owner props 在 rc.3→rc.5 **逐字未变** |
-| `plugins.bundle.config` / `plugins.row.config` | keyed 槽位的 `key` 语义（裸包名 / `<包名>#<行 id>`）未变，卡片照常挂载 |
-| 插件在 rc.5 上的实际加载 | `Config` 目录里 `include:dsh-connect-qoder` 状态 `schema`；四个槽位占用者全部 `active: true`，其中模型标签由 `dsh-connect-qoder-client`（priority `-1`）占据 |
-| peer 范围 | `evaluatePluginCompatibility(manifest, {}, '0.2.1-rc.5')` → `undefined`（= 兼容）；rc.3 / rc.4 / rc.5 三者都放行 |
-| 回归 | `pnpm run typecheck` 与 `pnpm test`（1032 passed / 8 skipped）全绿 |
+| `ResolvedPiAiProviderProfile` | 新增必填 `maxRequestImages` / `imageOffloadCountQuantum`（单请求图片条数上限，宿主默认 50 / 10）。插件手工拼 profile，宿主的默认化不会跑 → 已显式补齐 |
+| pi-ai 1.3.0 的 api 入参 | 改为品牌化的 `TranscriptContext`（只有 `normalizeContext()` 能产出）。只影响 legacy（0.85）回填分支，已在该分支边界加断言，并注明 1.3.0 宿主走不到这里 |
+| `ctx.locale.register` | 签名加宽成 `Record<BuiltInLocaleId, …> & Record<LocaleId, …>`，实参需要 string 索引签名 → 已给 `QoderLocale` 加索引签名（双语仍合法，缺的语种按英文兜底） |
+| peer 范围 | 补 `\|\| >=0.2.2-rc.1 <0.3.0-0` 一支；在此之前 npm 标准语义判 false、宿主门禁一直判 true |
+| modern 直通路径 | **无回归**：真实 1.3.0 栈上提示词与工具都在（modern fixture 升到 1.3.0 后 4 条直通用例全绿） |
+| 中途 system 消息 | 0.2.2 起默认改写成 user 角色的 `<system-reminder>`（除非模型声明 `supportsMidConvoSystemMessages`）；Qoder 路由目前取默认 |
+| 插件用到的槽位 / 事件 | `conversation.input.*`、`conversation.composer.dock`、`settings.section`、`plugins.*.config` 契约未变；`webserver/index-inject` 的 `peer` 参数与 `WebResourceRoute` 都是新增，插件不涉及 |
+| 回归 | `pnpm run typecheck`（host + client 两套）与 `pnpm test` 全绿 |
 
-rc.4 / rc.5 的改动**全部**落在本插件不涉及的面上：
-
-- **rc.4 的推理 Body Slot 字段分裂**（`conversation.chat.reasoning.body` 新增 `rawText`，`text` 改为「已处理的显示文本」）：这是本轮**唯一**的破坏性扩展点，宿主为此专门发了 `docs/upgrade-guide/v0.2.1-rc.4/reasoning-body-props/` 迁移指南。**本插件不注册该槽位**（`src/` 与构建产物 `lib/client.js` 里都没有 `conversation.chat.` 开头的注册），所以不受影响；受影响的只有 `@deepseek-ai/dsh-experimental-cot-translation` 那类包装组件。
-- **rc.4 把两处诊断从 stdout 挪到 stderr**（`llm-deepseek-account` 的模型目录、`mcp-client` 的资源列表），因为 ACP 档案的 stdout 专供 JSON-RPC。本插件的宿主半边**从不写 stdout**（只用 `ctx.logger`，`src/bin.ts` 的 stdout 属于独立 CLI），因此无泄漏面。
-- **rc.4 去掉 `session.moreViewsCurrent` 语言键**、View 标签页 tooltip 改为按溢出才显示：本插件没有使用该键，也不渲染 View 标签页。
-- **rc.5 只改推理块的显示预处理**（`reasoningText()` 剥离 `<signature>` 包裹）：本插件产出的是标准 `reasoning_content` 增量，不含 `<signature>` 包装。
-
-> rc.3 带来的**环境**变化（不是插件的问题）：宿主 app 目录名从 `DSH NEXT.app` 变为 `DeepSeek Harness.app`，旧路径上的 `dsh` shim 会失效 —— 见[安装](#安装)一节的说明。
+> 0.2.1-rc.4 / rc.5 那一轮的逐条核查保留在 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)；本轮的实测依据、复现脚本与仍待决策项见 [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md)。
 
 ## 安全说明
 

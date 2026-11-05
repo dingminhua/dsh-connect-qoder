@@ -41,7 +41,7 @@ function manifest(): {
 const LOWER_BOUND = '>=0.1.7-rc.1'
 const BRANCH_0_2 = '>=0.2.0-rc.1'
 const UPPER_BOUND = '<0.3.0-0'
-const DECLARED_RANGE = `${LOWER_BOUND} <0.2.0-0 || ${BRANCH_0_2} ${UPPER_BOUND} || >=0.2.1-rc.1 ${UPPER_BOUND}`
+const DECLARED_RANGE = `${LOWER_BOUND} <0.2.0-0 || ${BRANCH_0_2} ${UPPER_BOUND} || >=0.2.1-rc.1 ${UPPER_BOUND} || >=0.2.2-rc.1 ${UPPER_BOUND}`
 
 /**
  * Pre-releases that have actually been published for DSH packages, split by the
@@ -92,6 +92,9 @@ const ADMITTED_PRERELEASES = [
   '0.2.1-rc.3',
   '0.2.1-rc.4',
   '0.2.1-rc.5',
+  // 0.2.2 元组：桌面端升到 0.2.2-rc.1（2026-11-05）。补了第四支才放行 ——
+  // 与 0.2.1 同一个坑：`>=0.2.1-rc.1` 只对 `0.2.1` 元组开口。
+  '0.2.2-rc.1',
 ]
 
 /** Published, but deliberately outside the declared range. */
@@ -114,7 +117,7 @@ const EXCLUDED_PRERELEASES = [
  * 漏洞。用**反向**断言（必须判 false）记录，于是哪天有人把范围放宽到能覆盖它们，
  * 这条会红，逼着更新这张表并说明理由。
  */
-const UNGATED_PRERELEASES = ['0.2.2-rc.1', '0.2.3-rc.1', '0.2.9-rc.1']
+const UNGATED_PRERELEASES = ['0.2.3-rc.1', '0.2.9-rc.1']
 
 /** pi-ai is a peer for the SAME reason but a DIFFERENT version line. */
 const PI_AI = '@earendil-works/pi-ai'

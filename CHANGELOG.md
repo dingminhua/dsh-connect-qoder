@@ -2,6 +2,62 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.17.6 (2026-11-05)
+
+> **适配宿主 DSH 0.2.2-rc.1。**
+> 宿主把 pi-ai 从 `1.1.0` 升到 `1.3.0`，`dsh-llm-pi-ai` 给 provider profile 加了两个必填字段、
+> 给 api 入参加了品牌类型，`dsh-client-locale` 把语言扩到 8 种并加宽了 `register` 的签名。
+> 不跟上的后果不是崩溃：是**类型检查红**，加上**图片条数上限静默失效**。
+
+### 修复
+
+- **profile 的两个新必填字段**（宿主 0.2.2 起有「单请求图片条数上限」）。
+  - **症状**：`ResolvedPiAiProviderProfile` 新增 `maxRequestImages` / `imageOffloadCountQuantum`；
+    插件是**手工拼** profile 的，宿主的 `?? 50` 默认化跑不到 —— 不报错、不崩溃，
+    只是 Qoder 路由失去条数上界，而宿主自有路由都有。
+  - **修法**：`REQUEST_IMAGE_BUDGETS` 显式补 `50` / `10`（= `min(10, 50)`，与宿主默认一致）。
+- **legacy 分支适配 pi-ai 1.3.0 的 `TranscriptContext`**。
+  - **症状**：1.3.0 把 `api.stream/streamSimple` 的入参品牌化（「只有 `normalizeContext()`
+    能产出」），`adaptLegacyPiAiContext` 返回的普通 `Context` 不再可赋值。
+  - **修法**：新增 `ApiContext` / `legacyContextOf()`，把两次断言收敛到世代边界一处，
+    并注明 1.3.0 宿主走 modern 直通、执行不到这里。**modern 分支仍然是透传** ——
+    折叠是 0.2.1 已论证过的错误方向。
+- **`QoderLocale` 补 string 索引签名**。
+  - **症状**：`ctx.locale.register` 的签名加宽成
+    `Record<BuiltInLocaleId, …> & Record<LocaleId, …>`（`LocaleId = string`），
+    固定 `{ zh, en }` 的接口缺索引签名，客户端 `tsc` 直接红。
+  - **修法**：加索引签名。它**不降低**键校验（`zh`/`en` 仍是完整的 `Record<QoderSettingsKey, string>`），
+    只是允许在双语之外追加 `de` / `ja` 这类新语种；缺的语种按英文兜底。
+
+### 调整
+
+- **peer 范围追加 `>=0.2.2-rc.1 <0.3.0-0`**：标准 node-semver 下 `0.2.2-rc.1` 原先判 false
+  （宿主门禁因 `includePrerelease` 一直判 true），所以 npm/pnpm 安装会被 peer 解析拒绝。
+- **开发依赖树整体迁到 0.2.2 线**（`dsh-* 0.2.2-rc.1`、`cordis 4.1.0`、`schemastery 3.19.0`、
+  `pi-ai 1.3.0`）。上一轮的问题正是主树停在 0.1.7 线，`typecheck` / `test` 从未对着真宿主跑过。
+- **删掉 `dsh-invariants` 的 override**：该包在 `0.2.0-rc.2` 之后停版，0.2.2 线已无包引用。
+- **中途 system 消息显式声明 `supportsMidConvoSystemMessages: false`**：0.2.2 起宿主开始真正读这个能力，
+  为 false 时把对话中途的 system 文本包成 user 角色的 `<system-reminder>`。Qoder 网关连
+  `developer` 角色都会 400，中途插系统角色没有实测依据，因此取保守侧并把决定写进注释。
+
+### 测试
+
+- **`pi-ai-runtime.spec.ts` 的版本断言不再写死 `0.85.x`**：改成「落在声明的 pi-ai peer 范围里」。
+  宿主换线时该改的是钉版，不是判据。
+- **modern fixture 从 1.1.0 升到 1.3.0**（与宿主同代）；「钉了什么」的断言改为
+  「确切版本 + `generationOf` 判 modern + 主版本是 1」。
+- **legacy 组按已装世代门控**：主树迁到 1.3.0 后，那 4 条强制 `legacy` 的用例跑在 1.x api 上
+  必然失败（1.x 只读 `messages`，顶层 `tools` 不进 body）—— 那是世代错配，不是回归。
+  跳过时用例名里带原因，不是静默通过。
+- 结果：`typecheck`（host + client）0 错误；`vitest` **1217 passed / 12 skipped / 0 failed**。
+
+### 文档
+
+- 新增 [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md)：逐条实测证据、
+  复现脚本、落地记录，以及两处有意留下的缺口。
+- README 双语的「当前宿主基线」整节换成 0.2.2-rc.1 的实测结论（0.2.1-rc.4/rc.5 的逐条核查
+  不再冒充「当前」）。
+
 ## 1.17.5 (2026-11-05)
 
 > **#31 / #32 两条 issue 的后续（两份回复里逐条答完）。**

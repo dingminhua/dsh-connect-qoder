@@ -39,6 +39,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { createQoderAdapter, QODER_PROVIDER } from '../src/adapter.ts'
+import { piAiRuntimeInfo } from '../src/pi-ai-runtime.ts'
 import { QoderCatalog } from '../src/catalog.ts'
 import type { QoderModelInfo } from '../src/catalog.ts'
 
@@ -180,17 +181,31 @@ function expectPromptAndTools(captured: Captured): void {
   expect(messages[0]?.content).toBe(PROMPT)
 }
 
-describe('线上请求体带着提示词与工具', () => {
-  // **只覆盖 legacy 世代**，因为本 checkout 解析到 pi-ai 0.85.1，而 0.85 的 api
-  // 读不懂归一化的 transcript（它的 Message 联合里没有 `system` 变体，
-  // `transformMessages` 会直接崩）。这不是缺陷，是世代契约：
-  //
-  //   legacy(0.85) × 已归一化 transcript → 逆折叠方向（issue #24 同源）
-  //   legacy(0.85) × 扁平 envelope       → 0.85 的常规路径
-  //
-  // **modern(1.x) 那一格在 `tests/fixtures/pi-ai-modern/` 里跑**，那边装了一份
-  // 真实的 pi-ai 1.1.0（宿主 0.2.1-rc.1 同代），用真实 createModels + 真实 api
-  // 断言线上 body —— 0.2.1-rc.1 的回归就在那里被钉住。
+/**
+ * 本 checkout 实际解析到哪一代 pi-ai —— 决定下面这组 legacy 用例是否有意义。
+ *
+ * 世代契约（不是缺陷）：
+ *
+ *   legacy(0.85) × 已归一化 transcript → 逆折叠方向（issue #24 同源）
+ *   legacy(0.85) × 扁平 envelope       → 0.85 的常规路径
+ *   modern(0.87+/1.x)                  → 直通，api 只读 `messages`
+ *
+ * legacy 分支产出的**扁平 envelope** 只有 0.85 的 api 读得懂；1.x 只读 `messages`，
+ * 顶层 `tools` 根本不进 body。所以这组用例在 1.x 树上「失败」是世代错配，不是回归。
+ *
+ * 主树自 0.2.2-rc.1 起迁到 pi-ai **1.3.0**（与宿主同代），于是这里会跳过 ——
+ * 跳过时用例名里带着原因，而不是静默通过。modern 那一格由
+ * `tests/fixtures/pi-ai-modern/` 用**真实的** 1.x createModels + api 钉住。
+ *
+ * ⚠️ 已知缺口：迁线之后，legacy 分支在本仓库**没有活的覆盖**（要覆盖得再立一份
+ * 0.85.1 的 fixture，像 modern 那样）。0.1.7 宿主线仍受支持，这条缺口记在
+ * `docs/DSH-0.2.2-RC1-FOLLOWUP.md`。
+ */
+const INSTALLED_GENERATION = piAiRuntimeInfo()?.generation ?? 'legacy'
+
+describe.skipIf(INSTALLED_GENERATION !== 'legacy')(
+  `线上请求体带着提示词与工具（legacy 世代；已装 ${INSTALLED_GENERATION} 时跳过）`,
+  () => {
   it.each([
     ['legacy', 'normalized transcript', normalizedTranscript],
     ['legacy', 'raw envelope', rawEnvelope],
@@ -224,4 +239,5 @@ describe('线上请求体带着提示词与工具', () => {
     expect(messages.filter(message => message.role === 'system')).toHaveLength(0)
     expect(messages[0]?.role).toBe('user')
   })
-})
+  },
+)

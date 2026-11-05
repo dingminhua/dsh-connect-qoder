@@ -59,11 +59,28 @@ export const QODER_STREAM_IDLE_TIMEOUT_MS = 300_000
 
 const NO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }
 
-/** Image-request budgets at the dsh-llm-pi-ai defaults. */
+/**
+ * Image-request budgets at the dsh-llm-pi-ai defaults.
+ *
+ * `maxRequestImages` / `imageOffloadCountQuantum` joined this set in host
+ * 0.2.2-rc.1: a request carrying more retained image occurrences than the bound
+ * fails with `IMAGE_OFFLOAD_REQUIRED`, naming how many of the oldest to offload.
+ * They are **required** on `ResolvedPiAiProviderProfile` because this plugin
+ * assembles that profile by hand instead of going through `resolveProfile` —
+ * so the host's `?? 50` / `?? min(10, maxRequestImages)` defaulting never runs
+ * for us. Omitting them does not throw: it silently leaves the Qoder route
+ * without a count bound while every host-owned route has one.
+ *
+ * 50 is the Azure OpenAI limit the host aligned to; `10` is the host's default
+ * offload step (rewrites the request prefix once per ten new images rather than
+ * once per image). Raise the bound only against a measured gateway limit.
+ */
 const REQUEST_IMAGE_BUDGETS = {
   maxRequestImageBytes: 20_971_520,
   requestImagePixelBudget: 4_194_304,
   requestImageMaxBytes: 1_048_576,
+  maxRequestImages: 50,
+  imageOffloadCountQuantum: 10,
 } as const
 
 /** Inert pi-ai auth plane: the route authenticates only through the shim secret. */
@@ -208,6 +225,16 @@ function toPiModel(
     compat: {
       supportsReasoningEffort: thinkingLevelMap !== undefined,
       supportsDeveloperRole: false,
+      // 0.2.2-rc.1 起宿主开始**真的**读这个能力：为 false 时，对话中途的
+      // system 文本会被包成 user 角色的 `<system-reminder>`（闭合标签转义），
+      // 而不是以 system 角色直发。0.2.1 是无论能力如何都按 system 发。
+      //
+      // 这里**显式写 false**，把「跟随宿主默认」变成一条写下来的决定：
+      // Qoder 网关已知只收 `system/assistant/user/tool/function`（连
+      // `developer` 都会 400，见上面 supportsDeveloperRole），中途插系统角色
+      // 没有实测过，因此保守取「改写成 reminder」这一侧 —— 它在两种上游语义
+      // 下都读得通。若哪天实测网关接受中途 system，把它改成 true 即可。
+      supportsMidConvoSystemMessages: false,
     },
   } as unknown as Model<Api>
 }
@@ -440,9 +467,37 @@ function withLegacyContext(api: ProviderStreams, generation: PiAiGeneration): Pr
   if (generation === 'modern') return api
   return {
     ...api,
-    stream: (model, context, options) => api.stream(model, adaptLegacyPiAiContext(context), options),
-    streamSimple: (model, context, options) => api.streamSimple(model, adaptLegacyPiAiContext(context), options),
+    stream: (model, context, options) => api.stream(model, legacyContextOf(context), options),
+    streamSimple: (model, context, options) => api.streamSimple(model, legacyContextOf(context), options),
   }
+}
+
+/**
+ * The context type one api module accepts — `transcript` for a modern host,
+ * the flat envelope for a 0.85 one.
+ */
+type ApiContext = Parameters<ProviderStreams['stream']>[1]
+
+/**
+ * Re-shape a context into what the **legacy** (0.85) api module reads.
+ *
+ * pi-ai 1.3.0 made this a branded `TranscriptContext`:
+ * "Only `normalizeContext()` produces this type, so a raw `Context` cannot reach
+ * provider code by accident." That brand is correct for the modern path — the
+ * api genuinely must not receive a hand-built envelope — but this branch exists
+ * precisely to BUILD one, for a 0.85 api that has no such brand and no such
+ * normalizer. The two casts below are therefore the generation boundary itself:
+ *
+ * - into `adaptLegacyPiAiContext`: the branded transcript is un-folded by reading
+ *   only its `messages`/`systemPrompt`/`tools` fields;
+ * - back out: the rebuilt envelope is what 0.85 consumes.
+ *
+ * This code is unreachable on a 1.3.0 host — `withLegacyContext` returns the api
+ * unwrapped as soon as `generationOf()` reports `modern` — so the assertion can
+ * never hand a hand-built envelope to a modern api at runtime.
+ */
+function legacyContextOf(context: ApiContext): ApiContext {
+  return adaptLegacyPiAiContext(context as unknown as Context) as unknown as ApiContext
 }
 
 /**

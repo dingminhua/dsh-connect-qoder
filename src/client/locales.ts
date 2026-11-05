@@ -876,9 +876,22 @@ export const zh: Record<QoderSettingsKey, string> = {
 /** Localized copy lookup, with optional interpolation. */
 export type Translate = (key: QoderSettingsKey, params?: Record<string, unknown>) => string
 
+/**
+ * 卡片文案的语种字典。
+ *
+ * 宿主 0.2.2-rc.1 把 `locale.register` 的签名从 `Record<BuiltInLocaleId, …>`
+ * 加宽成 `Record<BuiltInLocaleId, …> & Record<LocaleId, …>`（`LocaleId = string`），
+ * 实参因此必须带 string 索引签名 —— 而那正是 `{ zh, en }` 这种固定接口缺的东西。
+ *
+ * 索引签名在这里**不降低**键校验：`zh` / `en` 仍是各自完整的
+ * `Record<QoderSettingsKey, string>`，缺键、多键照旧是编译错误。它只是允许
+ * （而非要求）在双语之外追加 `de` / `ja` 这类新语种 —— 宿主 0.2.2 一次加了
+ * de / es / fr / ja / pt / ru 六种，缺的语种按英文兜底，所以双语仍然合法。
+ */
 export interface QoderLocale {
   zh: Record<QoderSettingsKey, string>
   en: Record<QoderSettingsKey, string>
+  [language: string]: Record<QoderSettingsKey, string>
 }
 export const qoderLocales: QoderLocale = { zh, en }
 
