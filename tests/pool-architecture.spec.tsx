@@ -289,22 +289,59 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-save-bar\{[^}]*bottom:0/)
   })
 
-  it('账号行的**默认**布局是两行紧凑排法，宽屏才升级 5 列', () => {
-    // 这条钉的是一个真出过的缺陷：原来写的是「5 列 + @media(max-width:760px) 折成
-    // 2 列」，而本插件现在住在设置面板里 —— 那里面板内容栏**固定 612px**
-    // （800 的对话框 − 188 的导航栏），于是 max-width 分支在设置页里**恒成立**：
-    // 每个账号被折成 264px 宽的两列堆叠，五行内容竖摞成 155px，横向还空着整片。
+  it('账号行的断点测**表格**宽度，不测视口——视口断点在设置页里恒成立', () => {
+    // 这条钉的是一个真出过的缺陷，前后两版都错在同一个地方：拿视口当依据。
     //
-    // 现在反过来：默认窄、`min-width:761px` 才升宽。jsdom 不做布局，所以断言的是
-    // 「哪套规则在媒体查询之外」——那正是决定设置页里长什么样的那一套。
-    // 注意切的是 `@media (` 而不是裸 `@media`：上面那段注释里就写着
-    // 「@media(max-width:760px)」，裸字符串会切在注释中间。
-    const beforeMedia = QODER_CARD_CSS.slice(0, QODER_CARD_CSS.indexOf('@media ('))
-    // 规则体是多行的，所以用 [\s\S] 而不是 [^}]（后者照样能过，但意图不明）。
-    expect(beforeMedia).toMatch(/\.dsm-qoder-pool-row\{[\s\S]*?grid-template-areas:/)
-    // 5 列那套必须在媒体查询**里面**，不能是默认值。
-    const media = QODER_CARD_CSS.slice(QODER_CARD_CSS.indexOf('@media (min-width:761px)'))
-    expect(media).toMatch(/\.dsm-qoder-pool-row\{[\s\S]*?grid-template-columns:minmax\(0,1\.5fr\)/)
+    //   1.0–1.17 是「5 列 + @media(max-width:760px) 折成 2 列」；
+    //   1.18 改成「默认窄 + @media (min-width:761px) 升级 5 列」。
+    //
+    // 两次都以为改了方向就修好了，其实**断点测错了对象**：设置面板的内容栏是固定
+    // 578px（800 的对话框 − 188 的导航栏），而窗口是 1440px —— `min-width:761px`
+    // 在那里永远成立，578px 的表格于是拿到了宽屏那套。实测（1440 视口 / 578px 表）：
+    //   账号 x=1159 w=402 │ 积分 x=1573 w=134 │ 状态 x=1159 w=402 │ 签到 x=1573 w=36
+    // 账号列独占 402px、行高 108px，而右边 134px 的积分列里只有「1240」两位数。
+    //
+    // 更隐蔽的是：`@media` 那套**从来没赢过**。宽屏分支写的是一个类
+    // （.dsm-qoder-pool-row），而「有签到列」那条窄屏规则是两个类
+    // （.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row）——后者在层叠上更具体，
+    // 于是两区域只要支持签到（CN 与国际版都支持），宽屏形态就是**死代码**。
+    //
+    // 现在：断点改成表级容器查询，列轨道只在一处声明（CSS 变量），行与表头读同一个
+    // 变量。jsdom 不做布局，所以这里钉的是三条规则本身。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-table\{[\s\S]*?container-type:inline-size/)
+    // 窄形态是默认值：它必须在**任何** @media / @container 之外。
+    const firstAt = QODER_CARD_CSS.indexOf('@container (')
+    expect(firstAt).toBeGreaterThan(0)
+    const defaults = QODER_CARD_CSS.slice(
+      QODER_CARD_CSS.indexOf('.dsm-qoder-pool-row{'),
+      firstAt,
+    )
+    expect(defaults).toMatch(/display:flex;flex-wrap:wrap/)
+    // 宽屏那套在容器查询里，读的是那个变量——不是又写一遍列定义。
+    const wide = QODER_CARD_CSS.slice(firstAt)
+    expect(wide).toMatch(/@container \(min-width:700px\)\{[\s\S]*?\.dsm-qoder-pool-row\{display:grid;grid-template-columns:var\(--dsm-qoder-pool-cols\)/)
+    // 列轨道只在变量里声明一次；行与表头都消费它，不可能再分叉。
+    expect(QODER_CARD_CSS).toMatch(/--dsm-qoder-pool-cols:minmax/)
+    expect(QODER_CARD_CSS).not.toMatch(/\.dsm-qoder-pool-row\{[^}]*grid-template-columns:minmax/)
+  })
+
+  it('表头与数据行读同一个列变量——末尾的 auto 轨道会让它们错位', () => {
+    // 尾部两列用固定 px 而不是 fr/auto，理由具体：表头第 5 格没有标签可写，是个
+    // 空 span。它若是 auto 轨道，表头里这条轨道就塌成 0px，四条 fr 轨道于是各多
+    // 分到一点，标签整体右移——实测表头「账号」w=275 而数据格 w=246，越往右错得
+    // 越多（4 条间隙 12px 之后，最后一列差了 30px）。
+    const cols = QODER_CARD_CSS.match(/--dsm-qoder-pool-cols:([^;}]+)/)?.[1] ?? ''
+    expect(cols).toBeTruthy()
+    // 尾部两条轨道都是固定 px，一个 fr/auto 都不许有。
+    expect(cols.trim()).toMatch(/\d+px \d+px$/)
+    expect(cols).not.toContain('auto')
+    // 签到列容得下它最长的那句话（「23:59:59 后可再签到」，实测 116px）：
+    // 给窄了它会溢出自己的轨道，直接压到右边那颗「测试」按钮上，而数字每秒在变，
+    // 溢出量也跟着变——看着像按钮在抖。
+    const checkinTrack = Number(cols.trim().split(/\s+/).at(-2)!.replace('px', ''))
+    expect(checkinTrack).toBeGreaterThanOrEqual(118)
+    // 不支持签到的区域少一列，但尾部同样固定。
+    expect(QODER_CARD_CSS).toMatch(/--dsm-qoder-pool-cols:[^;}]*\d+px\}/)
   })
 
   it('活动区的样式在**卡片**样式表里（它由卡片渲染，不由 composer 渲染）', () => {

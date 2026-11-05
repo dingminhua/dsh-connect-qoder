@@ -367,9 +367,10 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-modebar .dsm-qoder-pool-note{margin:0;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 /* 「有人在服务但不在池里」：一条左竖线标它是上一行的旁注，不是警告 */
 .dsm-qoder-pool-serving-note{padding-left:10px;border-left:2px solid rgba(86,134,254,.5);color:var(--dsw-alias-label-secondary,#c6c9d0)}
-/* 批量动作条：成员区内部一行，所以没有上边框——分隔线会把按钮和上一行
-   「已选 N / M」切开，而那两个数字正是这些按钮的作用范围。 */
-.dsm-qoder-pool-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+/* 批量动作条：成员卡片内部一行，所以没有上边框——分隔线会把按钮和上一行
+   「已选 N / M」切开，而那两个数字正是这些按钮的作用范围。左右内边距跟着卡头
+   走，三行的左对齐线才是同一条。 */
+.dsm-qoder-pool-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:0 14px 12px}
 .dsm-qoder-pool-actions-group{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsm-qoder-pool-hint{font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-note{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
@@ -378,82 +379,93 @@ export const QODER_CARD_CSS = `
    读起来像「出问题了」。 */
 .dsm-qoder-pool-empty{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#666);background:var(--dsw-alias-fill-tertiary,rgba(127,127,127,.08));border:1px dashed var(--dsw-alias-border-secondary,rgba(127,127,127,.3))}
 .dsm-qoder-pool-error{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary,#ef4444);white-space:pre-line}
-.dsm-qoder-pool-table{border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
-/* 行布局：**默认是两行的紧凑排法**，宽屏才升级成 5 列。
+.dsm-qoder-pool-table{
+  /* CONTAINMENT ROOT */
+  container-type:inline-size;
+  /* 列轨道写在变量里，由表格自己按「有没有签到列」声明一次；行与表头都读它。
+     此前是两条规则各写一遍 grid-template-columns，于是「有签到列」那条
+     （.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row，两个类）在层叠上
+     压过了媒体查询里的宽屏那条（一个类）——**宽屏形态从来没有渲染过**，
+     窗口多宽都是两行紧凑排法。变量只在一处声明，行与表头不可能再分叉。 */
+  /* 尾部两列用**固定 px**，不用 fr / auto：表头第 5 格没有标签可写，是个空
+     span——若它是 auto 轨道，表头里这条轨道塌成 0px，四条 fr 轨道于是各多分到
+     一点，标签就整体右移约 30px（实测表头「账号」w=275 而数据格 w=246，越往右
+     错得越多）。固定宽度让表头与数据行落下**同一条**轨道上，与格子里有没有内容
+     无关。 */
+  /* 签到列给 118px：这一格的文案是「23:59:59 后可再签到」这种**最长**形态，
+     实测 116px。给 96px 时它会溢出自己的轨道、直接压到右边那颗「测试」按钮上
+     ——数字每秒在变，溢出量也跟着变，看着像按钮在抖。 */
+  --dsm-qoder-pool-cols:minmax(0,1.45fr) minmax(0,.95fr) minmax(0,1.35fr) 118px 96px;
+  /* 表格不再自己描边：它现在是成员卡片里的一段，卡片已经有那圈边框了。
+     自己再描一圈会得到「框中框」——两圈相距 1px，看着像渲染出错。 */
+  border:0;border-radius:0;overflow:hidden;
+  border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);
+  background:var(--dsw-alias-bg-layer-2,#24262c);
+}
+/* 国际版暂不通签到，把空出的那条轨道让给操作列（4 条轨道）。 */
+.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin){--dsm-qoder-pool-cols:minmax(0,1.6fr) minmax(0,.9fr) minmax(0,1.4fr) 96px}
+/* 行布局：**窄是默认，宽由容器查询升级**。
  *
- * 为什么默认不是 5 列：这一页住在设置面板里，而面板的内容栏是**固定 612px**
- * （800 的对话框 − 188 的导航栏）。原来的写法是「5 列 + @media(max-width:760px)
- * 折成 2 列」，于是**在设置页里那条件恒成立** —— 每个账号都被折成 264px 宽的两列
- * 堆叠，五行内容竖着摞成 155px 高，横向还空着整片位置。155px × N 个账号，就是
- * 那一栏显得那么长的原因。
+ * 断点测的必须是**这张表**的宽度，不是视口。这张卡同时画在三处，宽度与窗口毫无
+ * 关系：输入框卡片、整页版（上限 860px）、以及设置面板的内容列（1400px 屏上是
+ * 578px）。此前用的是 @media (min-width:761px)——在 1440px 的窗口里它永远成立，
+ * 于是 578px 的表格拿到了宽屏那套，账号列被撑到 402px、行高 108px，而右侧 134px
+ * 的积分列里只有两位数。实测（1440 视口 / 578px 表格）：
+ *   账号 x=1159 w=402 │ 积分 x=1573 w=134 │ 状态 x=1159 w=402 │ 签到 x=1573 w=36
  *
- * 窄形态用**显式 grid 两行 × 两列**，不用 flex-wrap：wrap 的换行位置取决于每格
- * 的实测宽度（长账号名、长模型名都会改变折行点），行高会跟着内容抖动，甚至折成
- * 三行。网格把「谁在哪一行」写在样式里，与名字长短无关。
+ * 窄形态用 flex + wrap，并且按**三行**排（与 dsh-connect-trae 的窄形态同构）：
  *
- *   第一行：账号（占满左） │ 积分（右）
- *   第二行：状态（占满左） │ 签到 · 操作（右）
+ *   第一行：账号（最需要辨认的一端，占满）
+ *   第二行：积分 · 状态 · 签到（三个事实，放得下就一直线，放不下在它们之间折）
+ *   第三行：操作按钮（最需要动手的一端，自己一行）
+ *
+ * 前两版都试错了，记在这里免得再走一遍：
+ *   - 全部 flex-wrap 挤成一行时会变成「1240  100 积分 3 天内过期  可用(1.5s)
+ *     测得 · 1 分钟前  已签到  [测试] [删除]」——积分、状态、按钮三种东西读起来
+ *     是同一类事实，而其中两个是可点的；
+ *   - 固定 grid 两行时账号名短也撑满整行，横向空出一大片。
+ *
+ * 操作按钮 flex-basis:100% 独占一行是这个形态的关键：删除是不可逆动作，它不该
+ * 与「已签到」这种只读事实并排成一句话。
  */
 .dsm-qoder-pool-row{
-  display:grid;
-  grid-template-columns:minmax(0,1fr) auto;
-  grid-template-areas:"who credits" "state tail";
-  gap:4px 12px;align-items:center;padding:10px 14px;
+  display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:10px 14px;
   border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0);
 }
-.dsm-qoder-pool-account{grid-area:who;display:flex;align-items:center;gap:8px;min-width:0}
-.dsm-qoder-pool-credits{grid-area:credits;display:flex;flex-direction:column;gap:1px;align-items:flex-end;text-align:right;font-variant-numeric:tabular-nums}
-/* 状态列与右侧尾部合成第二行；尾部自己是一行 flex（签到 + 测试 + 删除）。 */
-.dsm-qoder-pool-probe{grid-area:state;display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;overflow-wrap:anywhere}
-.dsm-qoder-pool-checkin{grid-area:auto;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap}
-.dsm-qoder-pool-row-actions{grid-area:auto;justify-self:end;display:flex;gap:6px;align-items:center;flex:none}
-/* 第二行右侧那一格：签到与操作按钮并排，靠右。用 :where 给两个格子挂同一个
-   grid 区域名，避免再包一层 <span>（DOM 结构被已有用例按直接子元素断言）。 */
-.dsm-qoder-pool-row > .dsm-qoder-pool-checkin,
-.dsm-qoder-pool-row > .dsm-qoder-pool-row-actions{grid-row:2}
-.dsm-qoder-pool-row:not(.dsm-qoder-pool-table-checkin) > .dsm-qoder-pool-row-actions{grid-column:2}
-.dsm-qoder-pool-row > .dsm-qoder-pool-checkin{grid-column:2;justify-self:end;margin-right:0}
-.dsm-qoder-pool-row > .dsm-qoder-pool-row-actions{grid-column:2}
-/* 有签到列时：签到与操作**同一格**，所以让签到右对齐后操作继续贴右。
-   两者都在 column 2 会叠在一起——用 auto-flow 把操作放到第三列。 */
-.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row{grid-template-columns:minmax(0,1fr) auto auto}
-.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row > .dsm-qoder-pool-checkin{grid-column:2}
-.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row > .dsm-qoder-pool-row-actions{grid-column:3}
-.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row > .dsm-qoder-pool-credits{grid-column:2 / 4}
-/* 表头跟着同一套轨道走，否则标签会与数据错位（比没有表头更糟）。第 5 格没有
-   标签可写，窄屏下不占位；宽屏那套 5 列会把它放回来。 */
-.dsm-qoder-pool-row-head{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px 12px}
-.dsm-qoder-pool-row-head > span:nth-child(1){grid-column:1;grid-row:1}
-.dsm-qoder-pool-row-head > span:nth-child(2){grid-column:2 / -1;grid-row:1;justify-self:end}
-.dsm-qoder-pool-row-head > span:nth-child(3){grid-column:1;grid-row:2}
-.dsm-qoder-pool-row-head > span:nth-child(4){grid-column:2;grid-row:2;justify-self:end}
-.dsm-qoder-pool-row-head > span:nth-child(5){display:none}
-/* 宽屏（侧边栏整屏面板、或窗口足够大）：回到 5 列，一眼能横向比较。 */
-@media (min-width:761px){
-.dsm-qoder-pool-row{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.95fr) minmax(0,1.35fr) minmax(0,.85fr) auto;gap:12px;align-items:center}
-/* 没有签到列时（国际版暂不通），把空出的轨道让给操作列。 */
-.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin) .dsm-qoder-pool-row{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.4fr) auto}
-/* 宽屏那张表是**单行**，所以每一格回到自己的默认轨道，两行网格的
-   grid-area / grid-column 覆盖必须在这里让位。 */
-.dsm-qoder-pool-row > .dsm-qoder-pool-checkin,
-.dsm-qoder-pool-row > .dsm-qoder-pool-row-actions,
-.dsm-qoder-pool-row > .dsm-qoder-pool-credits,
-.dsm-qoder-pool-row > .dsm-qoder-pool-account,
-.dsm-qoder-pool-row > .dsm-qoder-pool-probe{grid-area:auto;grid-row:auto;grid-column:auto;justify-self:auto}
-.dsm-qoder-pool-credits{align-items:flex-start;text-align:left}
-.dsm-qoder-pool-probe{flex-direction:column;align-items:flex-start;gap:4px}
-.dsm-qoder-pool-row-head{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.95fr) minmax(0,1.35fr) minmax(0,.85fr) auto;gap:12px}
-.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin) .dsm-qoder-pool-row-head{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.4fr) auto}
-.dsm-qoder-pool-row-head > span{display:block;grid-column:auto;grid-row:auto;justify-self:auto}
-.dsm-qoder-pool-row-head > span:nth-child(5){display:block}
-}
+.dsm-qoder-pool-account{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 100%}
+.dsm-qoder-pool-credits{display:flex;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px;min-width:0;flex:0 1 auto;font-variant-numeric:tabular-nums}
+/* 状态这一格允许自己折行：主行（结果 · 原因）与出处行本来就是一句话。 */
+.dsm-qoder-pool-probe{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
+/* 签到贴到第二行的右端：它是那一行里最后一个只读事实。 */
+.dsm-qoder-pool-checkin{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap;flex:none;margin-left:auto}
+.dsm-qoder-pool-row-actions{display:flex;gap:6px;align-items:center;flex:1 1 100%;justify-content:flex-start;padding-top:2px}
+/* 窄形态不画表头：它的标签描述的是宽屏那套轨道，折行之后每一个标签都对不上
+   自己的值——实测「签到」标签停在 x=1476，它的值在 1573，差 97px。一堆对不上的
+   表头比没有表头更糟（dsh-connect-trae 在 700px 以下是同一条判断）。 */
+.dsm-qoder-pool-row-head{display:none;padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
 .dsm-qoder-pool-row:first-child{border-top:0}
-.dsm-qoder-pool-row-head{padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
+/* 宽屏：这张表自己够宽时才排成一行 5 列，一眼横向可比。
+ * 阈值 700px 与 dsh-connect-trae 取同一个数，理由相同：表格没有「稍微窄一点」的
+ * 形态值得保留——要么放得下这些列，要么放不下。 */
+@container (min-width:700px){
+  .dsm-qoder-pool-row{display:grid;grid-template-columns:var(--dsm-qoder-pool-cols);align-items:center;gap:12px}
+  /* 宽屏那张表是**单行**，所以每一格回到自己的轨道：窄形态那几条 flex 覆盖
+     （100% 占满、margin-left:auto 推右）必须在这里让位，否则操作按钮会带着
+     flex-basis:100% 挤到第二行，五行变六行。 */
+  .dsm-qoder-pool-account,.dsm-qoder-pool-credits,.dsm-qoder-pool-probe,
+  .dsm-qoder-pool-checkin,.dsm-qoder-pool-row-actions{flex:none;margin-left:0;padding-top:0}
+  .dsm-qoder-pool-credits{flex-direction:column;align-items:flex-start;gap:1px}
+  .dsm-qoder-pool-probe{flex-direction:column;align-items:flex-start;gap:4px}
+  .dsm-qoder-pool-checkin{margin-left:0}
+  .dsm-qoder-pool-row-actions{justify-self:end}
+  /* 表头回到宽屏那套轨道上——它现在与行读的是**同一个变量**，不会再错位。 */
+  .dsm-qoder-pool-row-head{display:grid;grid-template-columns:var(--dsm-qoder-pool-cols);align-items:center;gap:12px}
+  .dsm-qoder-pool-row-head > span:last-child{display:block}
+}
 .dsm-qoder-pool-row-current{background:rgba(86,134,254,.07)}
 /* 左侧 3px 竖条：正在计费的那一行必须一眼可见。只靠 7% 的背景色，在暗色主题
    下几乎看不出区别（workbuddy 同规，两条规则共用同一个类名）。 */
 .dsm-qoder-pool-row-current{box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-qoder-pool-account{display:flex;align-items:center;gap:8px}
 .dsm-qoder-pool-account-name{display:flex;flex-direction:column;gap:2px;min-width:0}
 /* 第一行：名字 + 名次 + 「当前使用」+ 上下移，全部**同一行**。
    这一列原来是 5 行竖排（名次 / 箭头 / 徽章 / 测试于 / 上一行结果），把整行
@@ -466,8 +478,15 @@ export const QODER_CARD_CSS = `
 /* 上下移贴着名字那一行的右端：它是这一行唯一一组成对控件，贴着名字会让人
    以为它只作用于名字（它改的是名次，而名次就画在名字旁边）。 */
 .dsm-qoder-pool-account-line .dsm-qoder-pool-move{margin-left:auto}
+/* 宽屏这一格只有约 240px，装不下「名字 + 自动排序 + 当前使用 + ↑↓」一整行，
+   于是它会折成两行——这时 ↑↓ 若仍是 margin-left:auto，会被推到**所在那一行的
+   最右端**，与它旁边那几个标签隔开一大截，读起来像个掉队的控件。改成紧贴标签：
+   折行时它跟着标签走，不折行时它就在标签右边，两种情形读起来都是同一句话。
+   （这条必须放在基础规则**之后**：容器查询不增加特异性，靠层叠顺序才赢。） */
+@container (min-width:700px){
+  .dsm-qoder-pool-account-line .dsm-qoder-pool-move{margin-left:0}
+}
 .dsm-qoder-pool-excluded{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
-.dsm-qoder-pool-credits{display:flex;flex-direction:column;gap:1px;min-width:0;font-variant-numeric:tabular-nums}
 .dsm-qoder-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}
 .dsm-qoder-pool-soon{font-size:11px;line-height:16px;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-qoder-pool-soon-plain{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
@@ -481,8 +500,13 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-prov-unknown{background:var(--dsw-alias-bg-layer-3,#2a2c33);border:1px solid var(--dsw-alias-border-l1,#2c2d31);color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-prov-sep{color:var(--dsw-alias-label-dimmed,#9aa0a6);opacity:.7}
 .dsm-qoder-pool-prov-age{color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap}
-.dsm-qoder-pool-members{display:flex;flex-direction:column;gap:10px}
-.dsm-qoder-pool-members-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap}
+/* 成员区是一张**卡片**：卡头（标题 + 已选/全选/全不选）、批量条、表格全在同一个
+   边框里（学 dsh-connect-trae 的 .dsm-trae-pool-card）。
+   此前是「标题浮在外面 + 表格自己描一圈边」：标题与表格之间隔着一条 gap，读起来
+   像两个不相干的东西，而卡头上那枚「已选 2 / 2」与它要看管的复选框之间又隔着
+   一条批量条。一张卡片、一条分隔线，谁管谁就一目了然。 */
+.dsm-qoder-pool-members{display:flex;flex-direction:column;gap:0;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
+.dsm-qoder-pool-members-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:14px 14px 12px}
 .dsm-qoder-pool-members-title{margin:0 0 3px;font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-qoder-pool-members-actions{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .dsm-qoder-pool-small-btn{padding:3px 10px;font-size:12px}
@@ -579,7 +603,6 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-log-error{color:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-qoder-pool-log-info{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-log-empty{padding:14px;font-size:12px;color:var(--dsw-alias-label-tertiary,#999)}
-.dsm-qoder-pool-row-actions{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex:none}
 /* 操作列只有 .8fr（约 88px 内容宽），两颗按钮必须**不换行**：中文可以在任意
    两字之间断行，于是「测试」「删除」会被压成竖排的两个字（桌面宽度下实测）。
    nowrap + 略收窄的左右 padding，比给这一列加宽更划算——加宽要从「账号」列

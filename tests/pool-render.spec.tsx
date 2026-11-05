@@ -406,6 +406,15 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       // 但不能说「成员要么限流、要么积分耗尽」——这里根本还没有成员。
       // 断文案而不是类名：`.dsm-qoder-pool-warn` 还被「一个都没勾选」那句复用。
       expect(container.textContent).not.toContain('row.poolNoCandidate')
+      // 也不留一条**没有行可命名的表头**：表头唯一的作用是给下面的行贴标签，
+      // 零行时它是条悬空的标签，读起来像表格加载失败。空状态那句（卡片上方）
+      // 已经说清了去哪加账号，同一个空白不必展示两次。
+      expect(container.querySelector('.dsm-qoder-pool-table')).toBeNull()
+      expect(container.querySelector('.dsm-qoder-pool-row-head')).toBeNull()
+      // 但成员卡片本身还在：卡头（标题 + 已选 0 / 0 + 全选/全不选）与批量条
+      // 仍然告诉用户这一块是干什么的。
+      expect(container.querySelector('.dsm-qoder-pool-members')).not.toBeNull()
+      expect(container.querySelector('.dsm-qoder-pool-members-title')).not.toBeNull()
     } finally {
       await unmount()
     }

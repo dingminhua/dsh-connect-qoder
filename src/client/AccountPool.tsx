@@ -983,8 +983,15 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
           </div>
         </div>
         {/* 签到列只在区域真的支持签到时出现——空列会暗示「这个状态存在，只是
-            未知」（workbuddy 同规）。 */}
-        <div className={`dsm-qoder-pool-table${checkinOn ? ' dsm-qoder-pool-table-checkin' : ''}`}>
+            未知」（workbuddy 同规）。
+
+            一个账号都没有时**整张表不渲染**：表头唯一的作用是给下面那些行命名，
+            没有行可命名时它是一条悬空的标签，读起来像表格加载失败。空状态那句
+            （卡片上方）已经把「去哪加账号」说清楚了，这里再留一条没内容的表头
+            只是同一个空白被展示两次。 */}
+        {(pool?.accounts.length ?? 0) === 0
+          ? null
+          : <div className={`dsm-qoder-pool-table${checkinOn ? ' dsm-qoder-pool-table-checkin' : ''}`}>
           <div className="dsm-qoder-pool-row dsm-qoder-pool-row-head">
             <span>{t('row.poolColumnAccount')}</span>
             <span>{t('row.poolColumnCredits')}</span>
@@ -1249,7 +1256,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
               </div>
             )
           })}
-        </div>
+        </div>}
       </div>
 
       {/* 空池的琥珀横幅**已删**：同一个事实就写在两颗被禁用的按钮旁边，
