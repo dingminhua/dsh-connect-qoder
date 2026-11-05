@@ -478,26 +478,54 @@ export interface QoderTransferExportAnswer {
 // 积分 / 用量
 // ---------------------------------------------------------------------------
 
-/** One credit bucket as the card renders it, node-free. */
+/**
+ * One credit bucket as the card renders it, node-free.
+ *
+ * ⚠️ **没有 `expiresAtMs`，也没有 `monthly`**（issue #31 的两条）。
+ *
+ * - `expiresAtMs` 曾经挂在这里，但上游那个字段是 `qoderUsage.expiresAt` ——
+ *   账号级**套餐 / 14 天试用**的到期，不是「这个积分包过期」。`userQuota` /
+ *   `addOnQuota` 自己都不带任何到期字段。把它挂在一个叫「积分包」的类型上，
+ *   等于用一个误导性的名字请后来者再踩一次。套餐到期改在 {@link QoderWebCredits}
+ *   上单出 `planExpiresAtMs`。
+ * - `monthly` 在 Qoder 这边**恒为 `false`**（没有按月刷新的桶），它没有编码
+ *   任何信息。family 的约定是「有按月刷新的桶时，用 `monthly` + `cycleRefreshMs`
+ *   这一对表达」，不是「每个连接器都必须有」。留着它只会让读者无法区分
+ *   「不按月刷新」与「作者没填」。
+ */
 export interface QoderWebCreditPackage {
   /** Stable bucket key — 'base' | 'addon' | 'org'; the card localizes it. */
   packageName: string
   remain: number
   size: number
-  /** Qoder has no monthly-refresh bucket; kept for the family shape. */
-  monthly: boolean
-  /** One-off expiry in ms, when the upstream states one. */
-  expiresAtMs?: number
 }
 
 /** Aggregated credit answer rendered by the plugin card. */
 export interface QoderWebCredits {
   total: number
   packages: readonly QoderWebCreditPackage[]
-  /** Credits expiring within 3 days across every bucket. */
+  /**
+   * 3 天内到期的积分**金额**（不是包数）。
+   *
+   * 同名二义曾经存在（issue #31 附带那条）：`creditsOf` 累加的是**包数**，而
+   * `poolMemberCredits` 累加的是**金额**，卡片文案 `row.poolCreditSoon` 写的是
+   * 「{count} 积分 3 天内过期」—— 金额措辞。现在两处都只算金额，计数那一份
+   * 从 DTO 里删掉（它没有读者）。
+   */
   expiringSoon: number
-  /** When the nearest bucket expires, in ms. */
+  /**
+   * 最早一批**积分**的到期时刻（ms）。只来自真正带到期语义的批次（签到批），
+   * 与套餐到期无关 —— 池排序的「临期紧急度」读的就是它。
+   */
   nearestExpiryMs?: number
+  /**
+   * 账号级**套餐 / 试用**到期时刻（ms），来源是上游 `qoderUsage.expiresAt`。
+   *
+   * issue #31 的语义拆分：这个值此前伪装成 `packages[].expiresAtMs`，于是
+   * 「14 天试用到期」被显示成「积分包到期」。它与积分紧急度是两件事，所以既不进
+   * `expiringSoon`，也不进 `nearestExpiryMs`，更不参与池排序。
+   */
+  planExpiresAtMs?: number
 }
 
 /**
@@ -839,8 +867,18 @@ export type QoderWebPoolExclusion =
  *
  * 与 `QoderPoolProbeRetrySource` 同义；这份声明在无 node 依赖的桥接模块里，
  * 卡片据此决定「解禁时刻」那句话怎么说：上游说的照直说，快照推的要标明。
+ *
+ * `unknown-cooldown` 表示 `retryAtMs` **缺席**：上游没说、快照也没有，这次排除
+ * 用的是插件的兜底重试节奏（30 分钟）。卡片据此说明「按 30 分钟自动重试」，
+ * 而不是让这一格沉默 —— 沉默会让用户以为系统已经放弃，实际它每半小时就拿真实
+ * 请求再撞一次。
  */
-export type QoderWebPoolRetrySource = 'retry-after' | 'upstream-message' | 'quota-refresh' | 'upstream-reported'
+export type QoderWebPoolRetrySource =
+  | 'retry-after'
+  | 'upstream-message'
+  | 'quota-refresh'
+  | 'upstream-reported'
+  | 'unknown-cooldown'
 
 /**
  * One account's row in the pool, as the card renders it.
@@ -855,10 +893,28 @@ export interface QoderWebPoolAccount {
   accountName: string
   /** Total remaining credits, absent when the credits read failed. */
   credits?: number
-  /** Credits expiring within the card's "soon" window (3 days). */
+  /**
+   * 3 天内到期的积分**金额**（不是包数，issue #31 的附带那条）。
+   *
+   * 来源只有签到批次（`validity.days`）：上游 usage 报文不带「哪批积分何时
+   * 过期」。没有批次时这一项缺席，行上只显示总数。
+   */
   expiringSoon?: number
-  /** When the nearest bucket expires, in ms. */
+  /**
+   * 最早一批积分推算出来的到期时刻（ms），来自签到批次的悲观上界。
+   *
+   * 与 {@link planExpiresAtMs} 是两件事：这里是「分什么时候作废」，那里是
+   * 「套餐什么时候到期」。
+   */
   nearestExpiryMs?: number
+  /**
+   * 账号级套餐 / 试用到期时刻（ms），来源上游 `qoderUsage.expiresAt`。
+   *
+   * issue #31 建议 1 的拆分：这个值此前冒充 `packages[].expiresAtMs`，被显示成
+   * 「积分包到期」，还参与了池排序的「积分紧急度」。它只回答「账号还能用多久」，
+   * 与积分的临期策略无关。
+   */
+  planExpiresAtMs?: number
   /** The last test of the target model, absent when never tested. */
   probe?: {
     outcome: QoderWebProbeOutcome

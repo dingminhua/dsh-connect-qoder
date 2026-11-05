@@ -6,6 +6,8 @@ import * as Qoder from '../src/index.ts'
 import { qoderAccountId } from '../src/credentials.ts'
 import { cooldownOf } from '../src/probe.ts'
 import { exclusionOf } from '../src/account-pool.ts'
+import { readPoolDocument } from '../src/account-pool-store.ts'
+import { appendCheckinBatch, creditExpiryOf } from '../src/credit-expiry.ts'
 import { classifyFailure, deepestBusinessCode } from '../src/upstream.ts'
 
 /**
@@ -806,6 +808,17 @@ describe('签到之后：积分重读 + 下一窗刷新时刻进入行与快照'
       expect(row?.checkedInToday).toBe(true)
       expect(row?.checkinRefreshAtMs).toBe(1791856740 * 1000)
 
+      // issue #31 建议 3 / #32 第三条：签到必须把**批次**与**窗口时刻**落盘。
+      // 只放进程内的话，一次重启就把「30 天后作废」变成「不知道」，把
+      // 「约 6 小时后解禁」变成「每 30 分钟试探一次」。
+      const stored = await readPoolDocument('cn')
+      expect(stored.credits[QODER_ACCOUNT_ID]).toEqual([{
+        atMs: expect.any(Number) as unknown as number,
+        validityDays: 30,
+        amount: 100,
+      }])
+      expect(stored.windows[QODER_ACCOUNT_ID]).toBe(1791856740 * 1000)
+
       // 硬边界：签到处理完再等 1s，让任何「迟到」的补读也有机会发生，然后断言。
       // 不能用 waitFor —— 它会一直等，而旧实现里那次补读根本不存在（永远等不到
       // 就会超时；更糟的是别的 usage 读顺手把计数推上去，于是断言假通过）。
@@ -859,38 +872,76 @@ async function readCardModels(
 // **从来没传过** quotaRefreshAtMs，于是 out-of-credit 永远走 atMs + 30min 兜底：
 // 一个要等到明天窗口开启才恢复的号，30 分钟后被当可用号重新挑中，再撞一次 110。
 //
-// 分两层钉：`quotaRefreshOf` 钉「从快照取对了没」（真正曾经的断点），
-// `cooldownOf` 钉「拿到了就用它、不编」。
+// 分三层钉：`quotaRefreshOfAccount` 钉「从快照取对了没」（真正曾经的断点），
+// `quotaRefreshOfStored` 钉「重启后还记不记得」，`cooldownOf` 钉「拿到了就用它、不编」。
 // ==========================================================================
 
-describe('quotaRefreshOf：把签到快照里的开窗时刻交给探针', () => {
+describe('quotaRefreshOfAccount：把签到快照里的开窗时刻交给探针', () => {
   const PAT = 'pt-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
   const ID = qoderAccountId(PAT)
   const AT = 1_800_000_000_000
 
-  it('hands over the region daily refresh point for this PAT', () => {
-    expect(Qoder.quotaRefreshOf({ [ID]: { refreshAtMs: AT } }, PAT)).toEqual({ quotaRefreshAtMs: AT })
+  it('hands over the region daily refresh point for this account', () => {
+    expect(Qoder.quotaRefreshOfAccount({ [ID]: { refreshAtMs: AT } }, ID)).toEqual({ quotaRefreshAtMs: AT })
   })
 
   it('does not invent one when the snapshot has no refresh time', () => {
     // 取不到就不传 —— 宁可走 30 分钟兜底，也不在本机编一个「次日零点」。
-    expect(Qoder.quotaRefreshOf({ [ID]: {} }, PAT)).toEqual({})
-    expect(Qoder.quotaRefreshOf({}, PAT)).toEqual({})
-    expect(Qoder.quotaRefreshOf(undefined, PAT)).toEqual({})
+    expect(Qoder.quotaRefreshOfAccount({ [ID]: {} }, ID)).toEqual({})
+    expect(Qoder.quotaRefreshOfAccount({}, ID)).toEqual({})
+    expect(Qoder.quotaRefreshOfAccount(undefined, ID)).toEqual({})
   })
 
-  it('keys by the account id derived from the PAT, not the PAT itself', () => {
-    // 用 PAT 当键会永远取不到（快照是按派生 id 存的），于是这条修复静默失效。
-    expect(Qoder.quotaRefreshOf({ [PAT]: { refreshAtMs: AT } }, PAT)).toEqual({})
+  // issue #32：真实请求路径只拿得到 accountId，拿不到 PAT，而快照本来就按 id
+  // 存。任何「先 qoderAccountId(pat) 再取」的入口都会把 `pat-abc…` 再哈希一次，
+  // 得到 `pat-<hash(pat-…)>` —— 永远取不到，修复静默失效（纯函数测试还全绿）。
+  // 现在派生只在**调用方**做，本函数只认 id，所以用 PAT 当键必然取不到。
+  it('只认账号 id：拿 PAT 当键取不到（派生必须由调用方做）', () => {
+    expect(Qoder.quotaRefreshOfAccount({ [PAT]: { refreshAtMs: AT } }, ID)).toEqual({})
+    expect(Qoder.quotaRefreshOfAccount({ [ID]: { refreshAtMs: AT } }, ID)).toEqual({ quotaRefreshAtMs: AT })
+  })
+})
+
+// `quotaRefreshOf` 是 1.17.4 发布过的导出，补丁版本不删；但它替调用方派生 id，
+// 正是 #32 那个坑的形状，所以单钉一条「它只该在手里真的是 PAT 时使用」。
+describe('quotaRefreshOf（已弃用）：只在手里是 PAT 时成立', () => {
+  const PAT = 'pt-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  const ID = qoderAccountId(PAT)
+  const AT = 1_800_000_000_000
+
+  it('传 PAT 时取得到（它是为 PAT 入参写的）', () => {
     expect(Qoder.quotaRefreshOf({ [ID]: { refreshAtMs: AT } }, PAT)).toEqual({ quotaRefreshAtMs: AT })
   })
 
-  // issue #32：真实请求路径只拿得到 accountId，拿不到 PAT。若这里再从 id
-  // 派生一次，键就变成 `pat-<hash(pat-…)>`，永远取不到 —— 修复静默失效。
-  it('真实请求路径按账号 id 直接取（issue #32）', () => {
-    expect(Qoder.quotaRefreshOfAccount({ [ID]: { refreshAtMs: AT } }, ID)).toEqual({ quotaRefreshAtMs: AT })
-    expect(Qoder.quotaRefreshOfAccount({ [PAT]: { refreshAtMs: AT } }, ID)).toEqual({})
-    expect(Qoder.quotaRefreshOfAccount(undefined, ID)).toEqual({})
+  it('传 accountId 时取不到 —— 这正是 #32 的坑，所以新代码别用它', () => {
+    // 真实请求路径手里就是这个形态的 id，再派生一次必然落空。
+    expect(Qoder.quotaRefreshOf({ [ID]: { refreshAtMs: AT } }, ID)).toEqual({})
+  })
+})
+
+// issue #32 第三条建议：进程内快照一重启就没了，而 110 的兜底冷却恰恰只在
+// 「窗口时刻不知道」时生效 —— 于是兜底从「几乎不生效」变成「经常生效」。
+describe('quotaRefreshOfStored：重启后仍记得窗口时刻', () => {
+  const NOW = 1_800_000_000_000
+  const LATER = NOW + 20 * 3_600_000
+  const ID = qoderAccountId('pt-x')
+
+  it('快照没有时用落盘的那份', () => {
+    expect(Qoder.quotaRefreshOfStored({}, { [ID]: LATER }, ID, NOW)).toEqual({ quotaRefreshAtMs: LATER })
+  })
+
+  it('进程内快照优先（它带今天的 claimed 语境）', () => {
+    const fromSnapshot = NOW + 3_600_000
+    expect(Qoder.quotaRefreshOfStored({ [ID]: { refreshAtMs: fromSnapshot } }, { [ID]: LATER }, ID, NOW))
+      .toEqual({ quotaRefreshAtMs: fromSnapshot })
+  })
+
+  it('落盘的窗口时刻已经过去就不采用（旧日期会把号判到很久以后才解禁）', () => {
+    expect(Qoder.quotaRefreshOfStored({}, { [ID]: NOW - 1 }, ID, NOW)).toEqual({})
+  })
+
+  it('两处都没有时返回空，让调用方走兜底', () => {
+    expect(Qoder.quotaRefreshOfStored(undefined, undefined, ID, NOW)).toEqual({})
   })
 })
 
@@ -1061,48 +1112,149 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
     })
     expect(probe?.outcome).toBe('rate-limited')
     expect(probe?.retryAtMs).toBeUndefined()
-    expect(probe?.retrySource).toBeUndefined()
+    // 没有时刻 ≠ 没有动作（issue #32 第一条建议）：池子仍按 30 分钟兜底重试，
+    // 所以记成 `unknown-cooldown` 而不是留空。留空让这一格与「已放弃」同形。
+    expect(probe?.retrySource).toBe('unknown-cooldown')
   })
 
-  it('没有窗口时刻就照旧不写 retryAtMs（不编倒计时）', () => {
+  it('没有窗口时刻就照旧不写 retryAtMs（不编倒计时），但标出兜底节奏', () => {
     const probe = Qoder.liveRequestProbe('quota-exhausted', '110')
     expect(probe?.retryAtMs).toBeUndefined()
+    // `retryAtMs` 只放上游/推算给出的时刻，本地节奏绝不写进去 —— 否则下一处
+    // 读者会以为上游承诺过某个时间点。节奏单独用 `retrySource` 表达。
+    expect(probe?.retrySource).toBe('unknown-cooldown')
+  })
+
+  it('不会自己好的排除不标兜底节奏（凭据被拒没有「重试节奏」）', () => {
+    // 业务码 105 = 官方码表里的「登录态或 Access Token 已过期」：确认过的凭据
+    // 被拒，等下去不会好，所以既没有时刻也没有节奏可标。
+    const probe = Qoder.liveRequestProbe('auth', '105', undefined, { status: 401, code: '105' })
+    expect(probe?.outcome).toBe('credential-rejected')
     expect(probe?.retrySource).toBeUndefined()
   })
 })
 
 // ==========================================================================
-// issue #31：过期时刻必须有下界
+// issue #31：`expiresAt` 是**套餐**到期，不是积分包到期
 //
-// 旧判据是 `expiresAtMs - now < SOON_MS`，**没有下界**：一个已经过去的时刻
-// 同样满足它，于是「3 天内过期」会永远挂在那一行，而真相是「早过期了」。
+// 旧实现把 `qoderUsage.expiresAt` 挂在 `addon` 包上，于是「14 天试用到期」
+// 被显示成「积分包到期」，还被池排序当成积分紧急度。现在它单独出
+// `planExpiresAtMs`，`packages[]` 一个到期字段都不带。
 // ==========================================================================
-describe('creditsOf：过期时刻夹在 now 上（issue #31）', () => {
+describe('creditsOf：套餐到期与积分到期分开（issue #31 建议 1）', () => {
   const NOW = Date.now()
-  const usage = (expiresAt: number): Parameters<typeof Qoder.creditsOf>[0] => ({
+  const usage = (expiresAt?: number): Parameters<typeof Qoder.creditsOf>[0] => ({
     userQuota: { total: 300, used: 146 },
     addOnQuota: { total: 800, used: 0 },
-    expiresAt,
+    ...expiresAt === undefined ? {} : { expiresAt },
   })
 
-  it('已经过去的到期时刻不算「临期」，也不参与「最近到期」', () => {
-    const view = Qoder.creditsOf(usage(NOW - 86_400_000))
+  it('`expiresAt` 落在 planExpiresAtMs 上，不再是某个包的到期', () => {
+    const at = NOW + 14 * 86_400_000
+    const view = Qoder.creditsOf(usage(at))
+    expect(view.planExpiresAtMs).toBe(at)
+    // 关键断言：这个时刻**没有**泄漏进积分口径。泄漏 = 「试用期一过就永久显示
+    // 3 天内过期」，正是 #31 报的那个现象。
     expect(view.expiringSoon).toBe(0)
     expect(view.nearestExpiryMs).toBeUndefined()
+    for (const pkg of view.packages) {
+      expect(pkg).not.toHaveProperty('expiresAtMs')
+    }
   })
 
-  it('3 天内的到期时刻照旧计数，并作为最近到期', () => {
-    const soon = NOW + 86_400_000
-    const view = Qoder.creditsOf(usage(soon))
-    expect(view.expiringSoon).toBe(1)
-    expect(view.nearestExpiryMs).toBe(soon)
+  it('套餐到期即使已经过去也照样报出来 —— 它是账号事实，不是倒计时', () => {
+    // 积分那套「必须有下界」的规矩（旧 #31 修复）是针对**过期提醒**的；
+    // 套餐到期不同：它说的是「这个账号的套餐何时结束」，过去式同样有意义
+    // （用户要看到「已过期」才知道该续）。这里钉住两者不会被混为一谈。
+    const past = NOW - 86_400_000
+    expect(Qoder.creditsOf(usage(past)).planExpiresAtMs).toBe(past)
   })
 
-  it('超过 3 天的到期时刻不进「临期」，但仍是最近到期', () => {
-    const later = NOW + 10 * 86_400_000
-    const view = Qoder.creditsOf(usage(later))
-    expect(view.expiringSoon).toBe(0)
-    expect(view.nearestExpiryMs).toBe(later)
+  it('上游没给 expiresAt 时该字段缺席（不编一个）', () => {
+    expect(Qoder.creditsOf(usage()).planExpiresAtMs).toBeUndefined()
+  })
+
+  it('积分包不再带 `monthly`（Qoder 没有按月刷新的桶）', () => {
+    const view = Qoder.creditsOf(usage())
+    expect(view.packages.length).toBeGreaterThan(0)
+    for (const pkg of view.packages) {
+      // 恒 false 的字段没有编码任何信息，留着只会让读者分不清
+      // 「不按月刷新」与「作者没填」。
+      expect(pkg).not.toHaveProperty('monthly')
+    }
+  })
+})
+
+// ==========================================================================
+// issue #31 建议 3：签到批次的到期按悲观上界显示
+//
+// 上游不告诉我们「已花掉的是哪一批」，所以只能按 FIFO 记账；但**显示**必须
+// 取悲观的那一侧 —— 这一行存在的意义就是提前提醒，报晚了等于没有提醒。
+// ==========================================================================
+describe('creditExpiryOf / appendCheckinBatch：签到批次推算（issue #31 建议 3）', () => {
+  const NOW = 1_800_000_000_000
+  const DAY = 86_400_000
+
+  it('30 天有效的一批：最近到期就是 领取时刻 + 30 天', () => {
+    const expiry = creditExpiryOf([{ atMs: NOW - DAY, validityDays: 30, amount: 100 }], NOW)
+    expect(expiry.nearestExpiryMs).toBe(NOW - DAY + 30 * DAY)
+    // 还有 29 天，不在 3 天窗口内。
+    expect(expiry.expiringAmount).toBe(0)
+  })
+
+  it('3 天内到期的那一批计入临期金额（不是条数）', () => {
+    const expiry = creditExpiryOf([
+      { atMs: NOW - 29 * DAY, validityDays: 30, amount: 100 },
+      { atMs: NOW - 29.5 * DAY, validityDays: 30, amount: 50 },
+    ], NOW)
+    // 两批分别在 1 天与 0.5 天后到期 —— 金额相加，条数不是这里的口径。
+    expect(expiry.expiringAmount).toBe(150)
+  })
+
+  it('已经过去的批次不再参与（与 #31 前半同一条下界）', () => {
+    const expiry = creditExpiryOf([{ atMs: NOW - 40 * DAY, validityDays: 30, amount: 100 }], NOW)
+    expect(expiry.nearestExpiryMs).toBeUndefined()
+    expect(expiry.expiringAmount).toBe(0)
+  })
+
+  it('取**最早**那一批作上界：FIFO 假设成立时真实到期只会更晚', () => {
+    const expiry = creditExpiryOf([
+      { atMs: NOW - 20 * DAY, validityDays: 30, amount: 100 },
+      { atMs: NOW - 1 * DAY, validityDays: 30, amount: 100 },
+    ], NOW)
+    // 悲观 = 最早那批（10 天后），而不是新批次（29 天后）。宁可早报。
+    expect(expiry.nearestExpiryMs).toBe(NOW - 20 * DAY + 30 * DAY)
+  })
+
+  it('没有批次 / 有效期为 0 时返回「不知道」，而不是一个假的 0 时刻', () => {
+    expect(creditExpiryOf([], NOW)).toEqual({ expiringAmount: 0 })
+    expect(creditExpiryOf([{ atMs: NOW, validityDays: 0 }], NOW).nearestExpiryMs).toBeUndefined()
+  })
+
+  it('append 折叠完全相同的批次（already 重放不该让临期金额翻倍）', () => {
+    const batch = { atMs: NOW, validityDays: 30, amount: 100 }
+    const once = appendCheckinBatch([], batch, NOW)
+    const twice = appendCheckinBatch(once, batch, NOW)
+    expect(twice).toHaveLength(1)
+  })
+
+  it('append 裁掉已经过期的批次（落盘文件不会无限长）', () => {
+    const old = { atMs: NOW - 40 * DAY, validityDays: 30, amount: 100 }
+    const fresh = { atMs: NOW, validityDays: 30, amount: 100 }
+    const kept = appendCheckinBatch([old], fresh, NOW)
+    expect(kept).toEqual([fresh])
+  })
+
+  it('creditsWithExpiry 把批次推算并进 usage 那份视图', () => {
+    const view = Qoder.creditsWithExpiry(
+      Qoder.creditsOf({ userQuota: { total: 300, used: 0 }, expiresAt: NOW + 14 * DAY }),
+      [{ atMs: NOW - 29 * DAY, validityDays: 30, amount: 100 }],
+      NOW,
+    )
+    expect(view.expiringSoon).toBe(100)
+    expect(view.nearestExpiryMs).toBe(NOW + DAY)
+    // 套餐到期不受批次影响，两者并存。
+    expect(view.planExpiresAtMs).toBe(NOW + 14 * DAY)
   })
 })
 

@@ -62,3 +62,39 @@ describe('双语 README 同步', () => {
     expect(en).toContain('issue #29')
   })
 })
+
+// ==========================================================================
+// issue #31 / #32：两组语义拆分，两份 README 都要说清
+//
+// 这两条的共同点是「名字骗人」：
+//   · `expiresAt` 叫得像积分包到期，其实是账号套餐 / 14 天试用；
+//   · `retryAtMs` 缺席看起来像「什么都不做」，其实在按 30 分钟重试。
+// 名字不改，下一个人还会再踩一次，而代价是重新做一遍取证 —— 所以文档要写。
+// ==========================================================================
+describe('issue #31 / #32：两份 README 都要解释这两处语义', () => {
+  it('套餐到期与积分到期被说成两件事（两份）', () => {
+    for (const [name, doc] of [['zh', zh], ['en', en]] as const) {
+      expect(doc, `${name} 缺 planExpires / 套餐解释`).toMatch(/planExpiresAtMs|套餐/iu)
+      expect(doc, `${name} 缺 issue #31 锚点`).toContain('issue #31')
+      // 必须点明「不是积分包到期」这件事 —— 只提字段名不够，误导就在名字里。
+      expect(doc, `${name} 没说明它不属于积分`).toMatch(/积分包|credit package|credit-package/iu)
+    }
+  })
+
+  it('兜底重试节奏与「上游说了时刻」被分开（两份）', () => {
+    for (const [name, doc] of [['zh', zh], ['en', en]] as const) {
+      expect(doc, `${name} 缺 unknown-cooldown`).toContain('unknown-cooldown')
+      expect(doc, `${name} 缺 issue #32 锚点`).toContain('issue #32')
+      // 节奏本身要说出来（30 分钟），否则读者不知道系统还在动。
+      expect(doc, `${name} 没说 30 分钟节奏`).toMatch(/30\s*分钟|30\s*min/iu)
+    }
+  })
+
+  it('窗口时刻落盘这件事两份都写了（否则「重启就没了」这个坑会重现）', () => {
+    for (const [name, doc] of [['zh', zh], ['en', en]] as const) {
+      expect(doc, `${name} 缺 windows 键`).toContain('windows')
+      // 落盘的目标文件要写出来，读者才能自己去核对。
+      expect(doc, `${name} 缺落盘文件名`).toContain('.qoder-pool.')
+    }
+  })
+})

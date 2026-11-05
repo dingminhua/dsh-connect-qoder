@@ -102,6 +102,37 @@ describe('issue #32：推算出来的解禁时刻要标明来源', () => {
   })
 })
 
+describe('issue #32 第一条建议：兜底节奏要留痕迹', () => {
+  it('没有时刻但标了 unknown-cooldown 时，说明「仍在按 30 分钟重试」', () => {
+    const text = exclusionText(keyT, 'out-of-credit', undefined, NOW, 'unknown-cooldown')
+    // 两句话各说一件事：上游没说何时好（事实），我们仍在按 30 分钟试（节奏）。
+    expect(text).toContain('row.poolRetryUnknown')
+    expect(text).toContain('row.poolRetryFallback')
+  })
+
+  it('没有时刻也**没有**来源时保持沉默（旧记录 / 不会自愈的排除）', () => {
+    // 沉默与「在重试」是两件事：凭据被拒没有重试节奏可标，绝不能借这句话
+    // 去安慰一个等不会好的状态。
+    expect(exclusionText(keyT, 'credential-rejected', undefined, NOW)).toBe('row.poolExcludedRejected')
+    expect(exclusionText(keyT, 'out-of-credit', undefined, NOW)).toBe('row.poolExcludedOutOfCredit')
+  })
+
+  it('有上游时刻时绝不提兜底节奏（那是另一条路径）', () => {
+    const text = exclusionText(keyT, 'out-of-credit', NOW + 3_600_000, NOW, 'unknown-cooldown')
+    expect(text).not.toContain('row.poolRetryFallback')
+    expect(text).toContain('row.unlockSuffix')
+  })
+
+  it('中文文案说的是「节奏」而不是「恢复时刻」', () => {
+    const text = render(qoderLocales.zh['row.poolRetryFallback'], {})
+    expect(text).toContain('30')
+    expect(text).toContain('重试')
+    // 不得出现「解禁 / 恢复」这种把本地节奏冒充成上游承诺的词。
+    expect(text).not.toContain('解禁')
+    expect(text).not.toContain('恢复')
+  })
+})
+
 describe('issue #31：到期日与「恢复时刻」不是同一种显示', () => {
   it('到期日带年份，跨年时读者能判断是哪一年', () => {
     const at = new Date(2027, 0, 5, 8, 0).getTime()

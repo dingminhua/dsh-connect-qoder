@@ -399,6 +399,9 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}
 .dsm-qoder-pool-soon{font-size:11px;line-height:16px;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-qoder-pool-soon-plain{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
+/* 套餐到期（issue #31 建议 1）：与「积分何时作废」是两件事，所以不用警告色 ——
+   套餐到期是账号事实，不是「有分要浪费了」那种需要立刻行动的信号。 */
+.dsm-qoder-pool-plan{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999);opacity:.85}
 .dsm-qoder-pool-probe,.dsm-qoder-pool-checkin{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;overflow-wrap:anywhere}
 .dsm-qoder-pool-probe{display:flex;flex-direction:column;gap:4px}
 .dsm-qoder-pool-probe-main{color:var(--dsw-alias-label-secondary,#c6c9d0)}

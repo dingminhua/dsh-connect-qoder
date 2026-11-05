@@ -1102,6 +1102,12 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                     ? <span className="dsm-qoder-pool-soon">{t('row.poolCreditSoon', { count: String(account.expiringSoon) })}</span>
                     : account.nearestExpiryMs === undefined ? null
                       : <span className="dsm-qoder-pool-soon-plain">{t('row.poolCreditNearest', { at: formatExpiryMoment(account.nearestExpiryMs) })}</span>}
+                  {/* 套餐到期与积分到期是**两件事**（issue #31 建议 1），所以是
+                      两句话，各带各的时刻。此前那个日期被挂在积分包上，读起来像
+                      「这些积分那天作废」，而它其实是账号的 14 天试用 / 套餐。 */}
+                  {account.planExpiresAtMs === undefined
+                    ? null
+                    : <span className="dsm-qoder-pool-plan">{t('row.poolPlanExpires', { at: formatExpiryMoment(account.planExpiresAtMs) })}</span>}
                 </span>
                 <span className="dsm-qoder-pool-probe" {...(account.probe?.message === undefined ? {} : { title: account.probe.message })}>
                   {/* 主行 = 结果 · 原因（workbuddy 的 probeLine 同规）：原因写进主行

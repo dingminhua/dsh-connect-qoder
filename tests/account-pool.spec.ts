@@ -20,6 +20,7 @@ import {
   createLatestWins,
   effectiveMembersOf,
   exclusionOf,
+  fallbackCooldownOf,
   pickAccount,
   pickFreeModel,
   POOL_UNKNOWN_COOLDOWN_MS,
@@ -723,5 +724,68 @@ describe('issue #26：排队模型与可用模型的收集', () => {
   it('没记录模型的测量不进名单（它不是关于某个模型的事实）', () => {
     const probes = { a: { outcome: 'queued' as const, atMs: NOW, retryAtMs: NOW + 30_000 } }
     expect(queuedModelIdsOf(probes, NOW)).toEqual([])
+  })
+})
+
+
+// ==========================================================================
+// issue #32 第一条建议：兜底冷却必须可区分
+//
+// 数值刻意不动（官方只说了「次日可继续」，编 6 小时与编 30 分钟性质相同），
+// 要补的是**痕迹**：`retryAtMs` 缺席时，从外部看「我们在每 30 分钟重试」与
+// 「上游没说、我们也不打算再试」长得一模一样。两者代价差得很远。
+// ==========================================================================
+describe('fallbackCooldownOf：兜底节奏的痕迹', () => {
+  it('会自愈的失败在没有时刻时标 unknown-cooldown', () => {
+    for (const outcome of ['rate-limited', 'out-of-credit', 'unavailable', 'queued', 'failed'] as const) {
+      expect(fallbackCooldownOf(outcome, undefined, undefined)).toEqual({ retrySource: 'unknown-cooldown' })
+    }
+  })
+
+  it('已有上游/推算时刻时不覆盖来源', () => {
+    expect(fallbackCooldownOf('out-of-credit', NOW + 1000, 'quota-refresh')).toEqual({})
+    expect(fallbackCooldownOf('out-of-credit', NOW + 1000, undefined)).toEqual({})
+  })
+
+  it('不会自愈的排除不标节奏（凭据被拒没有「重试」可言）', () => {
+    expect(fallbackCooldownOf('credential-rejected', undefined, undefined)).toEqual({})
+    expect(fallbackCooldownOf('not-found', undefined, undefined)).toEqual({})
+    // 也不是冷却的两档。
+    expect(fallbackCooldownOf('ok', undefined, undefined)).toEqual({})
+    expect(fallbackCooldownOf('policy-rejected', undefined, undefined)).toEqual({})
+  })
+
+  it('它只写 retrySource，绝不写 retryAtMs（那个字段只放上游/推算的时刻）', () => {
+    const patch = fallbackCooldownOf('out-of-credit', undefined, undefined)
+    expect(patch).not.toHaveProperty('retryAtMs')
+  })
+})
+
+
+// ==========================================================================
+// issue #31 建议 1：套餐到期**不参与**排序
+//
+// 修复前 `packages[].expiresAtMs` 装的是账号 14 天试用到期，却被当成「积分紧急
+// 度」—— 一个刚过试用期的号会永远排在最前面，而它手上的分根本不会过期。
+// 现在套餐到期只挂在 `planExpiresAtMs` 上，排序两处都不读它。
+// ==========================================================================
+describe('issue #31：套餐到期不影响池排序', () => {
+  it('只有 planExpiresAtMs 的账号不算「临期」，排在普通账号之后（按积分）', () => {
+    const plain = member('plain', { credits: 100 })
+    const plan = member('plan', { credits: 100 })
+    // plan 的套餐 2 天后到期 —— 修复前这会让它排第一。
+    plan.credits = { ...plan.credits!, planExpiresAtMs: NOW + 2 * 86_400_000 }
+    const ranked = rankPool([plain, plan], NOW)
+    // 两者都不是临期，顺序退回积分总额（相等）→ 账号 id 决胜。
+    expect(ranked.map(row => row.account.id)).toEqual(['plain', 'plan'])
+  })
+
+  it('真正临期的积分仍然优先于套餐到期（两件事不能互相掩盖）', () => {
+    const planOnly = member('planOnly', { credits: 500 })
+    planOnly.credits = { ...planOnly.credits!, planExpiresAtMs: NOW + 3_600_000 }
+    // 这个号有 100 分明天就废，套餐还有很久。
+    const creditsAtRisk = member('creditsAtRisk', { credits: 10, expiringSoon: 10, nearestExpiryMs: NOW + 86_400_000 })
+    const ranked = rankPool([planOnly, creditsAtRisk], NOW)
+    expect(ranked[0]?.account.id).toBe('creditsAtRisk')
   })
 })

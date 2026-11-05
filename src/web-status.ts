@@ -1206,6 +1206,9 @@ async function buildPoolView(
         credits: reading.total,
         expiringSoon: reading.expiringSoon,
         ...(reading.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: reading.nearestExpiryMs }),
+        // 套餐到期（issue #31 建议 1）：与积分到期分开带走，卡片才能把
+        // 「分什么时候作废」与「账号还能用多久」说成两句话。
+        ...(reading.planExpiresAtMs === undefined ? {} : { planExpiresAtMs: reading.planExpiresAtMs }),
       }),
       ...(probe === undefined ? {} : {
         probe: {

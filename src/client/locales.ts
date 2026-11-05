@@ -284,7 +284,12 @@ export const en = {
   'row.poolNeverTested': 'Untested',
   'row.poolTestedAt': 'Tested {at}',
   'row.poolCreditSoon': '{count} expiring within 3 days',
-  'row.poolCreditNearest': 'Nearest package expires {at}',
+  // 「最近积分包 X 过期」这句话说的是**签到批次**推算出来的积分到期（issue #31），
+  // 不是套餐到期 —— 措辞必须点明「推算」，否则读者会把它当成上游承诺的时刻。
+  'row.poolCreditNearest': 'Earliest claimed batch expires around {at}',
+  // 套餐 / 试用到期（issue #31 建议 1）：与上一句是**两件事**，所以单出一句，
+  // 且不写「积分」二字 —— 这个日期与任何批次的积分都无关。
+  'row.poolPlanExpires': 'Plan ends {at}',
   'row.poolExcludedRateLimited': 'Rate limited',
   // Same reason as `probeOutOfCredit*`: this bucket covers the whole quota
   // family, and the account measured for code 110 still had 500 credits —
@@ -293,8 +298,10 @@ export const en = {
   'row.poolExcludedRejected': 'Rejected',
   'row.poolExcludedQueued': 'Queued upstream',
   'row.poolExcludedUnusable': 'Unusable',
-  'row.poolRetryAt': 'Back after {at}',
   'row.poolRetryUnknown': 'The upstream gave no time for when this frees up',
+  // 兜底节奏那一档（issue #32）：上游与快照都没给时刻，池子在按自己的节奏重试。
+  // 说「节奏」而不是「恢复时刻」——后者是上游的事实，我们手里没有。
+  'row.poolRetryFallback': 'Retrying automatically about every 30 min',
   // 原因行尾的解禁提示：「Rate limited · unblocks in about 12 min」。
   // 用相对时长而不是绝对时刻 —— 读者要的是「还要等多久」。
   'row.unlockSuffix': 'unblocks {when}',
@@ -702,7 +709,13 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolNeverTested': '未测试',
   'row.poolTestedAt': '测试于 {at}',
   'row.poolCreditSoon': '{count} 积分 3 天内过期',
-  'row.poolCreditNearest': '最近积分包 {at} 过期',
+  // 「最近积分包 X 过期」改口径（issue #31）：这个时刻是**签到批次**按
+  // `validity.days` 推算出来的，与套餐到期无关。写成「最近积分包」会让读者
+  // 把它当成上游给的确定时刻 —— 而它其实是我们按 FIFO 假设取的悲观上界。
+  'row.poolCreditNearest': '最早一批签到积分约 {at} 到期',
+  // 套餐 / 试用到期（issue #31 建议 1）：与上一句是**两件事**，所以单出一句，
+  // 且不写「积分」二字 —— 这个日期与任何批次的积分都无关。
+  'row.poolPlanExpires': '套餐 {at} 到期',
   'row.poolExcludedRateLimited': '被限流',
   // 与 `probeOutOfCredit*` 同一理由：这一档收的是整个配额族，实测 110 的账号
   // 还有 500 积分 —— 芯片说「积分耗尽」会与同一行的积分数字当面对撞。
@@ -710,8 +723,10 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolExcludedRejected': '被拒绝',
   'row.poolExcludedQueued': '上游排队中',
   'row.poolExcludedUnusable': '不可用',
-  'row.poolRetryAt': '{at} 之后可再用',
   'row.poolRetryUnknown': '上游未给出何时恢复',
+  // 兜底节奏那一档（issue #32）：上游与快照都没给时刻，池子在按自己的节奏重试。
+  // 说「节奏」而不是「恢复时刻」——后者是上游的事实，我们手里没有。
+  'row.poolRetryFallback': '每 30 分钟自动重试一次',
   // 原因行尾的解禁提示：「被限流 · 约 12 分钟后解禁」。
   // 用相对时长而不是绝对时刻 —— 读者要的是「还要等多久」。
   'row.unlockSuffix': '{when}解禁',

@@ -533,6 +533,20 @@ describe('每日签到（sash campaigns）', () => {
     expect(campaigns[0]).toMatchObject({ campaignId: 'c1', claimStatus: 'CLAIMABLE', amount: 100, validityDays: 30 })
   })
 
+  it('validity.mode 不是 RELATIVE_DAYS 时不采用天数（issue #31 建议 3）', () => {
+    // 「领取后 N 天作废」只在**相对**口径下成立。上游若改成绝对时刻，把 days
+    // 递减成「领取时刻 + N 天」会算出一个不存在的到期日 —— 而那正是积分提醒
+    // 唯一依据的东西。宁可不显示。
+    return (async () => {
+      const { client } = stub([
+        { campaignId: 'c1', actionType: 'CLAIM_BENEFIT', claimStatus: 'CLAIMABLE', benefit: { amount: 100, validity: { mode: 'ABSOLUTE', days: 30 } } },
+      ], { status: 200, body: { status: 'CLAIMED' } })
+      const campaigns = await client.fetchCampaigns('pt-x')
+      expect(campaigns[0]?.amount).toBe(100)
+      expect(campaigns[0]?.validityDays).toBeUndefined()
+    })()
+  })
+
   // ======================================================================
   // 两族令牌并存：chat 用旧的，sash 用新的。
   //

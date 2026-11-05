@@ -156,6 +156,23 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
+  it('issue #31：积分到期与套餐到期是两句话，各自带各自的时刻', async () => {
+    const fixture = poolFixture()
+    const accounts = fixture['accounts'] as Record<string, unknown>[]
+    accounts[0] = { ...accounts[0], planExpiresAtMs: Date.now() + 14 * 86_400_000 }
+    const { container, unmount } = await mountPool({ pool: fixture })
+    try {
+      const first = container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)')[0]!
+      // 两件事分别渲染：积分临期用 soon（警告色），套餐到期是另一格。
+      expect(first.querySelector('.dsm-qoder-pool-soon')?.textContent).toContain('row.poolCreditSoon')
+      expect(first.querySelector('.dsm-qoder-pool-plan')?.textContent).toContain('row.poolPlanExpires')
+      // 套餐到期不得被当成「积分临期」的措辞再出现一次。
+      expect(first.querySelector('.dsm-qoder-pool-plan')?.textContent).not.toContain('row.poolCreditSoon')
+    } finally {
+      await unmount()
+    }
+  })
+
   it('区块顺序：表 → 目标告警 → settings（含来源行）→ regionNote → 日志', async () => {
     const { container, unmount } = await mountPool()
     try {

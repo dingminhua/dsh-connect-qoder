@@ -84,7 +84,14 @@ export interface QoderCampaign {
   claimStatus: string
   /** 奖励数额（Credits），来自 `benefit.amount`。 */
   amount?: number
-  /** 有效期天数，来自 `benefit.validity.days`。 */
+  /**
+   * 有效期天数，来自 `benefit.validity.days`。
+   *
+   * 只在 `validity.mode === 'RELATIVE_DAYS'` 时给出 —— 「领取后再过 N 天作废」
+   * 这个口径成立的前提是**相对**。上游若哪天改成 `ABSOLUTE`（给一个绝对时刻），
+   * 天数就不再是那个意思，这里会**不写** `validityDays`：宁可不显示到期，也不
+   * 拿一个口径不对的数字去算「什么时候作废」（issue #31 建议 3）。
+   */
   validityDays?: number
   /**
    * 这条活动**开窗**的时刻（epoch **秒** —— 上游给的就是秒，不是毫秒）。
@@ -1199,7 +1206,12 @@ export function projectCampaignEntry(entry: unknown): QoderCampaign | undefined 
     ...(typeof raw.campaignKey === 'string' && raw.campaignKey !== '' ? { campaignKey: raw.campaignKey } : {}),
     ...(campaignUrl !== '' ? { campaignUrl } : {}),
     ...(typeof benefit.amount === 'number' ? { amount: benefit.amount } : {}),
-    ...(typeof validity.days === 'number' ? { validityDays: validity.days } : {}),
+    // `mode` 缺席时按相对天数处理：这是上游至今给过的唯一口径，也是 activity
+    // 文案「领取后 30 天有效」的说法。但**显式的**其它 mode 一律不采用天数 ——
+    // 见 `QoderCampaign.validityDays` 的注释。
+    ...(typeof validity.days === 'number' && (validity.mode === undefined || validity.mode === 'RELATIVE_DAYS')
+      ? { validityDays: validity.days }
+      : {}),
     // 活动窗：秒 → 毫秒之外的**原值也留着**，倒计时由 UI 按 region 的时区算。
     // 这里保留秒，因为 `endAt` 与 `startAt` 同源同单位，混着传才容易错。
     ...(typeof raw.startAt === 'number' ? { startAt: raw.startAt } : {}),

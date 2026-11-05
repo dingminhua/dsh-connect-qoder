@@ -32,7 +32,15 @@ export function exclusionText(
   // 只有上游明确给了解禁时刻才补时长；凭据被拒这类不会自己好的没有时刻，
   // 也就没有倒计时 —— 绝不拿「30 分钟后」去安慰一个等不会好的状态。
   const remaining = retryAtMs === undefined ? '' : remainingText(t, retryAtMs, nowMs)
-  if (remaining === '') return label
+  if (remaining === '') {
+    // 没有上游时刻**不等于**「什么都不发生」（issue #32 第一条建议）：池子在按
+    // 兜底节奏重试，30 分钟后再拿真实请求撞一次。这一格此前是沉默的，用户会
+    // 把沉默读成「已经放弃」。现在分两句话说：上游没说什么时候好（事实），
+    // 以及我们仍在按 30 分钟重试（节奏）。只说节奏，不编一个恢复时刻。
+    return retrySource === 'unknown-cooldown'
+      ? `${label} · ${t('row.poolRetryUnknown')} · ${t('row.poolRetryFallback')}`
+      : label
+  }
   // 这个时刻是**谁**给的（issue #32）：`quota-refresh` 是按签到快照推出来的
   // 当日窗口，不是上游在这条失败报文里说的。两者用同一句话，用户会把推算
   // 当成上游的承诺 —— 所以后者单独一句。

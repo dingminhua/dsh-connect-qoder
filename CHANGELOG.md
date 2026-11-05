@@ -2,6 +2,71 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.17.5 (2026-11-05)
+
+> **#31 / #32 两条 issue 的后续（两份回复里逐条答完）。**
+> 「到期日」其实是账号套餐，被当成积分包显示；
+> 签到积分算不出何时作废；
+> 兜底重试节奏在数据里看不见，且进程一重启就必然生效。
+
+### 修复
+
+- **`expiresAt` 的语义拆开**（issue #31 建议 1）。
+  - **症状**：积分行那个「到期日」是账号 **14 天试用 / 套餐**到期（实测 = `userId` 前 48 bit + 14 天），
+    却被挂在 `addon` 包上显示成「积分包到期」，还参与池排序的「临期紧急度」。
+  - **修法**：`QoderWebCreditPackage` 去掉 `expiresAtMs`；`QoderWebCredits` 新增
+    `planExpiresAtMs`，卡片单独一句「套餐 {at} 到期」。池排序的 `_atRisk` / `_expiring`
+    不再读它 —— 那个日期说的是「账号还能用多久」，与「手上的分会不会作废」是两件事。
+  - 取证实测：`lib/client.js` 里 `expiresAtMs` / `packages` 各 0 命中，包级到期没有外部消费者。
+- **签到批次的积分到期**（issue #31 建议 3）。
+  - 新增 `src/credit-expiry.ts`：签到成功时记 `claimAtMs` + `validityDays` + 数额，
+    落盘到 `.qoder-pool.<region>.json` 的 `credits`，按 FIFO 记账。
+  - **显示取悲观上界**：不冲销任何批次，直接取「最早一批还没过期的」。FIFO 若成立，
+    真实到期只会更晚 —— 这一行存在的意义是提前提醒，报晚了等于没有提醒。
+  - `claimAtMs` 缺席（旧记录 / 只见过「已领取」）时不显示；文案改成「最早一批签到积分
+    约 {at} 到期」，不冒充上游的确定时刻。只在 `RELATIVE_DAYS` 下成立。
+- **`monthly` 从 Qoder 的 DTO 里摘掉**（issue #31 建议 5）。它恒为 `false`，没有编码任何
+  信息；family 的约定是「有按月刷新的桶时用 `monthly` + `cycleRefreshMs` 表达」，不是
+  「每个连接器都必须有」。留着只会让读者分不清「不按月刷新」与「作者没填」。
+- **`expiringSoon` 的同名二义消掉**（issue #31 附带那条）。此前 `creditsOf` 累加**包数**、
+  `poolMemberCredits` 累加**金额**，而文案是金额措辞。现在两处都只算金额（来源统一为
+  签到批次），计数那一份从 DTO 删掉（它没有读者）。死 key `row.poolRetryAt` 一并删除。
+- **兜底冷却可见**（issue #32 建议 1）。
+  - 新增 `retrySource: 'unknown-cooldown'`：上游与快照都没给时刻、这次排除走的是本地
+    30 分钟兜底时写下它。**只写来源，不写 `retryAtMs`** —— 那个字段继续只放上游/推算
+    给出的时刻。
+  - 卡片那一格从沉默改成「上游未给出何时恢复 · 每 30 分钟自动重试一次」：沉默与
+    「已经放弃」同形，而实际系统每半小时就拿真实请求再撞一次。
+  - 30 分钟这个**数值刻意不动**：官方只说了「次日可继续」，编 6 小时与编 30 分钟性质
+    相同。真正降代价的是下一条。
+- **签到窗口时刻落盘**（issue #32 第三条，也是这条回复里收益最大的一条）。
+  - `.qoder-pool.<region>.json` 新增 `windows` 键，签到成功即写入；启动时读回。
+  - 取值顺序：进程内快照 → 磁盘；**已经过去的时刻不采用**（拿旧日期当恢复时刻会把号
+    判到很久以后才解禁）。`window` 缺失时照旧走兜底。
+  - 此前 `checkinSnapshots` 只在进程内，而兜底恰恰只在「窗口时刻不知道」时生效 ——
+    于是每次重启都让兜底必然生效。
+
+### 兼容
+
+- `quotaRefreshOf(snapshot, pat)` 保留为 `@deprecated`：1.17.4 的 `lib/index.d.ts`
+  里有这个导出，补丁版本不该把它拿走。但它正是 #32 那个坑的形状（替调用方派生
+  id），所以新代码一律走 `quotaRefreshOfAccount` / `quotaRefreshOfStored`，并各钉
+  一条「传 id 时必然取不到」的用例。
+
+### 文档
+
+- 中文 / 英文 README 各补两节（套餐到期 vs 积分到期、兜底重试与窗口落盘），排序规则
+  同步改写（补上「用户手排顺序」这一层，原文漏了）。
+- `tests/readme-parity.spec.ts` 增 3 条守卫：两份文档都要解释这两处语义、都要写出
+  落盘文件名 —— 这次的两条 issue 都源于「字段名骗人」，只有真去读文档的人会撞上。
+
+### 测试
+
+- 1213 passed / 8 skipped；两个 tsconfig 干净；`pnpm run build` 成功。
+- 每条修复都做了变异验证：去掉 `fallbackCooldownOf` → 2 条红；把悲观上界改成乐观
+  → 1 条红；把 `planExpiresAtMs` 塞回排序 → 2 条红；把 `windows` 从 merge 里去掉
+  → 3 条红。
+
 ## 1.17.4 (2026-11-05)
 
 > **三处「只修了一条路径」的缺口。**

@@ -45,8 +45,20 @@ export type QoderPoolProbeSource = 'test-batch' | 'live-request'
  * 是从签到快照推出来的当日窗口结束时刻 —— 后者是**本地推算**，卡片必须说清楚，
  * 否则用户会把「我们猜的」读成「上游说的」。`retry-after` / `upstream-message`
  * 来自探针路径（HTTP 头、失败报文里的重置句）。
+ *
+ * `unknown-cooldown` 与前面四个**语义不同**，务必看清：它表示 `retryAtMs`
+ * **缺席**，这次排除用的完全是本地兜底节奏（{@link POOL_UNKNOWN_COOLDOWN_MS}），
+ * 上游没有、快照也没有给出任何时刻。它存在的唯一理由是让「我们在按 30 分钟
+ * 自己重试」这件事在数据里留下痕迹 —— 只看着 `retryAtMs` 缺席的话，它与
+ * 「上游没说、我们也不打算再试」完全无法区分，而实际上系统会拿真实聊天请求
+ * 每 30 分钟撞一次。
  */
-export type QoderPoolProbeRetrySource = 'retry-after' | 'upstream-message' | 'quota-refresh' | 'upstream-reported'
+export type QoderPoolProbeRetrySource =
+  | 'retry-after'
+  | 'upstream-message'
+  | 'quota-refresh'
+  | 'upstream-reported'
+  | 'unknown-cooldown'
 
 /** One account's pool entry: what the picker needs, plus its last measurement. */
 export interface QoderPoolAccount {
@@ -119,10 +131,29 @@ export interface QoderPoolProbe {
 /** One account's live credit situation, as the pool ranks it. */
 export interface QoderPoolCredits {
   total: number
-  /** Credits expiring within the card's "soon" window (3 days). */
+  /**
+   * 3 天内到期的积分**金额**（issue #31 的附带那条）。
+   *
+   * 曾经同名二义：`creditsOf` 累加的是包数、`poolMemberCredits` 累加的是金额，
+   * 而排序两处都当金额读。现在两边都只算金额，包数那一份从 DTO 里删掉了
+   * （它没有读者）。
+   */
   expiringSoon: number
-  /** When the nearest package expires, if any does. */
+  /**
+   * 最早一批**积分**推算出来的到期时刻（来自签到批次，悲观上界）。
+   *
+   * 注意它与套餐到期无关（issue #31 建议 1）：`expiresAt` 那个字段是账号级
+   * 试用/套餐到期，曾经被当成「积分紧急度」参与这里的排序 —— 那让一个刚过
+   * 试用期的号永远排在最前面，而它手上的分其实一分都不会过期。
+   */
   nearestExpiryMs?: number
+  /**
+   * 账号级套餐 / 试用到期（`qoderUsage.expiresAt`，issue #31 建议 1）。
+   *
+   * 只供展示「这个账号还能用多久」。**不参与排序**：它说的是账号，不是积分，
+   * 把它当临期紧急度会让「刚过试用期的号」永远排在前面 —— 而它的分不会过期。
+   */
+  planExpiresAtMs?: number
 }
 
 /**
@@ -154,6 +185,14 @@ export interface QoderPoolRanked {
  * A conservative FALLBACK, not a measurement. It keeps a transient failure or
  * an unstated rate limit from idling a healthy account forever, and it is what
  * lets the pool heal itself — nothing else re-probes an excluded member.
+ *
+ * 它**不是**「上游何时恢复」的猜测，而是「我们下次什么时候再挑它」的节奏。
+ * 两者混同的那一刻，卡片就会把我们的节奏说成上游的承诺 —— 所以
+ * `retrySource: 'unknown-cooldown'` 单独立一档，见 `QoderPoolProbeRetrySource`。
+ *
+ * 30 分钟这个**数值**是刻意保留的（issue #32 的第二条）：官方只说了「当日
+ * 用量用尽后次日可继续」，没给具体时刻，编 6 小时和编 30 分钟性质相同。
+ * 真正降低代价的是「窗口时刻落盘」（`windows`）与「退避」，不是改这个数。
  */
 export const POOL_UNKNOWN_COOLDOWN_MS = 30 * 60_000
 
@@ -236,6 +275,37 @@ export function exclusionOf(
 function retryDue(probe: QoderPoolProbe, nowMs: number): boolean {
   const until = probe.retryAtMs ?? probe.atMs + POOL_UNKNOWN_COOLDOWN_MS
   return nowMs >= until
+}
+
+/**
+ * 这次排除会不会走**本地兜底节奏**（issue #32 的第一条建议）。
+ *
+ * 写作时就知道答案：只要结果是「等一等会自愈」的那几档，且上游与快照都没给出
+ * 时刻，那么从写下的那一刻起，这个号就是按 {@link POOL_UNKNOWN_COOLDOWN_MS}
+ * 在我们自己的节奏上重试。把这件事记成 `retrySource: 'unknown-cooldown'`，
+ * 而不是让它与「上游没说、我们也不打算再试」长得一模一样。
+ *
+ * **刻意不写 `retryAtMs`**：那个字段只表达「上游说的时刻」，把本地节奏写进去
+ * 会污染它，让下一处读者（卡片、换号判据）以为上游承诺过某个时间点。
+ */
+export function fallbackCooldownOf(
+  outcome: QoderWebProbeOutcome,
+  retryAtMs: number | undefined,
+  retrySource: QoderPoolProbeRetrySource | undefined,
+): { retrySource?: QoderPoolProbeRetrySource } {
+  if (retryAtMs !== undefined || retrySource !== undefined) return {}
+  switch (outcome) {
+    case 'rate-limited':
+    case 'out-of-credit':
+    case 'unavailable':
+    case 'queued':
+    case 'failed':
+      return { retrySource: 'unknown-cooldown' }
+    default:
+      // `ok` / `policy-rejected` 根本不是冷却，`credential-rejected` /
+      // `not-found` 等不会自己好 —— 这几档没有「重试节奏」可标。
+      return {}
+  }
 }
 
 /**

@@ -15,7 +15,9 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   qoderPoolStorePath,
+  readPoolDocument,
   readPoolProbes,
+  writePoolDocument,
   writePoolProbes,
 } from '../src/account-pool-store.ts'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
@@ -198,6 +200,20 @@ describe('issue #26：排队信息的落盘往返', () => {
     expect(probes['alpha']?.outcome).toBe('queued')
   })
 
+  it('modelId 落盘往返 —— 读侧不透传就等于没写（issue #23 的第二半）', async () => {
+    // 写进来是作用域的一半，另一半在读侧：`exclusionOf` 拿 `modelId` 判这条
+    // 测量适不适用于当前目标模型。读的时候丢掉它，一条「模型 A 可用」的结论
+    // 就会被当成「模型 B 也可用」。
+    await writePoolProbes('cn', {
+      alpha: { outcome: 'ok', atMs: 1, modelId: 'qwen3-coder' },
+      blank: { outcome: 'ok', atMs: 2, modelId: '' },
+    })
+    const probes = await readPoolProbes('cn')
+    expect(probes['alpha']?.modelId).toBe('qwen3-coder')
+    // 空串不是「某个模型」，与缺席同义。
+    expect(probes['blank']).not.toHaveProperty('modelId')
+  })
+
   it('形状不对的排队信息被整个丢掉，不留半个对象', async () => {
     await writePoolProbes('cn', {
       alpha: { outcome: 'queued', atMs: 1_800_000_000_000, queue: { queueCount: 'many' } as never },
@@ -205,5 +221,96 @@ describe('issue #26：排队信息的落盘往返', () => {
     const probes = await readPoolProbes('cn')
     // `queueCount` 不是数字 ⇒ 丢掉这一项；没有任何可留的字段 ⇒ 整个 queue 丢弃。
     expect(probes['alpha']?.queue).toBeUndefined()
+  })
+})
+
+// ==========================================================================
+// issue #31 建议 3 / #32 第三条：签到批次与窗口时刻要跨进程
+//
+// 这两份数据描述的都是**已经发生过的事实**（领到多少分、有效期几天、上游说
+// 窗口何时关），与进程活多久无关。只放内存的话，一次重启就把「30 天后作废」
+// 变成「不知道什么时候作废」，把「约 6 小时后解禁」变成「每 30 分钟试探一次」。
+// ==========================================================================
+describe('issue #31/#32：签到批次与窗口时刻的落盘', () => {
+  it('批次写进去再读出来，领取时刻/天数/数额都在', async () => {
+    await writePoolDocument('cn', {
+      credits: { alpha: [{ atMs: 1_800_000_000_000, validityDays: 30, amount: 100 }] },
+    })
+    const document = await readPoolDocument('cn')
+    expect(document.credits['alpha']).toEqual([
+      { atMs: 1_800_000_000_000, validityDays: 30, amount: 100 },
+    ])
+  })
+
+  it('窗口时刻单独一键，读回来仍是那个绝对时间点', async () => {
+    await writePoolDocument('cn', { windows: { alpha: 1_800_000_600_000 } })
+    expect((await readPoolDocument('cn')).windows['alpha']).toBe(1_800_000_600_000)
+  })
+
+  it('三个键各自 merge：写窗口不会抹掉探针，写探针也不会抹掉批次', async () => {
+    await writePoolProbes('cn', { alpha: { outcome: 'ok', atMs: 1 } })
+    await writePoolDocument('cn', {
+      credits: { alpha: [{ atMs: 2, validityDays: 30, amount: 100 }] },
+      windows: { alpha: 3 },
+    })
+    await writePoolProbes('cn', { beta: { outcome: 'rate-limited', atMs: 4 } })
+    const document = await readPoolDocument('cn')
+    expect(Object.keys(document.probes).sort()).toEqual(['alpha', 'beta'])
+    expect(document.credits['alpha']).toEqual([{ atMs: 2, validityDays: 30, amount: 100 }])
+    expect(document.windows['alpha']).toBe(3)
+  })
+
+  it('旧文件没有 credits / windows 两个键时读成空表，不报错', async () => {
+    await writeFile(
+      qoderPoolStorePath('cn'),
+      JSON.stringify({ version: 1, probes: { alpha: { outcome: 'ok', atMs: 1 } } }),
+      'utf8',
+    )
+    const document = await readPoolDocument('cn')
+    expect(document.credits).toEqual({})
+    expect(document.windows).toEqual({})
+    expect(document.probes['alpha']?.outcome).toBe('ok')
+  })
+
+  it('validityDays 为 0 / 负数的批次被丢掉（否则「到期」落在领取之前）', async () => {
+    await writeFile(
+      qoderPoolStorePath('cn'),
+      JSON.stringify({
+        version: 1,
+        probes: {},
+        credits: { alpha: [{ atMs: 1, validityDays: 0 }, { atMs: 2, validityDays: -5 }, { atMs: 3, validityDays: 30 }] },
+      }),
+      'utf8',
+    )
+    expect((await readPoolDocument('cn')).credits['alpha']).toEqual([{ atMs: 3, validityDays: 30 }])
+  })
+
+  it('窗口时刻若不是正的有限数就被丢掉，不猜', async () => {
+    await writeFile(
+      qoderPoolStorePath('cn'),
+      JSON.stringify({ version: 1, probes: {}, windows: { alpha: 0, beta: 'soon', gamma: 1_800_000_600_000 } }),
+      'utf8',
+    )
+    expect((await readPoolDocument('cn')).windows).toEqual({ gamma: 1_800_000_600_000 })
+  })
+
+  it('retrySource 落盘往返（含新加的 unknown-cooldown）', async () => {
+    await writePoolProbes('cn', {
+      alpha: { outcome: 'out-of-credit', atMs: 1, retrySource: 'unknown-cooldown' },
+      beta: { outcome: 'out-of-credit', atMs: 2, retryAtMs: 9, retrySource: 'quota-refresh' },
+    })
+    const probes = await readPoolProbes('cn')
+    expect(probes['alpha']?.retrySource).toBe('unknown-cooldown')
+    expect(probes['beta']?.retrySource).toBe('quota-refresh')
+  })
+
+  it('落盘的批次里不含凭据材料', async () => {
+    await writePoolDocument('cn', {
+      credits: { 'pat-abc': [{ atMs: 1, validityDays: 30, amount: 100 }] },
+      windows: { 'pat-abc': 2 },
+    })
+    const raw = await readFile(qoderPoolStorePath('cn'), 'utf8')
+    expect(raw).not.toContain('pt-')
+    expect(raw).not.toMatch(/eyJ[A-Za-z0-9_-]+\./u)
   })
 })

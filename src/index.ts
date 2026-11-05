@@ -71,6 +71,7 @@ import { QoderAccountStore, type QoderStoredAccount } from './accounts.ts'
 import { QODER_CONNECT_VERSION } from './version.ts'
 import {
   exclusionOf,
+  fallbackCooldownOf,
   poolModelOf,
   rankPool,
   resolvePoolTarget,
@@ -80,10 +81,15 @@ import {
   type QoderPoolModel,
   type QoderPoolTarget,
 } from './account-pool.ts'
-import { readPoolProbes, writePoolProbes } from './account-pool-store.ts'
+import { readPoolDocument, writePoolDocument, writePoolProbes } from './account-pool-store.ts'
 import { testAllAccounts, testOne, POOL_BATCH_GAP_MS, type QoderPoolRunnerDeps } from './account-pool-run.ts'
 import { resolveCredentialRecovery, createAccountUsabilityProbe, type QoderProbeStore } from './credential-recovery.ts'
 import { writeHostHeartbeat, clearHostHeartbeat } from './host-heartbeat.ts'
+import {
+  appendCheckinBatch,
+  creditExpiryOf,
+  type QoderCheckinBatch,
+} from './credit-expiry.ts'
 
 export { QODER_CONNECT_VERSION }
 export { QODER_GITHUB_URL }
@@ -724,32 +730,26 @@ function configuredModels(
   return live.length > 0 ? live : QODER_FALLBACK_MODELS.map(fallbackModelInfo)
 }
 
-/** 把一次用量解析成卡片可渲染的积分包。 */
+/**
+ * 把一次用量解析成卡片可渲染的积分包。
+ *
+ * ⚠️ **上游那个 `expiresAt` 不是积分包的到期**（issue #31 的主问题）：它是
+ * `qoderUsage` 的同级字段，等于 `userId`（UUIDv7）前 48 bit + 14 天 ——
+ * **账号级套餐 / 试用**的到期。`userQuota` / `addOnQuota` 自己都不带到期字段。
+ * 此前它被挂到 `addon` 包上，于是「试用期到期」被显示成「积分包到期」，池排序
+ * 也拿它当积分紧急度。现在它单独出 `planExpiresAtMs`，与积分彻底分开。
+ *
+ * 积分本身的到期只可能来自**签到批次**（上游 `validity.days` 只在活动里给过），
+ * 那一路见 `credit-expiry.ts`。
+ */
 export function creditsOf(usage: QoderUsage): QoderWebCredits {
   const packages: QoderWebCreditPackage[] = []
   let total = 0
-  let expiringSoon = 0
-  let nearestExpiryMs: number | undefined
-  const SOON_MS = 3 * 24 * 3600 * 1000
-  const now = Date.now()
 
-  const add = (packageName: string, remaining: number, size: number, expiresAtMs?: number): void => {
+  const add = (packageName: string, remaining: number, size: number): void => {
     if (size <= 0) return
     total += remaining
-    if (expiresAtMs !== undefined && remaining > 0 && expiresAtMs > now) {
-      // issue #31：判据必须有下界。此前是 `expiresAtMs - now < SOON_MS`，一个
-      // **已经过去**的时间戳同样满足它，于是这行会永远写「3 天内过期」，而真相
-      // 是「早过期了」—— 池排序还会把它当成最紧急的号。
-      nearestExpiryMs = nearestExpiryMs === undefined ? expiresAtMs : Math.min(nearestExpiryMs, expiresAtMs)
-      if (expiresAtMs - now < SOON_MS) expiringSoon += 1
-    }
-    packages.push({
-      packageName,
-      remain: remaining,
-      size,
-      monthly: false,
-      ...(expiresAtMs === undefined ? {} : { expiresAtMs }),
-    })
+    packages.push({ packageName, remain: remaining, size })
   }
 
   const userQuota = usage.userQuota
@@ -758,7 +758,7 @@ export function creditsOf(usage: QoderUsage): QoderWebCredits {
   }
   const addOnQuota = usage.addOnQuota
   if (addOnQuota !== undefined && typeof addOnQuota.total === 'number') {
-    add('addon', Math.max(addOnQuota.total - (addOnQuota.used ?? 0), 0), addOnQuota.total, usage.expiresAt)
+    add('addon', Math.max(addOnQuota.total - (addOnQuota.used ?? 0), 0), addOnQuota.total)
   }
   const org = usage.orgResourcePackage
   if (org !== undefined && typeof org.cap === 'number') {
@@ -768,8 +768,30 @@ export function creditsOf(usage: QoderUsage): QoderWebCredits {
   return {
     total,
     packages,
-    expiringSoon,
-    ...(nearestExpiryMs === undefined ? {} : { nearestExpiryMs }),
+    // 上游的 usage 报文不带「哪批积分何时过期」，所以这两项在这里恒为「不知道」，
+    // 由读了签到批次的调用方覆盖（`creditsWithExpiry`）。
+    expiringSoon: 0,
+    ...(usage.expiresAt === undefined ? {} : { planExpiresAtMs: usage.expiresAt }),
+  }
+}
+
+/**
+ * 把签到批次的到期推算并进积分视图。
+ *
+ * 分成两步（而不是把批次塞进 `creditsOf`）的理由：`creditsOf` 是纯的、只吃
+ * 一次 usage 报文；批次是**另一份状态**，进程重启后才需要落盘。分开之后，
+ * 「没有批次」是一个自然状态（新装的插件、从没签到过），而不是一种要特判的错误。
+ */
+export function creditsWithExpiry(
+  credits: QoderWebCredits,
+  batches: readonly QoderCheckinBatch[],
+  nowMs: number = Date.now(),
+): QoderWebCredits {
+  const expiry = creditExpiryOf(batches, nowMs)
+  return {
+    ...credits,
+    expiringSoon: expiry.expiringAmount,
+    ...(expiry.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: expiry.nearestExpiryMs }),
   }
 }
 
@@ -849,6 +871,28 @@ export function apply(ctx: Context, config: Config): void {
    * 同样只在进程内：它描述的是「今天」，重启后由下一次签到重新写入。
    */
   const checkinSnapshots: Record<QoderRegion, Record<string, { claimed: boolean, refreshAtMs?: number }>> = { cn: {}, global: {} }
+
+  /**
+   * 每区域、每账号的**签到积分批次**（issue #31 建议 3）。
+   *
+   * 上游只在活动里给过 `validity.days`（30 天），`checkinSnapshots` 里没有
+   * 「什么时候领的」，所以算不出「这批 100 分什么时候作废」。这里补上
+   * `claimAtMs`（领取那一刻，本地记）与数额，由 `credit-expiry.ts` 按 FIFO
+   * 记账、按**悲观上界**显示。
+   *
+   * 与 `checkinSnapshots` 不同的是它**会落盘**：积分是有寿命的资产，进程重启
+   * 不该让「手上还有 100 分、30 天后过期」变成「不知道什么时候过期」。
+   */
+  const creditBatches: Record<QoderRegion, Record<string, QoderCheckinBatch[]>> = { cn: {}, global: {} }
+
+  /**
+   * 每区域、每账号**落过盘**的当日窗口结束时刻（issue #32 第三条）。
+   *
+   * 进程内快照 `checkinSnapshots` 一重启就没了，而 code 110 的 30 分钟兜底恰恰
+   * 只在「窗口时刻不知道」时生效 —— 于是兜底从「几乎不生效」变成「经常生效」。
+   * 这份是从 `$DSH_HOME/.qoder-pool.<region>.json` 的 `windows` 键读回来的。
+   */
+  const persistedWindows: Record<QoderRegion, Record<string, number>> = { cn: {}, global: {} }
 
   /**
    * 正在飞的批量动作（签到或测试）已处理完的那几行，按区域一个槽位。
@@ -974,10 +1018,18 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     // 开屏的磁盘读数**合并**进已有的运行期记录，而不是整个替换：`probeThrough`
     // 等在 `apply` 期间就已经在跑，它们写的探针若被这次替换覆盖，等于上线后
     // 一分钟内的失败判定被悄悄忘掉（磁盘那次读可能更旧）。
-    void readPoolProbes(region).then((probes) => {
-      poolRuntime = { ...probes, ...poolRuntime }
+    //
+    // 同一次读顺带装回签到批次与窗口时刻（issue #31 建议 3 / #32 第三条）：
+    // 这两份是「领到的积分什么时候作废」与「当日窗口何时结束」的唯一来源，
+    // 只活在进程内时，一次重启就把它们清零 —— 而它们描述的其实都是**已经
+    // 发生过的事实**，与进程活多久无关。
+    void readPoolDocument(region).then((document) => {
+      poolRuntime = { ...document.probes, ...poolRuntime }
       const stack = stacks[region]
       if (stack !== undefined) stack.poolRuntime = poolRuntime
+      // 内存里已经有的（本次进程刚签过）优先，磁盘的只补空缺。
+      creditBatches[region] = { ...document.credits, ...creditBatches[region] }
+      persistedWindows[region] = { ...document.windows, ...persistedWindows[region] }
     })
     // 换号播报去重：与 `poolRuntime` 同生命周期、每区域一份。
     const announcedFailovers = new Map<string, number>()
@@ -1019,7 +1071,8 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         // 一次。探测路径早就接了这个值（`probeThrough`），这里此前没接。
         const probe = liveRequestProbe(kind, message, undefined, {
           ...context,
-          ...quotaRefreshOfAccount(checkinSnapshots[region], accountId),
+          // 进程内快照 → 其次磁盘（issue #32 第三条：重启不该让兜底必然生效）。
+          ...quotaRefreshOfStored(checkinSnapshots[region], persistedWindows[region], accountId),
         })
         if (probe === undefined || accountId === '') return
         poolRuntime[accountId] = probe
@@ -1174,24 +1227,21 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       return cached
     }
     const store = stacks[region].store
-    const SOON_MS = 3 * 24 * 3600 * 1000
     const now = Date.now()
     const entries = await Promise.all(accountIds.map(async accountId => {
       const credit = await store.credentialFor(accountId, sourcesOf(region)).catch(() => undefined)
       if (credit === undefined) return undefined
       const usage = await stacks[region].upstream.fetchUsage(credit.pat).catch(() => undefined)
       if (usage === undefined) return undefined
-      const view = creditsOf(usage)
-      const expiringSoon = view.packages.reduce(
-        // issue #31：与 `creditsOf` 同一条下界。已经过去的时间戳不算「临期」，
-        // 否则这个数字会永远带着一笔早就不存在的「3 天内过期」。
-        (sum, pkg) => pkg.expiresAtMs !== undefined && pkg.expiresAtMs > now && pkg.expiresAtMs - now < SOON_MS ? sum + pkg.remain : sum,
-        0,
-      )
+      // issue #31：临期金额只有一个来源 —— 签到批次。上游 usage 报文不带批次的
+      // 到期时刻，而那个伪装成 `packages[].expiresAtMs` 的 `expiresAt` 其实是
+      // 账号套餐到期，不该在这里被当成积分紧急度。
+      const view = creditsWithExpiry(creditsOf(usage), creditBatches[region]?.[accountId] ?? [], now)
       return [accountId, {
         total: view.total,
-        expiringSoon,
+        expiringSoon: view.expiringSoon,
         ...(view.nearestExpiryMs === undefined ? {} : { nearestExpiryMs: view.nearestExpiryMs }),
+        ...(view.planExpiresAtMs === undefined ? {} : { planExpiresAtMs: view.planExpiresAtMs }),
       }] as const
     }))
     const map = new Map(entries.filter((entry): entry is NonNullable<typeof entry> => entry !== undefined))
@@ -1299,10 +1349,14 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 撞一次 110，如此循环。
       //
       // 来源用签到快照里的每日窗口结束时刻（`refreshAtMs`，上游给的
-      // `daily.endAt`）。它缺席时仍然不传 —— 宁可用 30 分钟兜底，也不在本机
-      // 编一个「次日零点」：官方页面上那个数字才是准的，编出来的会让用户
-      // 在错的时候回来。
-      ...quotaRefreshOf(checkinSnapshots[region], credential.pat),
+      // `daily.endAt`），快照缺席时再看落过盘的那份（issue #32 第三条）。
+      // 两者都没有时仍然不传 —— 宁可用 30 分钟兜底，也不在本机编一个「次日
+      // 零点」：官方页面上那个数字才是准的，编出来的会让用户在错的时候回来。
+      ...quotaRefreshOfStored(
+        checkinSnapshots[region],
+        persistedWindows[region],
+        qoderAccountId(credential.pat),
+      ),
       ...(signal === undefined ? {} : { signal }),
     })
   }
@@ -1326,7 +1380,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
    * 失败**不**写 `refreshAtMs`：这一次没拿到上游的开窗时间，宁可不说，也不把
    * 上一次成功留下的时间当成这次的答案。
    */
-  function applyCheckinRow(region: QoderRegion, row: QoderWebPoolCheckinRow): void {
+  function applyCheckinRow(region: QoderRegion, row: QoderWebPoolCheckinRow): Promise<void> {
     const next = { ...(checkinState[region] ?? {}) }
     const nextSnapshot = { ...(checkinSnapshots[region] ?? {}) }
     if (row.status === 'claimed' || row.status === 'already') {
@@ -1341,6 +1395,39 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     }
     checkinState[region] = next
     checkinSnapshots[region] = nextSnapshot
+
+    // ---- 落盘的两件事（issue #31 建议 3 / #32 第三条）----
+    //
+    // 只对 `claimed` 记批次：`already` 是「今天早上/别人的进程领过」，我们不知道
+    // 那一刻、也不知道数额。按「宁缺勿错」写一个猜出来的 `claimAtMs` 会让「这批
+    // 积分 30 天后作废」这个提醒整体失真 —— 而它存在的意义就是准时。
+    const patches: {
+      credits?: Readonly<Record<string, readonly QoderCheckinBatch[]>>
+      windows?: Readonly<Record<string, number>>
+    } = {}
+    if (row.status === 'claimed' && row.validityDays !== undefined) {
+      const now = Date.now()
+      const batches = appendCheckinBatch(
+        creditBatches[region][row.accountId] ?? [],
+        {
+          atMs: now,
+          validityDays: row.validityDays,
+          ...(row.credit === undefined ? {} : { amount: row.credit }),
+        },
+        now,
+      )
+      creditBatches[region] = { ...creditBatches[region], [row.accountId]: batches }
+      patches.credits = { [row.accountId]: batches }
+    }
+    if (row.refreshAtMs !== undefined) {
+      persistedWindows[region] = { ...persistedWindows[region], [row.accountId]: row.refreshAtMs }
+      patches.windows = { [row.accountId]: row.refreshAtMs }
+    }
+    // 落盘的 Promise 交回给批次，而不是 fire-and-forget：切换号/重启之间只要
+    // 差几百毫秒，这一批积分就会在重启后彻底失去「何时作废」这个事实。批次
+    // 本来就是串行的（每个账号之间还有间隔），等这一次文件写没有任何代价。
+    if (patches.credits === undefined && patches.windows === undefined) return Promise.resolve()
+    return writePoolDocument(region, patches)
   }
 
   async function runCheckinBatch(region: QoderRegion): Promise<QoderWebPoolCheckinRow[]> {
@@ -1384,7 +1471,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         // 每签完一个就写进快照：成员表的「已签到 / 还有多久刷新」逐个落位。签到
         // 不再抬遮罩（用户要求），界面靠这次即时写入加卡片在飞期间的轮询看到进度；
         // 等整批结束才写，那几秒里表是不动的。
-        applyCheckinRow(region, row)
+        await applyCheckinRow(region, row)
         // 同时交给进度槽位：卡片的活动日志据此**逐条**落行（用户实拍：六条日志
         // 全压在同一秒，因为原先等整批响应回来才一次性写）。
         recordPoolBatchRow(region, row)
@@ -1423,6 +1510,13 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     const entry = usageCache[region]
     if (entry === undefined) return undefined
     return {
+      // 积分到期（`expiringSoon` / `nearestExpiryMs`）**不在这里合并批次**：
+      // 这份 usage 文档是**区域级**的（一个正在服务的账号），而批次是**按账号**
+      // 的事实。区域级文档里塞一个人的批次，换号之后就会张冠李戴。
+      // 逐账号的那一份在池表格里（`poolMemberCredits`），两处读的是同一个
+      // `creditsWithExpiry`，只是各取各的账号。
+      // 套餐到期（`planExpiresAtMs`）倒是账号级的，但它随 usage 一起下来，
+      // `creditsOf` 已经带上了。
       ...(entry.usage === undefined ? {} : { usage: { credits: creditsOf(entry.usage), atMs: entry.atMs } }),
       ...(entry.error === undefined ? {} : { error: entry.error }),
       ...(entry.staleError === undefined ? {} : { staleError: entry.staleError }),
@@ -2169,6 +2263,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 解禁时刻的来源也要落盘（issue #32）：`retry-after` / `upstream-message`
       // 是上游给的，`quota-refresh` 是快照推的 —— 卡片要分开说，不能混成一句。
       ...(result.retrySource === undefined ? {} : { retrySource: result.retrySource }),
+      // issue #32 第一条建议：探针这条路上同样会有「上游没说、快照也没有」的
+      // 兜底冷却。与真实请求路径共用同一个判据函数，两条路才不会对同一件事
+      // 给出两种说法。
+      ...fallbackCooldownOf(result.outcome, result.retryAtMs, result.retrySource),
       // 排队信息（issue #26）：上游说「排在第 1027 位」是要显示给人看的。
       ...(result.queue === undefined ? {} : { queue: result.queue }),
       ...(result.message === undefined ? {} : { message: result.message }),
@@ -2298,6 +2396,10 @@ export function liveRequestProbe(
     // issue #32：申报值缺席时，`out-of-credit` 用签到快照的当日窗口时刻，别退
     // 回 30 分钟。
     ...retry,
+    // issue #32 第一条建议：连窗口时刻都没有时，这次排除走的是**本地兜底节奏**。
+    // `retryAtMs` 继续缺席（那个字段只放上游/推算给出的时刻），改用 `retrySource`
+    // 留下痕迹 —— 否则它与「上游没说、我们也不打算再试」在数据里长得一模一样。
+    ...fallbackCooldownOf(outcome, retry.retryAtMs, retry.retrySource),
     ...queued
       ? {
           queue: {
@@ -2428,19 +2530,15 @@ export function clearAnnouncedFailoversFrom(seen: Map<string, number>, accountId
 }
 
 /**
- * The region's daily quota refresh point for one PAT, as `probeModel` wants it.
+ * @deprecated 用 {@link quotaRefreshOfAccount}（按账号 id）或
+ * {@link quotaRefreshOfStored}（再叠一层磁盘）。
  *
- * 「当日用量用尽」(code 110) 的恢复时刻是**次日窗口开启**，不是 30 分钟。上游
- * 在签到报文里给了这个时刻（`daily.endAt`），签到批次把它存进快照；这里就
- * 从快照取。
+ * 保留它只为**不删已发布过的导出**（1.17.4 的 `lib/index.d.ts` 里有这个名字，
+ * 补丁版本不该把它拿走）。但它正是 issue #32 那个坑的形状：它替调用方把 PAT
+ * 派生成 id，而真实请求路径手里**本来就是 id** —— 再派生一次得到
+ * `pat-<hash(pat-…)>`，永远取不到，修复静默失效而纯函数测试全绿。
  *
- * 取不到时返回 `{}`（不传）。这是**故意的保守**：宁可用 30 分钟兜底，也不在
- * 本机编一个「次日零点」。官方页面上那个数字才是准的，编出来的会让用户在错的
- * 时间回来 —— 与 `cooldownOf` 的既有注释同一条规矩。
- *
- * 抽成纯函数是为了能被断言：它是 `probeThrough` 里唯一无法单测的闭包边角，
- * 而恰恰是这一处此前**从未传过** `quotaRefreshAtMs`，让 out-of-credit 一直
- * 走兜底。
+ * 只在你手里确实是 PAT 时用它；其余情况直接用 id 那个入口。
  */
 export function quotaRefreshOf(
   snapshot: Readonly<Record<string, { refreshAtMs?: number }>> | undefined,
@@ -2450,11 +2548,18 @@ export function quotaRefreshOf(
 }
 
 /**
- * 同上，但键已经是**账号 id**（`pat-…`），不再从 PAT 派生。
+ * 「当日用量用尽」(code 110) 的恢复时刻，从签到快照按**账号 id** 取。
  *
- * 真实请求路径（`onServingFailure`）只拿得到 `accountId`，拿不到 PAT ——
- * 而快照本来就是按 id 存的。走 `quotaRefreshOf` 会把 `pat-abc…` 再哈希一次，
- * 于是永远取不到，修复静默失效（issue #32 要的正是这条路径）。
+ * 上游在签到报文里给了这个时刻（`daily.endAt`），签到批次把它存进快照；这里
+ * 就按 id 取。取不到时返回 `{}`（不传）—— 这是**故意的保守**：宁可用 30 分钟
+ * 兜底，也不在本机编一个「次日零点」。官方页面上那个数字才是准的，编出来的会
+ * 让用户在错的时间回来（与 `cooldownOf` 的既有注释同一条规矩）。
+ *
+ * ⚠️ **键是账号 id（`pat-…`），不是 PAT**，这是 issue #32 那个坑：真实请求路径
+ * （`onServingFailure`）只拿得到 `accountId`，而探测路径手里是 PAT。曾经有一个
+ * 内部先 `qoderAccountId(pat)` 再取的入口，把 `pat-abc…` 再哈希一次得到
+ * `pat-<hash(pat-…)>`，于是永远取不到、修复静默失效（纯函数测试还全绿）。
+ * 现在派生一律由**调用方**做，本函数只认 id —— 少一个入口就少一处能踩。
  */
 export function quotaRefreshOfAccount(
   snapshot: Readonly<Record<string, { refreshAtMs?: number }>> | undefined,
@@ -2462,4 +2567,29 @@ export function quotaRefreshOfAccount(
 ): { quotaRefreshAtMs?: number } {
   const refreshAtMs = snapshot?.[accountId]?.refreshAtMs
   return refreshAtMs === undefined ? {} : { quotaRefreshAtMs: refreshAtMs }
+}
+
+/**
+ * 同上，但在进程内快照之外再看一眼**落过盘**的窗口时刻（issue #32 第三条）。
+ *
+ * 为什么需要第三个入口：`checkinSnapshots` 是进程内对象，注释里也写了「重启后
+ * 由下一次签到重新写入」。而 110 的兜底冷却恰恰只在「窗口时刻不知道」时生效 ——
+ * 于是进程一重启兜底就必然生效，用户看到的就是「这个号每半小时被试探一次」。
+ * 窗口时刻本身是一个**绝对时间点**（上游活动行的 `endAt`），它跨重启仍然成立。
+ *
+ * 顺序：进程内快照优先（它带今天的 `claimed` 语境），其次磁盘。两者都没有时
+ * 返回 `{}`，让调用方走兜底 —— 与这套代码一贯的「宁缺勿错」同规。
+ */
+export function quotaRefreshOfStored(
+  snapshot: Readonly<Record<string, { refreshAtMs?: number }>> | undefined,
+  stored: Readonly<Record<string, number>> | undefined,
+  accountId: string,
+  nowMs: number = Date.now(),
+): { quotaRefreshAtMs?: number } {
+  const fromSnapshot = quotaRefreshOfAccount(snapshot, accountId)
+  if (fromSnapshot.quotaRefreshAtMs !== undefined) return fromSnapshot
+  const fromDisk = stored?.[accountId]
+  // 已经过去的窗口时刻不算数：拿一个旧日期去当「下次恢复时刻」会让这个号被
+  // 判到很久以后才解禁，而那时上游早就恢复了。
+  return fromDisk === undefined || fromDisk <= nowMs ? {} : { quotaRefreshAtMs: fromDisk }
 }
