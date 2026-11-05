@@ -148,8 +148,11 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       expect(credits?.textContent).toContain('1200')
       expect(credits?.querySelector('.dsm-qoder-pool-soon')?.textContent).toContain('row.poolCreditSoon')
 
-      // 测过的账号写测试时间；被排除的写排除原因。
-      expect(first.textContent).toContain('row.poolTestedAt')
+      // 被排除的写排除原因。**测过的账号不再单独写一行「测试于 HH:MM」**：
+      // 状态列里已经有「测得 · 1 分钟前」，同一件事在一行里说两遍，代价是每个
+      // 账号多一行 17px（这一列原来堆了 5 行，行高 155px）。
+      expect(first.textContent).not.toContain('row.poolTestedAt')
+      expect(first.querySelector('.dsm-qoder-pool-probe-prov')?.textContent).toContain('row.poolProbeSource')
       expect(rows[1]!.querySelector('.dsm-qoder-pool-excluded')).not.toBeNull()
     } finally {
       await unmount()

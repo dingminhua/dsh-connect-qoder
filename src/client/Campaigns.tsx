@@ -146,34 +146,47 @@ export function QoderCampaigns(props: QoderCampaignsProps): ReactElement {
         <p className="dsm-qoder-campaigns-empty">{t('row.campaignsEmpty')}</p>
       ) : null}
 
-      {campaigns.map(campaign => {
-        const row = rowOf(campaign, feed ?? { campaigns: [] }, language, t)
-        const claimKey = campaign.actionType === 'CLAIM_BENEFIT' ? claimKeyOf(campaign.claimStatus) : undefined
-        const status = claimKey === undefined ? undefined : t(CLAIM_KEYS[claimKey])
-        return (
-          <div className="dsm-qoder-campaign-row" key={row.key}>
-            <div className="dsm-qoder-campaign-row-head">
-              <span className="dsm-qoder-campaign-row-title">{row.title}</span>
-              {row.amount !== undefined ? (
-                <span className="dsm-qoder-campaign-row-amount">+{row.amount} Credits</span>
+      {/* 活动按**瓦片**排，而不是一行一条压到底：正文这一栏有 ~580px 宽，而原来
+          每条活动只用到最左边那 200px，右侧整片空白，三条活动就要吃掉近 300px
+          高度。现在每条是一个等高的小卡片，`auto-fill` 让它跟着栏宽自动排两列
+          （窄屏退回一列）。高度也不再随描述行数变化——描述限两行、页脚贴底，
+          所以几行文字的多条活动在视觉上是同一排格子，而不是参差不齐的一列。 */}
+      <div className="dsm-qoder-campaigns-grid">
+        {campaigns.map(campaign => {
+          const row = rowOf(campaign, feed ?? { campaigns: [] }, language, t)
+          const claimKey = campaign.actionType === 'CLAIM_BENEFIT' ? claimKeyOf(campaign.claimStatus) : undefined
+          const status = claimKey === undefined ? undefined : t(CLAIM_KEYS[claimKey])
+          return (
+            <div className="dsm-qoder-campaign-row" key={row.key}>
+              <div className="dsm-qoder-campaign-row-head">
+                <span className="dsm-qoder-campaign-row-title">{row.title}</span>
+                {/* 额度是这类活动唯一能被量化的事实，所以它是标题行里的强调项，
+                    而不是跟在状态后面的第三个灰字标签。 */}
+                {row.amount !== undefined ? (
+                  <span className="dsm-qoder-campaign-row-amount">+{row.amount} Credits</span>
+                ) : null}
+              </div>
+              {row.description !== undefined && row.description !== '' ? (
+                <p className="dsm-qoder-campaign-row-desc" title={row.description}>{row.description}</p>
               ) : null}
-              {status !== undefined ? (
-                <span className={`dsm-qoder-campaign-row-status dsm-qoder-campaign-row-status-${row.claimStatus?.toLowerCase() ?? 'unknown'}`}>
-                  {status}
-                </span>
-              ) : null}
+              {/* 页脚贴底（`margin-top:auto`）：状态与出口是每条活动的「结论」，
+                  它们必须落在同一条基线上，否则两列的瓦片会像没对齐的表格。 */}
+              <div className="dsm-qoder-campaign-row-foot">
+                {status !== undefined ? (
+                  <span className={`dsm-qoder-campaign-row-status dsm-qoder-campaign-row-status-${row.claimStatus?.toLowerCase() ?? 'unknown'}`}>
+                    {status}
+                  </span>
+                ) : <span />}
+                {row.detailUrl !== undefined ? (
+                  <a className="dsm-qoder-campaign-row-link" href={row.detailUrl} target="_blank" rel="noreferrer">
+                    {t('row.campaignDetails')}
+                  </a>
+                ) : null}
+              </div>
             </div>
-            {row.description !== undefined && row.description !== '' ? (
-              <p className="dsm-qoder-campaign-row-desc">{row.description}</p>
-            ) : null}
-            {row.detailUrl !== undefined ? (
-              <a className="dsm-qoder-campaign-row-link" href={row.detailUrl} target="_blank" rel="noreferrer">
-                {t('row.campaignDetails')}
-              </a>
-            ) : null}
-          </div>
-        )
-      })}
+          )
+        })}
+      </div>
     </div>
   )
 }

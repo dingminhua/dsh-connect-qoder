@@ -318,6 +318,25 @@ describe('usage route', () => {  it('answers 200 with a signed-in document for t
     expect(status()).toBe(405)
   })
 
+  it('carries showCampaigns on the answer, and an absent dep reads as SHOWN', async () => {
+    // 卡片的「显示活动」开关读的是**宿主答案**上的这个字段（不是浏览器镜像）。
+    // 两条都要钉住：
+    //   1. 老宿主没这个 dep 时，字段必须是 `true` —— 活动区在这个开关之前就有，
+    //      缺席读成「隐藏」会让升级变成「活动凭空消失」；
+    //   2. dep 说 false 时原样传下去。
+    const absent = await mountRoutes()
+    const usageAbsent = findHandler(absent, QODER_USAGE_PATH)
+    const first = response()
+    await usageAbsent(request('GET', undefined, `${QODER_USAGE_PATH}?region=cn`), first.res)
+    expect(first.body()).toMatchObject({ showCampaigns: true })
+
+    const off = await mountRoutes(deps({ regionCampaignsShown: () => false }))
+    const usageOff = findHandler(off, QODER_USAGE_PATH)
+    const second = response()
+    await usageOff(request('GET', undefined, `${QODER_USAGE_PATH}?region=cn`), second.res)
+    expect(second.body()).toMatchObject({ showCampaigns: false })
+  })
+
   it('answers 400 for an unknown region', async () => {
     const captured = await mountRoutes()
     const usage = findHandler(captured, QODER_USAGE_PATH)

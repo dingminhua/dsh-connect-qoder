@@ -21,7 +21,7 @@ import { act as actTestUtils } from 'react-dom/test-utils'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AccountPool } from '../src/client/AccountPool.tsx'
-import { QODER_CARD_CSS } from '../src/client/styles.ts'
+import { QODER_CARD_CSS, QODER_COMPOSER_CSS } from '../src/client/styles.ts'
 
 const act: typeof actFromReact = ((React as unknown as { act?: typeof actFromReact }).act
   ?? actTestUtils) as typeof actFromReact
@@ -287,5 +287,45 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     // jsdom 不做布局，只能断言规则本身在。
     expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-save-bar\{[^}]*position:sticky/)
     expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-save-bar\{[^}]*bottom:0/)
+  })
+
+  it('账号行的**默认**布局是两行紧凑排法，宽屏才升级 5 列', () => {
+    // 这条钉的是一个真出过的缺陷：原来写的是「5 列 + @media(max-width:760px) 折成
+    // 2 列」，而本插件现在住在设置面板里 —— 那里面板内容栏**固定 612px**
+    // （800 的对话框 − 188 的导航栏），于是 max-width 分支在设置页里**恒成立**：
+    // 每个账号被折成 264px 宽的两列堆叠，五行内容竖摞成 155px，横向还空着整片。
+    //
+    // 现在反过来：默认窄、`min-width:761px` 才升宽。jsdom 不做布局，所以断言的是
+    // 「哪套规则在媒体查询之外」——那正是决定设置页里长什么样的那一套。
+    // 注意切的是 `@media (` 而不是裸 `@media`：上面那段注释里就写着
+    // 「@media(max-width:760px)」，裸字符串会切在注释中间。
+    const beforeMedia = QODER_CARD_CSS.slice(0, QODER_CARD_CSS.indexOf('@media ('))
+    // 规则体是多行的，所以用 [\s\S] 而不是 [^}]（后者照样能过，但意图不明）。
+    expect(beforeMedia).toMatch(/\.dsm-qoder-pool-row\{[\s\S]*?grid-template-areas:/)
+    // 5 列那套必须在媒体查询**里面**，不能是默认值。
+    const media = QODER_CARD_CSS.slice(QODER_CARD_CSS.indexOf('@media (min-width:761px)'))
+    expect(media).toMatch(/\.dsm-qoder-pool-row\{[\s\S]*?grid-template-columns:minmax\(0,1\.5fr\)/)
+  })
+
+  it('活动区的样式在**卡片**样式表里（它由卡片渲染，不由 composer 渲染）', () => {
+    // 真出过的缺陷：`.dsm-qoder-campaigns*` 那十几条规则一度住在
+    // QODER_COMPOSER_CSS 里，而那份样式表由 composer 积分读数组件注入 ——
+    // 设置页从不渲染那个组件，于是活动区一条规则都没生效：界面上是一列没有
+    // 边框、没有分栏的裸文字。样式必须跟着**渲染它的组件**走。
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-campaigns{')
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-campaigns-grid{')
+    expect(QODER_CARD_CSS).toContain('.dsm-qoder-campaign-row-foot{')
+    expect(QODER_COMPOSER_CSS).not.toContain('.dsm-qoder-campaigns{')
+    expect(QODER_COMPOSER_CSS).not.toContain('.dsm-qoder-campaign-row{')
+  })
+
+  it('活动排成瓦片：用足宽度，不是一行一条压到底', () => {
+    // 每条活动用掉整栏宽度 1/3 不到、右侧整片空白，三条就吃掉近 300px 高度。
+    // 网格 auto-fill + 260px 下限让它在 612px 的正文栏里自然排两列。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-campaigns-grid\{[^}]*grid-template-columns:repeat\(auto-fill,minmax\(260px,1fr\)\)/)
+    // 描述限两行：否则卡片高度随上游文案长短跳动，同排瓦片高低不齐。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-campaign-row-desc\{[^}]*-webkit-line-clamp:2/)
+    // 页脚贴底：状态与出口落在同一条基线上。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-campaign-row-foot\{[^}]*margin-top:auto/)
   })
 })

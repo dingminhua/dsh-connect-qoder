@@ -240,7 +240,7 @@ system 角色发送。
 | 新能力 | 说明 | 对本插件的价值 |
 |---|---|---|
 | `llm/models-updated` 事件 | 「某路由的模型目录/显示元数据变了，消费者重读 `listModels()`」 | **中**：插件目录是动态的（换号、上游刷新、启用/禁用），目前从不通知，选择器可能显示旧列表 |
-| `settings.section.icon` 槽位 | 设置左侧导航可为分区注册图标 | **低-中**：卡片可以挂自己的齿轮图标（此前只能靠样式对齐） |
+| `settings.section.icon` 槽位 | 设置左侧导航可为分区注册图标 | **已采用**（1.18.0）：设置页注册了自己的 LD 品牌标，id 与页面一致（不一致会静默退回默认齿轮） |
 | locale 新增 6 语言 | `de/es/fr/ja/pt/ru` | **低**：不补也合法（英文兜底），补的话落点就是 P0-3 那一处 |
 | `llm-pi-ai/request-headers` waterfall | 推理调用前统一改请求头（**不含**模型发现） | **无**：插件的 loopback shim 自己造头；将来若要区分「推理 vs 发现」再考虑 |
 | `WebResource` 路由 | `webServer.register` 可注册 Fetch 资源 | **无**：插件的 HTTP 路由仍是 handler 形态，类型兼容 |
@@ -257,7 +257,9 @@ system 角色发送。
 - **`dsh-host-webserver`**：`index-inject` 多了 `peer` 参数、新增 `WebResourceRoute`，
   插件既不监听该事件也不注册资源路由，类型兼容。
 - **插件用到的槽位**（`conversation.input.model.label` / `conversation.input.right` /
-  `conversation.composer.dock` / `settings.section` / `plugins.bundle.config`）：契约未变。
+  `conversation.composer.dock` / `settings.section` / `settings.section.icon`）：契约未变。
+  （本文写于 1.18.0 之前，当时配置入口还是 `plugins.bundle.config` /
+  `plugins.row.config` 两个 keyed 槽；1.18.0 起已改为设置页分区，那两个槽不再注册。）
 
 ---
 

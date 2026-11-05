@@ -19,12 +19,16 @@ export const QODER_CONNECT_VERSION: string =
 /**
  * The npm package **name** this build was produced from.
  *
- * Needed at runtime by the browser half: the plugin manager keys its
- * configuration slots by package name — `plugins.bundle.config` uses the bare
- * package name, `plugins.row.config` uses `<package name>#<row id>`. Those keys
- * must match the *installed package*, not a hardcoded legacy alias, or the card
- * renders nothing on the bundle's page (it shows the description and rows but no
- * configuration body).
+ * Needed at runtime by the browser half in two places, both of which address the
+ * bundle by its *installed package name*:
+ *
+ *  - the model-picker label registration and the plugin-market fallback
+ *    (`pluginNavigation.openBundle(<package name>)`);
+ *  - diagnostics lines and copy that name the package.
+ *
+ * The configuration page itself no longer uses it: since 1.18.0 that page is a
+ * `settings.section` addressed by `id` (the Loader entry id), not by the
+ * package-keyed `plugins.bundle.config` / `plugins.row.config` slots.
  *
  * Injected at build time so it cannot drift from `package.json`; the fallback
  * only applies outside a build (the unit tests inject the real value too — see

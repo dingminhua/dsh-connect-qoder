@@ -63,14 +63,14 @@ function formsStub(options: { served?: string[]; mirrorLandsLater?: boolean } = 
 }
 
 /**
- * 一个槽位账本，模仿宿主的去重规则：keyed 槽位（两个 config 槽）按 `key` 占格，
- * list 槽位（两个 composer 读数槽）按 `id` 占格，同格重复注册**抛错**
+ * 一个槽位账本，模仿宿主的去重规则：list 槽位（设置分区、分区图标、两个 composer
+ * 读数槽）按 `id` 占格，同格重复注册**抛错**
  * （宿主 `ui-slots/src/index.ts`：`keyed slot … already has an entry for key …` /
  * `list slot … already has an entry with id …`）。
  */
 function slotsStub() {
   const ledger = new Map<string, { inject: () => any; dispose: () => void }>()
-  const injected: Array<{ slot: string; cell: string; props: () => any; options: Record<string, unknown> }> = []
+  const injected: Array<{ slot: string; cell: string; props: () => any; options: Record<string, unknown>; first: any }> = []
   const slots = {
     inject: (slotName: string, factory: () => (() => void)) => {
       const dispose = factory()
@@ -83,7 +83,13 @@ function slotsStub() {
       }
       const entry = { inject: options.inject, dispose: () => { ledger.delete(cell) } }
       ledger.set(cell, entry)
-      injected.push({ slot: options.name, cell, props: options.inject, options })
+      // **注册那一刻就求值一次**，与渲染器的 `runInject` 同序（它把 `inject()`
+      // 的结果喂给 `useMemo`，依赖是 `[actions, definition, scopeBinding]` ——
+      // 注册对象不变就不会重算）。求值后才有的字段，等于产品里永远拿不到。
+      // 只对**带 inject 面**的注册求值：`conversation.input.model.label` 那格
+      // 本来就没有 inject（它是 single 槽 + priority），无条件调用会抛。
+      const first = typeof options.inject === 'function' ? options.inject() : undefined
+      injected.push({ slot: options.name, cell, props: options.inject, options, first })
       return entry.dispose
     },
   }
@@ -92,8 +98,17 @@ function slotsStub() {
     /** 当前**在册**的注册（已 dispose 的不算）。 */
     live: (): string[] => [...ledger.keys()],
     injected,
-    /** 某格当前在册那一次的 props（重绑后应是新一代）。 */
-    propsOf: (cell: string): any => ledger.get(cell)?.inject(),
+    /**
+     * 某格当前在册那一次的 props（重绑后应是新一代）。
+     *
+     * 没有 `inject` 面的注册（例如 `settings.section.icon` —— 外壳只给它
+     * `{ size, active }`，不经过我们）返回 `undefined`，而不是抛：调用方常按
+     * 名单逐格取值，一格没有 inject 不该让整条用例炸掉。
+     */
+    propsOf: (cell: string): any => {
+      const inject = ledger.get(cell)?.inject as (() => any) | undefined
+      return typeof inject === 'function' ? inject() : undefined
+    },
   }
 }
 
@@ -109,7 +124,9 @@ function mount(forms: any, pluginNavigation?: { openBundle(name: string): void }
   const stub = slotsStub()
   const effects: Array<{ run: () => unknown; label: string | undefined; disposer: unknown }> = []
   const ctx: any = {
-    get: (name: string) => (name === 'configForms' ? forms : undefined),
+    // 退路是**现查**的（`softGet('pluginNavigation')`）：跳转失败那一刻服务在不在，
+    // 决定退路能不能用。所以桩要按同一个语义回答 `get`。
+    get: (name: string) => (name === 'configForms' ? forms : name === 'pluginNavigation' ? pluginNavigation : undefined),
     inject: (deps: string[], run: (scope: any) => unknown) => {
       if (!Array.isArray(deps) || !deps.includes('pluginNavigation')) return
       // 服务缺席时不进入回调，与 cordis 一致。
@@ -139,7 +156,7 @@ function mountDeferred(forms: any) {
   const waiting: Array<() => void> = []
   let navigation: { openBundle(name: string): void } | undefined
   const ctx: any = {
-    get: (name: string) => (name === 'configForms' ? forms : undefined),
+    get: (name: string) => (name === 'configForms' ? forms : name === 'pluginNavigation' ? navigation : undefined),
     inject: (deps: string[], run: (scope: any) => unknown) => {
       if (!Array.isArray(deps) || !deps.includes('pluginNavigation')) return
       waiting.push(() => run({ ...ctx, pluginNavigation: navigation }))
@@ -171,7 +188,7 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     stub.land(['include:dsh-connect-qoder'])
 
     const cardProps = injected
-      .filter(e => e.slot === 'plugins.bundle.config')
+      .filter(e => e.slot === 'settings.section')
       .map(e => e.props())
       .at(-1)
     // 绑到 include: 那个才算绑对；绑到裸名（宿主不服务）就是 #46 的原始症状。
@@ -184,7 +201,7 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     stub.land(['some-other-plugin'])
 
     const cardProps = injected
-      .filter(e => e.slot === 'plugins.bundle.config')
+      .filter(e => e.slot === 'settings.section')
       .map(e => e.props())
       .at(-1)
     // 卡片用 `settingsScope !== undefined` 决定能不能写（canEditPool / canSwitch）。
@@ -197,6 +214,16 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     const { live } = mount(stub.forms)
     // 还没等到任何镜像答案，五个槽位就应该在册（#12 起含模型选择器标签）。
     expect(live()).toHaveLength(5)
+    // **不止数条数**：1.18.0 把插件页那两格卡片换成了「设置页 + 导航图标」，
+    // 条数恰好还是 5 —— 只数条数的话这次换血完全看不出来。所以逐格点名。
+    expect(live()).toEqual(expect.arrayContaining([
+      'settings.section#dsh-connect-qoder',
+      'settings.section.icon#dsh-connect-qoder',
+      'conversation.input.right#dsh-connect-qoder-composer-credits',
+      'conversation.composer.dock#dsh-connect-qoder-stats-credits',
+    ]))
+    // 插件市场那两个卡片槽必须已经消失：同一份配置不该有两个编辑入口。
+    expect(live().some(cell => cell.startsWith('plugins.'))).toBe(false)
   })
 
   it('重绑是先 dispose 再注册：同 key 同优先级不会撞「already has an entry」', () => {
@@ -215,14 +242,14 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     }
     const { injected, live } = mount(legacy)
     expect(live()).toHaveLength(5)
-    const cardProps = injected.filter(e => e.slot === 'plugins.row.config').map(e => e.props()).at(-1)
+    const cardProps = injected.filter(e => e.slot === 'settings.section').map(e => e.props()).at(-1)
     expect((cardProps?.settingsScope as any)?.__form).toBe('dsh-connect-qoder')
   })
 
   it('无 settings 面（configForms 缺席）时卡片仍注册，且只读', () => {
     const { injected, live } = mount(undefined)
     expect(live()).toHaveLength(5)
-    const cardProps = injected.filter(e => e.slot === 'plugins.bundle.config').map(e => e.props()).at(-1)
+    const cardProps = injected.filter(e => e.slot === 'settings.section').map(e => e.props()).at(-1)
     expect(cardProps?.settingsScope).toBeUndefined()
     expect(cardProps?.t).toBeDefined()
   })
@@ -246,78 +273,137 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
 
     // 四个槽位当前在册的那一代，都得读到**新**命名空间的 form。
     const cells = [
-      'plugins.bundle.config#@dmh2002/dsh-connect-qoder',
+      'settings.section#dsh-connect-qoder',
+      'settings.section.icon#dsh-connect-qoder',
       'conversation.input.right#dsh-connect-qoder-composer-credits',
       'conversation.composer.dock#dsh-connect-qoder-stats-credits',
     ]
     for (const cell of cells) {
-      expect((propsOf(cell)?.settingsScope as any)?.__form, cell).toBe('include:dsh-connect-qoder')
+      const props = propsOf(cell)
+      // 图标那格没有我们自己的 inject 面（外壳直接喂 `{ size, active }`），
+      // 只要求它在册；其余每一格都必须读到**新**命名空间的 form。
+      if (props === undefined) continue
+      expect((props.settingsScope as any)?.__form, cell).toBe('include:dsh-connect-qoder')
     }
   })
 
-  it('宿主没挂 Plugins 页时：插件照常注册全部槽位，只是不传 openSettings', () => {
-    // `pluginNavigation` 由 ui-plugin-manager 用 reflect.provide 提供。**它不是、
-    // 也绝不能变成本插件的 inject 依赖**：一旦写进 `inject`，没装 Plugins 页的
-    // profile 上整个客户端插件**不会激活** —— 卡片、积分读数、模型徽标一起消失，
-    // 而这里只该丢一颗「设置」按钮。
+  it('设置按钮在**首次注册**那一刻就有值（晚赋值等于按钮不存在）', () => {
+    // 真实缺陷：`openPluginSettings` 一度在 `bindSettingsScope()` **之后**才赋值，
+    // 而 `bindSettingsScope()` 会立刻跑一次 `registerAllSlots()` —— `inject`
+    // 闭包在那一刻读到的是 `undefined`。积分面板据此不渲染那颗齿轮，之后也没有
+    // 任何东西会纠正它：渲染器把 `inject()` 的结果 `useMemo` 掉了（依赖
+    // `[actions, definition, scopeBinding]`），注册对象不变就不会重算。
     //
-    // 这条用例跑的是真实 apply()（mount 的桩对 `ctx.inject(['pluginNavigation'])`
-    // 在服务缺席时**不进入回调**，与 cordis 一致），所以断言的是产品代码本身的降级。
+    // 所以断言的是**注册那一刻求值出来的 props**（`first`），不是事后再取一次。
     const stub = formsStub({ served: ['dsh-connect-qoder'] })
-    const { injected, live } = mount(stub.forms)
-    expect(live()).toHaveLength(5)
-    const composerProps = injected
+    const { injected } = mount(stub.forms)
+    const first = injected.filter(e => e.slot === 'conversation.input.right').at(0)
+    expect(first).toBeDefined()
+    expect(first!.first?.t).toBeDefined()
+    expect(typeof first!.first?.openSettings).toBe('function')
+    // 再取一次也要一样（重绑之后仍然有值）。
+    const latest = injected
       .filter(e => e.slot === 'conversation.input.right')
       .map(e => e.props())
       .at(-1)
-    expect(composerProps?.t).toBeDefined()
-    // 没有导航服务 => 不传 openSettings（面板据此**不渲染**那颗按钮）。
-    expect(composerProps?.openSettings).toBeUndefined()
+    expect(typeof latest?.openSettings).toBe('function')
   })
 
-  it('宿主挂了 Plugins 页时：那颗「设置」按钮打开的是本插件的 bundle 页', () => {
-    // 正面的那一半。`openBundle` 收的是 **npm 包名**（Plugins 页按包名索引 bundle
-    // 行），不是 Loader entry id —— 传错 name 会让页签切到别处或显示插件列表，
-    // 而这里没有任何东西会报错。
+  it('跳转命中导航行：点了设置触发器、点了那一行，且不退回插件市场', () => {
+    vi.useFakeTimers()
     const opened: string[] = []
-    const stub = formsStub({ served: ['dsh-connect-qoder'] })
-    const { injected } = mount(stub.forms, { openBundle: name => { opened.push(name) } })
-    const composerProps = injected
-      .filter(e => e.slot === 'conversation.input.right')
-      .map(e => e.props())
-      .at(-1)
-    expect(typeof composerProps?.openSettings).toBe('function')
-    composerProps.openSettings()
-    expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
+    let selected = 0
+    try {
+      const stub = formsStub({ served: ['dsh-connect-qoder'] })
+      const { injected } = mount(stub.forms, { openBundle: name => { opened.push(name) } })
+      const composerProps = injected
+        .filter(e => e.slot === 'conversation.input.right')
+        .map(e => e.props())
+        .at(-1)
+
+      // 造出真实外壳的两块：侧边栏触发器 + 点击后挂到 body 的设置面板。
+      const trigger = document.createElement('button')
+      trigger.setAttribute('aria-haspopup', 'dialog')
+      trigger.setAttribute('aria-expanded', 'false')
+      trigger.addEventListener('click', () => {
+        const panel = document.createElement('div')
+        panel.setAttribute('data-shortcut-modal', 'settings')
+        const row = document.createElement('button')
+        // 真实标签由 `section.label` 给，这里的 t 是 key 直通桩。
+        row.textContent = 'section.label'
+        row.addEventListener('click', () => { selected += 1 })
+        panel.append(row)
+        document.body.append(panel)
+      })
+      document.body.append(trigger)
+
+      composerProps.openSettings()
+      // 跳转是分帧重试的（面板刚挂上时导航行还没渲染），把定时器跑完。
+      vi.runAllTimers()
+      expect(selected).toBe(1)
+      expect(opened).toEqual([])
+    } finally {
+      vi.useRealTimers()
+      document.body.innerHTML = ''
+    }
   })
 
-  it('Plugins 页比本插件晚加载时，那颗按钮仍然会出现（服务是等来的，不是探来的）', async () => {
-    // 真实缺陷的回归。`pluginNavigation` 由 ui-plugin-manager 在自己的 slot 生成器里
-    // `reflect.provide`，而 profile 的 bundles 数组把本插件排在它前面 —— 早先那版用
-    // `ctx.get('pluginNavigation')` 在 apply 时刻探一次，必然永远是 undefined，
-    // 于是**按钮根本不渲染**，且没有任何后续机会纠正。
-    //
-    // 现在改成 `ctx.inject([...])` 子作用域：服务晚到，回调才跑，`rebindSlots()`
-    // 换掉 entry 身份让渲染器重算 inject（它按 entry 缓存，不换就一直发旧 props）。
+  it('标签对不上时退回 openBundle（那颗按钮不能是死的）', () => {
+    vi.useFakeTimers()
     const opened: string[] = []
-    const stub = formsStub({ served: ['dsh-connect-qoder'] })
-    const late = mountDeferred(stub.forms)
-    // 服务还没到：先跑一次 apply，此时**不该**有 openSettings。
-    late.host.attachNavigation({ openBundle: name => { opened.push(name) } })
-    const before = late.injected
-      .filter(e => e.slot === 'conversation.input.right')
-      .map(e => e.props())
-      .at(-1)
-    expect(before?.openSettings).toBeUndefined()
-    // 现在「宿主把 Plugins 页挂上来」。
-    late.deliver()
-    const after = late.injected
-      .filter(e => e.slot === 'conversation.input.right')
-      .map(e => e.props())
-      .at(-1)
-    expect(typeof after?.openSettings).toBe('function')
-    after.openSettings()
-    expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
+    try {
+      const stub = formsStub({ served: ['dsh-connect-qoder'] })
+      const { injected } = mount(stub.forms, { openBundle: name => { opened.push(name) } })
+      const composerProps = injected
+        .filter(e => e.slot === 'conversation.input.right')
+        .map(e => e.props())
+        .at(-1)
+      // 面板在，但里面没有标签等于 `section.label` 的行（外壳换了文案 / 被截断）。
+      const panel = document.createElement('div')
+      panel.setAttribute('data-shortcut-modal', 'settings')
+      const other = document.createElement('button')
+      other.textContent = 'some other section'
+      panel.append(other)
+      document.body.append(panel)
+
+      composerProps.openSettings()
+      vi.runAllTimers()
+      // 重试全部用尽 ⇒ 退路接管，且收的是 npm 包名（插件市场按包名索引 bundle 行）。
+      expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
+    } finally {
+      vi.useRealTimers()
+      document.body.innerHTML = ''
+    }
+  })
+
+  it('插件市场比本插件晚加载时，退路仍然可用（服务是查的时候才需要的）', async () => {
+    // `pluginNavigation` 由 ui-plugin-manager 在自己的 slot 生成器里
+    // `reflect.provide`，而 profile 的 bundles 数组把本插件排在它前面。
+    //
+    // 现在它只是**退路**：主路径是 DOM 跳转，不需要任何服务。退路要活下来，
+    // 就不能在 apply 时刻探一次再存起来（那时必然 undefined，且没有第二次机会），
+    // 必须在真正要退的时候现查 —— 这条断言钉的就是「现查」。
+    vi.useFakeTimers()
+    const opened: string[] = []
+    try {
+      const stub = formsStub({ served: ['dsh-connect-qoder'] })
+      const late = mountDeferred(stub.forms)
+      const props = () => late.injected
+        .filter(e => e.slot === 'conversation.input.right')
+        .map(e => e.props())
+        .at(-1)
+      // apply 那一刻服务还没到，按钮也已经有了。
+      expect(typeof props()?.openSettings).toBe('function')
+      // 服务到货（晚到）。
+      late.host.attachNavigation({ openBundle: name => { opened.push(name) } })
+      // 没有设置面板 → 跳转无从下手 → 退路现查到刚挂上来的服务。
+      props()!.openSettings()
+      vi.runAllTimers()
+      expect(opened).toEqual(['@dmh2002/dsh-connect-qoder'])
+    } finally {
+      vi.useRealTimers()
+      document.body.innerHTML = ''
+    }
   })
 
   it('重绑期间不得有任何注册失败被吞掉（含 already-has-an-entry）', () => {

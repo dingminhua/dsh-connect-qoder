@@ -1208,6 +1208,15 @@ export type QoderWebUsage =
      * the old value.
      */
     showCreditsInMainUi?: boolean
+    /**
+     * Whether this region's campaign feed (活动) is shown.
+     *
+     * Opt-out like the credits switch, and carried on the Host's answer for the
+     * same measured reason: the browser settings mirror never picked up writes
+     * made through the Host save endpoint on affected 0.1.7 deployments, so a
+     * control reading it kept showing the old value.
+     */
+    showCampaigns?: boolean
     /** WHERE this region's readout sits; absent means `composer`. */
     creditPosition?: QoderCreditPosition
     /**
@@ -1249,6 +1258,8 @@ export type QoderWebUsage =
     enabled?: boolean
     /** See the signed-out variant. */
     showCreditsInMainUi?: boolean
+    /** See the signed-out variant: whether the campaign feed is shown. */
+    showCampaigns?: boolean
     /** See the signed-out variant: WHERE this region's readout sits. */
     creditPosition?: QoderCreditPosition
     /**
@@ -1524,6 +1535,17 @@ export function regionCreditsShownOf(value: unknown, region: QoderWebRegion): bo
 }
 
 /**
+ * Whether one region's campaign feed is shown. Opt-out: only an explicit
+ * `false` hides it.
+ *
+ * Same judgement as {@link regionCreditsShownOf} — a content switch, not a
+ * claim on a shared seat, so "never written" reads as ON.
+ */
+export function regionCampaignsShownOf(value: unknown, region: QoderWebRegion): boolean {
+  return regionSlotOf(value, region)['showCampaigns'] !== false
+}
+
+/**
  * 侧边栏面板这一行的**顶层**设置字段名（不在 `regions.<region>.` 下）。
  *
  * 参考：dsh-connect-workbuddy 的 `Config.sidebarPanel`（PR #188，MIT,
@@ -1577,6 +1599,18 @@ export function nextRegionCreditsShown(
   return nextRegionSlots(regionsMapOf(value), region, {
     ...regionSlotOf(value, region),
     showCreditsInMainUi: shown,
+  })
+}
+
+/** Build the next `regions` settings value for the campaign on/off toggle. */
+export function nextRegionCampaignsShown(
+  value: unknown,
+  region: QoderWebRegion,
+  shown: boolean,
+): Record<string, unknown> {
+  return nextRegionSlots(regionsMapOf(value), region, {
+    ...regionSlotOf(value, region),
+    showCampaigns: shown,
   })
 }
 

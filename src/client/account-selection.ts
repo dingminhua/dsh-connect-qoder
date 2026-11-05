@@ -282,6 +282,27 @@ export async function writeRegionCreditsShown(
 }
 
 /**
+ * Write one region's campaign-feed switch, with the same landed-check.
+ *
+ * Same shape as {@link writeRegionCreditsShown}: both are per-region content
+ * switches written as a whole region slot, so a sibling region is never
+ * dropped. The landed-check matters for the measured reason that switch
+ * documents: the settings mirror can silently drop a write, and a checkbox that
+ * keeps showing the old value is worse than one that reports failure.
+ */
+export async function writeRegionCampaignsShown(
+  scope: QoderAccountScope,
+  region: QoderWebRegion,
+  shown: boolean,
+  slot: Record<string, unknown>,
+): Promise<void> {
+  await writeField(scope, 'regions', region, slot, readBack => {
+    const stored = readBack as Record<string, unknown> | null | undefined
+    return stored !== null && stored !== undefined && stored['showCampaigns'] === shown
+  })
+}
+
+/**
  * Write one region's credit-readout SEAT, with the same landed-check.
  *
  * The read-back check matters for the same measured reason it does for the

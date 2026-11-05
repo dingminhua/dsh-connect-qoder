@@ -163,6 +163,30 @@ describe('页头「刷新」控件的文案', () => {
     expect(zh['composer.refreshHint']).toMatch(/积分/)
   })
 
+  it('每一条文案都是**纯文本**：不夹 markdown 记号（它们会原样显示成星号）', () => {
+    // 真出过的缺陷：「显示活动」那行的提示写作「……**只读**，签到仍在账号池里
+    // 操作……」，而这里的所有文案都是**插值进纯文本节点**的 —— 界面上于是出现
+    // 两个星号。`t()` 不做 markdown 渲染，`**` 就该当成拼写错误。
+    //
+    // 只查 `**`／反引号：`{var}` 插值、方括号、破折号都是正常的。
+    for (const [language, dictionary] of Object.entries({ en, zh })) {
+      for (const [key, value] of Object.entries(dictionary)) {
+        expect(value, `${language} ${key}`).not.toContain('**')
+        expect(value, `${language} ${key}`).not.toContain('`')
+      }
+    }
+  })
+
+  it('「显示活动」两侧都说清了它管什么、以及关掉之后发生什么', () => {
+    // 开关的文案要回答两件事：这块是什么（上游活动），关掉之后这一页长什么样。
+    // 只说「显示活动」而不说关掉的后果，读者会担心关掉是不是把签到也关了。
+    expect(zh['row.showCampaigns']).toContain('活动')
+    expect(zh['row.showCampaignsHint']).toContain('签到')
+    expect(zh['row.showCampaignsHint']).toContain('tab')
+    expect(en['row.showCampaignsHint']).toMatch(/check-in/i)
+    expect(en['row.showCampaignsHint']).toMatch(/account pool/i)
+  })
+
   it('账号状态刷新失败与积分刷新失败是**两条**不同的消息', () => {
     // 两行都写「刷新失败」会让读者分不清是哪一次刷新坏了 —— 积分读取失败与
     // 账号状态重测是两件事，共用一个 key 就等于把其中一条永久藏起来。

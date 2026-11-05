@@ -53,7 +53,7 @@ import { accountDotTone, accountStateColor } from './account-state.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
 import { inlineProbeReason } from './probe-reason.ts'
-import { probeLabelOf, formatProbeMoment, formatExpiryMoment } from './probe-label.ts'
+import { probeLabelOf, formatExpiryMoment } from './probe-label.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
 import { remainingText, countdownText } from './remaining.ts'
@@ -1018,79 +1018,92 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                   {/* 状态点：排除=红/琥珀、未测=灰、测过=绿/琥珀（workbuddy 同规）。 */}
                   <span className="dsm-qoder-usage-dot" style={{ background: stateColor(account) }} />
                   <span className="dsm-qoder-pool-account-name">
-                    <b>{name}</b>
-                    {/* 优先级名次。用户拖过就以「第 N 位」呈现真实生效顺序；
-                        没拖过则明说「自动排序」，绝不伪造一个名次——否则用户
-                        会以为顺序已由自己掌控，而其实每次选中都在变。
-                        名次只对成员有意义（非成员不参与排名）。 */}
-                    {!inPool ? null : (
-                      <span
-                        className={orderIsManual ? 'dsm-qoder-pool-rank' : 'dsm-qoder-pool-rank-auto'}
-                        title={t(
-                          !orderIsManual ? 'row.poolRankAutoHint'
-                            // 被排除的号仍有编好的名次，但这一轮轮不到它 —— 说出来，
-                            // 否则「第 1 位」配着「✗ 用量已达上限」又是一处自相矛盾。
-                            : account.excludedBy === undefined ? 'row.poolRankHint' : 'row.poolRankExcludedHint',
-                        )}
-                      >
-                        {!orderIsManual
-                          ? t('row.poolRankAuto')
-                          // 出池的号显示「第 N 位 · 暂不参与」，而不是把一个用不了的
-                          // 号报成当前优先。
-                          : account.excludedBy === undefined
-                            ? t('row.poolRank', { rank: String(orderIds.indexOf(account.accountId) + 1) })
-                            : t('row.poolRankExcluded', { rank: String(orderIds.indexOf(account.accountId) + 1) })}
-                      </span>
-                    )}
-                    {/* 上移/下移。只对成员、只在池开着时出现：池关着就没有
-                        「先发谁」这回事，给按钮等于给一个不起作用的控件。
-                        首尾各自**禁用**而不是隐藏 —— 隐藏会让按钮在行与行之间
-                        跳位，点起来要看两次。放在名次旁边而不是行尾操作区：
-                        它改的是「名次」这一列说的事，和测试/删除不是一类动作。 */}
-                    {pool?.enabled === true && inPool && canEditPool ? (
-                      <span className="dsm-qoder-pool-move" role="group" aria-label={t('row.poolMoveAria', { accountName: name })}>
-                        <button
-                          type="button"
-                          className="dsm-qoder-pool-move-btn"
-                          title={t('row.poolMoveUp')}
-                          aria-label={t('row.poolMoveUp')}
-                          disabled={orderIds.indexOf(account.accountId) <= 0}
-                          onClick={() => { moveMember(account.accountId, -1) }}
-                        >↑</button>
-                        <button
-                          type="button"
-                          className="dsm-qoder-pool-move-btn"
-                          title={t('row.poolMoveDown')}
-                          aria-label={t('row.poolMoveDown')}
-                          disabled={orderIds.indexOf(account.accountId) >= orderIds.length - 1}
-                          onClick={() => { moveMember(account.accountId, 1) }}
-                        >↓</button>
-                      </span>
-                    ) : null}
-                    {/* 谁正在计费，用文字说出来：行底色只有 7% 透明度，
-                        「到底哪一行」不能只靠颜色回答。
-                        接管态（servingSource==='failover'：池开着且选中号被排除）
-                        时徽章文字改说「接管中」——请求先打给选中号，被拒后才由
-                        这个号接管计费。否则「当前使用」与选中行的「用量已达
-                        上限」会读起来自相矛盾（用户实拍）。 */}
-                    {account.current
-                      ? <span
-                          className="dsm-qoder-pool-current-tag"
-                          title={t(pool?.servingSource === 'failover' ? 'row.poolCurrentHintFailover' : 'row.poolCurrentHintSelected')}
+                    {/* 第一行只有名字与身份：名次、当前使用、上下移都在**名字右侧的
+                        同一行**。此前它们各自占一行（名次一行、箭头一行、徽章一行、
+                        测试于一行），第一列因此堆到 5 行 —— 而行里其余四列
+                        （积分 / 状态 / 签到 / 操作）都是单行，整行高度被这一列
+                        撑到 90px 以上，横向还留出大片空白。 */}
+                    <span className="dsm-qoder-pool-account-line">
+                      <b>{name}</b>
+                      {/* 优先级名次。用户拖过就以「第 N 位」呈现真实生效顺序；
+                          没拖过则明说「自动排序」，绝不伪造一个名次——否则用户
+                          会以为顺序已由自己掌控，而其实每次选中都在变。
+                          名次只对成员有意义（非成员不参与排名）。 */}
+                      {!inPool ? null : (
+                        <span
+                          className={orderIsManual ? 'dsm-qoder-pool-rank' : 'dsm-qoder-pool-rank-auto'}
+                          title={t(
+                            !orderIsManual ? 'row.poolRankAutoHint'
+                              // 被排除的号仍有编好的名次，但这一轮轮不到它 —— 说出来，
+                              // 否则「第 1 位」配着「✗ 用量已达上限」又是一处自相矛盾。
+                              : account.excludedBy === undefined ? 'row.poolRankHint' : 'row.poolRankExcludedHint',
+                          )}
                         >
-                          {t(pool?.servingSource === 'failover' ? 'row.poolCurrentBadgeFailover' : 'row.poolCurrentBadge')}
+                          {!orderIsManual
+                            ? t('row.poolRankAuto')
+                            // 出池的号显示「第 N 位 · 暂不参与」，而不是把一个用不了的
+                            // 号报成当前优先。
+                            : account.excludedBy === undefined
+                              ? t('row.poolRank', { rank: String(orderIds.indexOf(account.accountId) + 1) })
+                              : t('row.poolRankExcluded', { rank: String(orderIds.indexOf(account.accountId) + 1) })}
                         </span>
-                      : null}
-                    {/* 成员资格只给**不在池里**的行写一句话（workbuddy 同构）：
-                        勾选框已勾上、行底色也已标出的行，再写一次「已在池中」
-                        是同一件事说第三遍，还让每个成员多占一行字。
-                        缺席的那一半才需要文字：空复选框配着空的积分/探针列，
-                        否则与「勾了但还没数据」分不开。 */}
-                    {inPool
-                      ? null
-                      : <span className="dsm-qoder-pool-not-member">{t('row.poolNotMember')}</span>}
+                      )}
+                      {/* 谁正在计费，用文字说出来：行底色只有 7% 透明度，
+                          「到底哪一行」不能只靠颜色回答。
+                          接管态（servingSource==='failover'：池开着且选中号被排除）
+                          时徽章文字改说「接管中」——请求先打给选中号，被拒后才由
+                          这个号接管计费。否则「当前使用」与选中行的「用量已达
+                          上限」会读起来自相矛盾（用户实拍）。 */}
+                      {account.current
+                        ? <span
+                            className="dsm-qoder-pool-current-tag"
+                            title={t(pool?.servingSource === 'failover' ? 'row.poolCurrentHintFailover' : 'row.poolCurrentHintSelected')}
+                          >
+                            {t(pool?.servingSource === 'failover' ? 'row.poolCurrentBadgeFailover' : 'row.poolCurrentBadge')}
+                          </span>
+                        : null}
+                      {/* 成员资格只给**不在池里**的行写一句话（workbuddy 同构）：
+                          勾选框已勾上、行底色也已标出的行，再写一次「已在池中」
+                          是同一件事说第三遍。 */}
+                      {inPool
+                        ? null
+                        : <span className="dsm-qoder-pool-not-member">{t('row.poolNotMember')}</span>}
+                      {/* 上移/下移。只对成员、只在池开着时出现：池关着就没有
+                          「先发谁」这回事，给按钮等于给一个不起作用的控件。
+                          首尾各自**禁用**而不是隐藏 —— 隐藏会让按钮在行与行之间
+                          跳位，点起来要看两次。放在名字这一行而不是行尾操作区：
+                          它改的是「名次」这一件事，和测试/删除不是一类动作。
+                          `margin-left:auto` 把它推到本行右端：它是行内唯一的
+                          成对控件，贴着名字会让人以为它只作用于名字。 */}
+                      {pool?.enabled === true && inPool && canEditPool ? (
+                        <span className="dsm-qoder-pool-move" role="group" aria-label={t('row.poolMoveAria', { accountName: name })}>
+                          <button
+                            type="button"
+                            className="dsm-qoder-pool-move-btn"
+                            title={t('row.poolMoveUp')}
+                            aria-label={t('row.poolMoveUp')}
+                            disabled={orderIds.indexOf(account.accountId) <= 0}
+                            onClick={() => { moveMember(account.accountId, -1) }}
+                          >↑</button>
+                          <button
+                            type="button"
+                            className="dsm-qoder-pool-move-btn"
+                            title={t('row.poolMoveDown')}
+                            aria-label={t('row.poolMoveDown')}
+                            disabled={orderIds.indexOf(account.accountId) >= orderIds.length - 1}
+                            onClick={() => { moveMember(account.accountId, 1) }}
+                          >↓</button>
+                        </span>
+                      ) : null}
+                    </span>
+                    {/* 第二行只回答一个问题：**这个号为什么现在不能用**。
+                        没有话说时这一行不渲染（不占高度）。
+
+                        「测试于 HH:MM」这一句已删：状态列里本来就写着「测得 · 1 分钟前」，
+                        同一件事在一行里出现两遍，换来的是每个账号多一行 17px。绝对时刻
+                        仍然查得到——每行的测试结果带完整时间戳（悬停可见）。 */}
                     {excluded === undefined
-                      ? account.probe === undefined ? null : <span>{t('row.poolTestedAt', { at: formatProbeMoment(account.probe.atMs) })}</span>
+                      ? null
                       : <span className="dsm-qoder-pool-excluded">{excluded}</span>}
                   </span>
                 </span>

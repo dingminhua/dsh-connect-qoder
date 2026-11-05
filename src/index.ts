@@ -275,6 +275,19 @@ const regionConfig = z.object({
   /** 是否在主界面展示积分（composer 面板）；opt-out。 */
   showCreditsInMainUi: z.boolean().default(true),
   /**
+   * 是否展示本区域的活动区（上游 campaigns）；**opt-out**。
+   *
+   * 与上面的积分开关同为区域级偏好，理由也一样：这一块是**读上游**得来的
+   * 附加内容，既不是配置也不影响请求。默认开着 —— 签到额度与限时活动本来就是
+   * 用户会来这一页看的东西；但它是每区域独立的，因为两只上游下发的活动本来就
+   * 不同（国际版签到需要设备风控组件，取不到时那一侧会如实报错）。
+   *
+   * 判据是 `!== false` 而不是 `=== true`：这是**内容开关**，不是「占用共享座位」
+   * 那种必须显式授予的东西（对比 `sidebarPanel`）。没写过 = 保持原样，
+   * 升级不能让一页本来有活动的人突然看不见。
+   */
+  showCampaigns: z.boolean().default(true),
+  /**
    * 积分读数放在哪个席位。
    *
    * 两个席位，因为第一个不总是可用：
@@ -495,9 +508,21 @@ export function queueWaitMsOf(
   return DEFAULT_QUEUE_WAIT_MS
 }
 
-/** 某区域是否在主界面显示积分（opt-out）。 */function regionCreditsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+/** 某区域是否在主界面显示积分（opt-out）。 */
+function regionCreditsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
   const state = regionStateOf(config, region)
   return state.showCreditsInMainUi !== false
+}
+
+/**
+ * 某区域是否展示活动区（opt-out）。
+ *
+ * 与 {@link regionCreditsShown} 同一条判据、同一种本地读取：这样在设置存在之前
+ * 写下的配置读出来是「显示」—— 活动区当时就在，升级不该让它消失。
+ */
+function regionCampaignsShown(config: { regions?: Record<string, unknown> | null }, region: QoderRegion): boolean {
+  const state = regionStateOf(config, region)
+  return state.showCampaigns !== false
 }
 
 /**
@@ -2091,6 +2116,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     registerQoderWebRoutes(ctxWithWeb, {
       regionEnabled: region => regionEnabled(config, region),
       regionCreditsShown: region => regionCreditsShown(config, region),
+      regionCampaignsShown: region => regionCampaignsShown(config, region),
       creditPosition: region => creditPosition(config, region),
       // GLOBAL，所以不带区域参数。`=== true`（见 `sidebarPanelEnabledOf`），
       // 不是 `!== false`：这一行占的是所有 bundle 共用的侧边栏座位，缺席必须

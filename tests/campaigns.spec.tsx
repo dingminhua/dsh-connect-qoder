@@ -242,4 +242,120 @@ describe('活动区', () => {
     await act(async () => { root.unmount() })
     container.remove()
   })
+
+  it('usage 报 showCampaigns: false 时整块活动区不渲染', async () => {
+    // 开关的判据是**宿主答案**上的 `showCampaigns`（不是浏览器镜像 —— 那个镜像
+    // 在受影响部署上收不到写入）。关掉之后这一块必须真的消失，而不是只变灰：
+    // 它只读、没有任何操作价值，留着占位只是噪音。
+    setUiLanguage('zh-CN')
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      urls.push(url)
+      if (url.includes('/usage')) {
+        return { ok: true, status: 200, json: async () => ({
+          status: 'signed-in', region: 'cn', enabled: true,
+          showCreditsInMainUi: true, showCampaigns: false,
+          accounts: [{ id: 'a1', accountName: 'A1', source: 'settings', selected: true }],
+          models: [], enabledModelKeys: [], offModelKeys: [], imageModelKeys: [],
+        }) } as Response
+      }
+      if (url.includes('/campaigns')) return { ok: true, status: 200, json: async () => feed() } as Response
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => { root.render(React.createElement(QoderCard, { t: zhT(), view: 'page' })) })
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+    expect(container.querySelector('.dsm-qoder-campaigns')).toBeNull()
+    // **首屏那一次请求是允许的**，而且是刻意的：宿主文档还没到之前，`usage` 是
+    // `undefined`，与卡片其余读数同一条读法 —— 未知读成「显示」（内容开关不是
+    // 共享座位，缺席不等于拒绝）。等文档落地才知道该不该有，此时已经不该再发。
+    // 断言的是「不会持续去打上游」：一次首屏读可以接受，轮询式重复不行。
+    expect(urls.filter(u => u.includes('/campaigns')).length).toBeLessThanOrEqual(1)
+    await act(async () => { root.unmount() })
+    container.remove()
+  })
+
+  it('开关写在设置页的偏好区，勾选即写、目标是宿主保存端点', async () => {
+    // 开关本身要真的能把值写进去，否则它只是一枚装饰。断言两件事：
+    //   1. 勾选框挂在 `.dsm-qoder-campaigns-check`（与积分那枚 `dsm-qoder-pref-check`
+    //      分开，否则定位那条既有用例会变二义）；
+    //   2. 点一下会把 `showCampaigns` 写进**宿主保存端点**，且不吞掉兄弟字段。
+    setUiLanguage('zh-CN')
+    const saves: Record<string, unknown>[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/usage')) {
+        return { ok: true, status: 200, json: async () => ({
+          status: 'signed-in', region: 'cn', enabled: true,
+          showCreditsInMainUi: true, showCampaigns: true,
+          accounts: [{ id: 'a1', accountName: 'A1', source: 'settings', selected: true }],
+          models: [], enabledModelKeys: [], offModelKeys: [], imageModelKeys: [],
+        }) } as Response
+      }
+      if (url.includes('/campaigns')) return { ok: true, status: 200, json: async () => feed() } as Response
+      if (url.includes('__save') || url.includes('/settings')) {
+        saves.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>)
+        return { ok: true, status: 200, json: async () => ({}) } as Response
+      }
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const wrote = { cn: { accountId: 'a1', showCreditsInMainUi: true } }
+    const settingsScope: any = {
+      getSnapshot: () => ({ status: 'ready', value: { regions: wrote }, writable: true }),
+      subscribe: () => () => {},
+      set: async () => true,
+    }
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    try {
+      await act(async () => { root.render(React.createElement(QoderCard, { t: zhT(), view: 'page', settingsScope })) })
+      for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+      const box = container.querySelector<HTMLInputElement>('input.dsm-qoder-campaigns-check')
+      expect(box).not.toBeNull()
+      expect(box!.checked).toBe(true)
+      await act(async () => { box!.click() })
+      await act(async () => { await Promise.resolve() })
+      const writes = saves
+        .filter(entry => (entry as { field?: unknown }).field === 'regions')
+        .map(entry => (entry as { value?: Record<string, unknown> }).value)
+        .filter((value): value is Record<string, unknown> => value !== undefined)
+      expect(writes.length).toBeGreaterThan(0)
+      const cn = writes[0]!.cn as Record<string, unknown>
+      expect(cn.showCampaigns).toBe(false)
+      // 兄弟字段没被这次写入吃掉。
+      expect(cn.accountId).toBe('a1')
+      expect(cn.showCreditsInMainUi).toBe(true)
+    } finally {
+      await act(async () => { root.unmount() })
+      container.remove()
+    }
+  })
+
+  it('usage 缺席 showCampaigns（旧宿主）时照常显示 —— 缺席读成「显示」', async () => {
+    setUiLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/usage')) {
+        return { ok: true, status: 200, json: async () => ({
+          status: 'signed-in', region: 'cn', enabled: true, showCreditsInMainUi: true,
+          accounts: [{ id: 'a1', accountName: 'A1', source: 'settings', selected: true }],
+          models: [], enabledModelKeys: [], offModelKeys: [], imageModelKeys: [],
+        }) } as Response
+      }
+      if (url.includes('/campaigns')) return { ok: true, status: 200, json: async () => feed() } as Response
+      return { ok: false, status: 404, json: async () => ({}) } as Response
+    }))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => { root.render(React.createElement(QoderCard, { t: zhT(), view: 'page' })) })
+    for (let i = 0; i < 3; i += 1) await act(async () => { await new Promise(resolve => setTimeout(resolve, 5)) })
+    expect(container.querySelector('.dsm-qoder-campaigns')).not.toBeNull()
+    await act(async () => { root.unmount() })
+    container.remove()
+  })
 })

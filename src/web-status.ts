@@ -232,6 +232,13 @@ export interface QoderWebRouteDeps {
   regionEnabled(region: QoderRegion): boolean
   regionCreditsShown(region: QoderRegion): boolean
   /**
+   * Whether this region's campaign feed (活动) is shown.
+   *
+   * Optional and absent reads as SHOWN — the feed existed before this switch,
+   * so a Host that predates it must render exactly as before.
+   */
+  regionCampaignsShown?(region: QoderRegion): boolean
+  /**
    * WHERE this region's credit readout sits.
    *
    * Optional, and absent reads as `composer` —— 该设置存在之前唯一的席位，
@@ -938,6 +945,8 @@ export async function buildWebUsage(
       accounts: accounts.map(webAccountOf(deps, region)),
       enabled: deps.regionEnabled(region),
       showCreditsInMainUi: deps.regionCreditsShown(region),
+      // 缺席读成「显示」：这块内容早在这个开关之前就有。
+      showCampaigns: deps.regionCampaignsShown?.(region) ?? true,
       creditPosition: deps.creditPosition?.(region) ?? 'composer',
       ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
       // GLOBAL（不带区域参数）：侧边栏只有一行、一个整页。`=== true` 见
@@ -1018,6 +1027,7 @@ export async function buildWebUsage(
     region,
     enabled: deps.regionEnabled(region),
     showCreditsInMainUi: deps.regionCreditsShown(region),
+    showCampaigns: deps.regionCampaignsShown?.(region) ?? true,
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
     ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
     ...deps.sidebarPanelEnabled?.() === true ? { sidebarPanelEnabled: true } : {},

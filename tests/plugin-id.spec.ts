@@ -20,7 +20,6 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 import configs, { PLUGIN_ID } from '../tsdown.config.ts'
-import { qoderCardSlotKeys, QODER_CARD_SLOT_KEYS } from '../src/client/slot-keys.ts'
 import { QODER_PACKAGE_NAME } from '../src/version.ts'
 import { QODER_SETTINGS_NS } from '../src/status-paths.ts'
 
@@ -75,53 +74,65 @@ describe('client bundle module id', () => {
 })
 
 /**
- * 配置槽位的 key 也是**按包名**建的 —— 同一个身份漂移陷阱的第二处。
+ * 配置入口的身份：1.18.0 起是**设置页分区**，按 `id` 索引，与包名无关。
  *
- * 插件管理页的槽位约定（DSH 文档原文）：
- *   - `plugins.bundle.config`  → `<package name>`
- *   - `plugins.row.config`     → `<package name>#<row id>`
+ * 这条替代了此前那组「`plugins.bundle.config` / `plugins.row.config` 必须按
+ * 包名建键」的用例。那套键确实脆弱——改包名时失配过一次，插件显示「运行中」、
+ * 描述与组件行都在，但配置正文什么都不渲染，且没有任何报错——所以 1.18.0 把入口
+ * 搬进了设置面板：`settings.section` 的键是 `id`（Loader 的 entry id），而
+ * `order` / `label` / `locale` 都是注册项自己的字段。包名不再参与这个寻址。
  *
- * 这两处此前**硬编码**成旧的 unscoped 名，于是改包名之后插件仍然显示「运行中」、
- * 描述与组件行都在，但**配置卡片正文什么都不渲染**（用户看到「功能菜单都没了」）。
- * 因为 key 对不上，槽位注册静默失配，没有任何报错。
+ * 现在要钉的是另外两件事：
+ *
+ *  1. **id 必须是那个不带作用域的 entry id**。它同时是设置命名空间
+ *     （`settingsNamespaceOf`）与 `/plugins/<id>/…` 路由前缀；换成包名会让老用户
+ *     的已保存配置成为孤儿。
+ *  2. **导航图标必须用同一个 id**。外壳取图标是
+ *     `renderSlot('settings.section.icon', …, { only: row.id })`，id 对不上就
+ *     静默回落到默认齿轮，页面上看不出任何错误。
  */
-describe('configuration slot keys', () => {
-  it('keys the bundle and row slots by the package name', () => {
-    expect(qoderCardSlotKeys('@acme/dsh-sidebar', 'sidebar')).toEqual({
-      bundle: '@acme/dsh-sidebar',
-      row: '@acme/dsh-sidebar#sidebar',
-    })
-  })
-
-  it('uses the real installed package name as the bundle key', () => {
-    expect(QODER_CARD_SLOT_KEYS.bundle).toBe(PACKAGE.name)
+describe('settings section identity', () => {
+  it('the section id is the unscoped Loader entry id, not the package name', () => {
+    expect(QODER_SETTINGS_NS).toBe('dsh-connect-qoder')
+    expect(QODER_SETTINGS_NS).not.toBe(PACKAGE.name)
   })
 
   it('the build-injected runtime package name equals package.json name', () => {
     // 浏览器半侧运行时读的就是这个常量；它由构建期 define 注入（vitest 里由
-    // vitest.config.ts 镜像注入），所以不可能与包名漂移。
+    // vitest.config.ts 镜像注入），所以不可能与包名漂移。model label 与插件市场
+    // 退路都按它寻址。
     expect(QODER_PACKAGE_NAME).toBe(PACKAGE.name)
   })
 
-  it('uses `<package name>#<entry id>` as the row key', () => {
-    // 行 id 是 Host 的 Loader entry id —— 也就是设置命名空间所依据的那个值，
-    // 故意保持不带 scope（见 cordis.patch.yml）。
-    expect(QODER_CARD_SLOT_KEYS.row).toBe(`${PACKAGE.name}#${QODER_SETTINGS_NS}`)
+  it('the client registers the section and its icon under the SAME id', () => {
+    // 源码层守卫：两处 `id:` 必须都是 QODER_SETTINGS_NS。写成两个不同的字面量
+    // 时，页面能渲染、图标却静默回落到默认齿轮 —— 2.1.17 那次就是这么丢的。
+    const source = readFileSync(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
+    expect(source).toContain("name: 'settings.section'")
+    expect(source).toContain("name: 'settings.section.icon'")
+    const ids = [...source.matchAll(/name: 'settings\.section(?:\.icon)?',\s*\n\s*id: ([^,]+),/g)]
+      .map(match => (match[1] ?? '').trim())
+    expect(ids).toHaveLength(2)
+    expect(ids[0]).toBe(ids[1])
+    expect(ids[0]).toBe('QODER_SETTINGS_NS')
   })
 
-  it('REGRESSION: the old hardcoded unscoped keys would not match the page', () => {
-    // 旧写法（改包名后失配，卡片正文消失）。
-    expect(QODER_CARD_SLOT_KEYS.bundle).not.toBe('dsh-connect-qoder')
-    expect(QODER_CARD_SLOT_KEYS.row).not.toBe('dsh-connect-qoder#dsh-connect-qoder')
+  it('does not fall back to a capability probe (a false probe is silent death)', () => {
+    // 兄弟项目 2.1.16/2.1.17 的教训：`typeof ctx.slots.specOf === 'function'` 这类
+    // 探测恒为 false（那个访问器不在 `ctx.slots` 上），整段注册被跳过，界面上没有
+    // 任何痕迹也不报错。`slots.inject()` 本身就是探测 —— 宿主没声明槽位时它只等待。
+    const source = readFileSync(new URL('../src/client/index.tsx', import.meta.url), 'utf8')
+    // 注释里会提到那条教训（`typeof ctx.slots.specOf === 'function'`），所以断言
+    // 的是「没有任何地方真的去调用它」。
+    expect(source).not.toMatch(/slots\.specOf\s*\(/)
   })
 
-  it.skipIf(!HAS_BUILT_CLIENT)('the built bundle registers under those keys (guards against a stale lib/)', () => {
+  it.skipIf(!HAS_BUILT_CLIENT)('the built bundle carries the section registration (guards against a stale lib/)', () => {
     const built = builtClient()
-    // bundle key 由 define 内联成字面量，可以直接断言。
-    expect(built).toContain(`"${QODER_CARD_SLOT_KEYS.bundle}"`)
-    // row key 是**运行期模板串**（`<pkg>#<row>`），所以断言「它由注入的包名
-    // 与行 id 拼出来」，而不是断言拼接后的字面量 —— 那在 bundle 里并不存在。
-    expect(built).toContain('#${rowId}')
-    expect(built).toContain('registerCard("plugins.row.config", QODER_CARD_SLOT_KEYS.row)')
+    expect(built).toContain('"settings.section"')
+    expect(built).toContain('"settings.section.icon"')
+    // 旧的插件页卡片槽位必须已经消失，否则同一份配置又有了第二个编辑入口。
+    expect(built).not.toContain('"plugins.bundle.config"')
+    expect(built).not.toContain('"plugins.row.config"')
   })
 })

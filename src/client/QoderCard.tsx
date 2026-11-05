@@ -1,6 +1,7 @@
 /**
- * Qoder (Lingma) credits & models card contributed to Harness Plugin
- * configuration.
+ * Qoder (Lingma) accounts, credits & models — the body shared by the Settings
+ * page (`settings.section`, the only configuration entry since 1.18.0) and the
+ * optional sidebar panel's full-screen surface.
  *
  * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
  *   — 卡片的整体结构（折叠外壳 `<li class="dsm-plugin-card">` + header/icon/title/
@@ -56,6 +57,7 @@ import type {
 import type { QoderAccountScope } from './account-selection.ts'
 import {
   writeAccountSlot,
+  writeRegionCampaignsShown,
   writeRegionCreditPosition,
   writeRegionCreditsShown,
   writeRegionEnabled,
@@ -91,16 +93,19 @@ export interface QoderCardInjected {
 }
 
 /**
- * Props delivered by the Plugin configuration slot, or by the sidebar panel's
- * `main` page.
+ * Props delivered by the Settings page (`settings.section`), or by the sidebar
+ * panel's `main` page.
  *
  * `surface`/`backToConversation` are `main`-only (the panel registration injects
- * them); the configuration slots never pass them, so `surface` stays undefined
- * there and the card keeps its `<li>` shell. Same shape as workbuddy's card.
+ * them). The Settings page passes neither, and since 1.18.0 it also no longer
+ * uses the `<li class="dsm-plugin-card">` shell: a settings page is a page, not
+ * a row in a plugin list, so it renders the same body under a page header. The
+ * `<li>` shell survives only for the value `surface === undefined`, which is
+ * what the tests and any older host still pass.
  */
 export type QoderCardProps =
   Partial<QoderCardInjected>
-  & { view?: string, surface?: 'card' | 'page', backToConversation?: () => void }
+  & { view?: string, surface?: 'card' | 'page' | 'section', backToConversation?: () => void }
 
 const POLL_INTERVAL_MS = 60_000
 
@@ -163,19 +168,25 @@ function imageCheckboxHint(modelKey: string, modelName: string, t: Translate): s
 export function QoderCard(props: QoderCardProps): ReactElement {
   const { view, surface, backToConversation } = props
   /**
-   * 这张卡片是渲染在**设置页的一行**里，还是渲染在侧边栏那一行打开的**整页**
-   * 里（对齐 workbuddy 的同名判定）。
+   * 同一份正文有三种装载形态：
    *
-   * 整页形态恒展开：折叠按钮只对设置页那个 `<li>` 外壳有意义。用**同一个**
-   * `open` 值让 60 秒轮询与首次拉取的 effect 原样不动——整页里把它切成
-   * 「收起」只会让页面变成一块空壳。
+   *  - `surface === undefined` —— 旧的插件列表卡片（`<li>` 折叠行）。1.18.0 起
+   *    产品里不再有注册点，只留这条降级路径与既有用例；
+   *  - `surface === 'page'` —— 侧边栏那一行打开的整屏面板，带「返回会话」；
+   *  - `surface === 'section'` —— **设置 → Qoder** 那一页。没有折叠外壳，也没有
+   *    返回按钮（设置面板自己有导航与关闭），页头只是标题 + 一句话总述。
+   *
+   * 后两种都恒展开：折叠按钮只对列表项有意义。用**同一个** `open` 值让 60 秒
+   * 轮询与首次拉取的 effect 原样不动——把整页切成「收起」只会让它变成空壳。
    */
   const pageSurface = surface === 'page'
+  const sectionSurface = surface === 'section'
+  const pageLike = pageSurface || sectionSurface
   // The injected `t` is always present in real wiring; fall back to the key when
   // a test renders without one.
   const t: Translate = props.t ?? ((key: string) => key)
   // Re-fetch the region's usage on the 60 s cadence, plus on demand.
-  const [open, setOpen] = useState(view === 'page' || pageSurface)
+  const [open, setOpen] = useState(view === 'page' || pageLike)
   const [activeRegion, setActiveRegion] = useState<QoderWebRegion>(() => 'cn')
   /**
    * 卡片正文里的**分栏**：账号 / 模型 / 诊断。
@@ -679,7 +690,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
       {/* 活动：区域作用域内、额度读数之下的一条只读列表（上游下发了才渲染）。
           放在  面板分栏之外，因为它是**当前区域**的读法，不是同一份文档的分栏；
           区域开关关掉时整块不渲染，与 tabOffNotice 保持一致。 */}
-      {regionOn ? <QoderCampaigns region={activeRegion} t={t} /> : null}
+      {regionOn && campaignsShownOf(usage)
+        ? <QoderCampaigns region={activeRegion} t={t} />
+        : null}
 
       {signIn?.credentialRejected === true ? renderRejected(signIn) : null}
       {usage?.status === 'error' ? <p className="dsm-qoder-usage-error" role="alert">{usage.message}</p> : null}
@@ -815,6 +828,31 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     )
   }
 
+  /**
+   * 设置页（`settings.section`）：标题 → 一句话总述 → 三条核心用途 → 正文。
+   *
+   * 与侧边栏整页的区别只有页头：设置面板自己提供导航与关闭，所以这里**没有**
+   * 返回按钮，也不需要再画一枚 40px 的品牌标（导航行里已经有了）。
+   *
+   * 三条用途不是装饰：这一页把「账号池、签到、模型目录、积分读数」四件事装在
+   * 一起，落地时用户最先看到的是 tab 栏和一张账号表，得靠这三行知道**哪些开关
+   * 买到了什么**。兄弟项目 dsh-subagent-default-model 2.1.20 做过同一件事。
+   */
+  if (sectionSurface) {
+    return (
+      <div className="dsm-qoder-section">
+        <h2 className="dsm-qoder-section-heading">{t('section.title')}</h2>
+        <p className="dsm-qoder-section-intro">{t('section.intro')}</p>
+        <ul className="dsm-qoder-section-values">
+          <li>{t('section.value1')}</li>
+          <li>{t('section.value2')}</li>
+          <li>{t('section.value3')}</li>
+        </ul>
+        <div className="dsm-qoder-section-body">{cardBody}</div>
+      </div>
+    )
+  }
+
   return (
     <li className={`dsm-plugin-card${open ? ' dsm-plugin-card-open' : ''}`}>
       <button
@@ -851,6 +889,21 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     if (scope === undefined) return
     setSiblingBusy(true)
     void writeRegionCreditsShown(scope, activeRegion, on, slotWith(scope, activeRegion, { showCreditsInMainUi: on })).finally(() => {
+      if (mounted.current) setSiblingBusy(false)
+    })
+  }
+
+  /**
+   * 显示/隐藏本区域的活动区。
+   *
+   * 与 `toggleCreditsShown` 逐字同形：两者都是**区域级内容开关**，写的是整个
+   * 区域槽（兄弟区域不会被吃掉），落地检查也由 `writeRegionCampaignsShown`
+   * 自己做 —— 宿主可能静默丢掉一次写入，勾选框继续显示旧值比报错更糟。
+   */
+  function toggleCampaignsShown(on: boolean): void {
+    if (scope === undefined) return
+    setSiblingBusy(true)
+    void writeRegionCampaignsShown(scope, activeRegion, on, slotWith(scope, activeRegion, { showCampaigns: on })).finally(() => {
       if (mounted.current) setSiblingBusy(false)
     })
   }
@@ -1384,6 +1437,27 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               为什么它的类名与积分开关不同（`dsm-qoder-sidebar-panel-check`）：
               积分那一块的用例以「恰好一个 `.dsm-qoder-pref-check`」定位它自己，
               多一个同类的勾选框会把那条选择器变成二义。 */}
+          {/* 「显示活动」——本区域的内容开关，与上面的积分开关同一类、同一块。
+              为什么放在这里而不是活动区自己的标题行上：设置页的那两行是「这一
+              页显示什么」的总控，活动区又在**这一页的最上面**（tab 栏之上）——
+              把开关放在它自己头上会变成「想关掉这块，先得找到这块」，而它可能
+              正被上游的长文案占满。默认开着：签到额度与限时活动本来就是用户来
+              这一页看的东西。
+              类名仍与积分开关不同（`dsm-qoder-campaigns-check`）：积分那一块的
+              用例以「恰好一个 `.dsm-qoder-pref-check`」定位它自己。 */}
+          <label className="dsm-qoder-pref dsm-qoder-campaigns-pref" title={t('row.showCampaignsHint')}>
+            <input
+              type="checkbox"
+              className="dsm-qoder-campaigns-check"
+              checked={regionOn && campaignsShownOf(usage)}
+              disabled={!regionOn || !canWrite(scope) || siblingBusy || poolBusy}
+              onChange={(event) => { toggleCampaignsShown(event.target.checked) }}
+            />
+            <span className="dsm-qoder-pref-copy">
+              <span className="dsm-qoder-pref-label">{t('row.showCampaigns')}</span>
+              <span className="dsm-qoder-pref-hint">{t('row.showCampaignsHint')}</span>
+            </span>
+          </label>
           <label className="dsm-qoder-pref dsm-qoder-sidebar-panel-pref" title={t('row.sidebarPanelHint')}>
             <input
               type="checkbox"
@@ -1493,6 +1567,21 @@ function regionEnabledOfUsage(usage: QoderWebUsage | undefined): boolean {
 
 function regionOnOf(usage: QoderWebUsage | undefined): boolean {
   return regionEnabledOfUsage(usage)
+}
+
+/**
+ * Whether this region's campaign feed is shown.
+ *
+ * Read from the HOST's answer (`usage.showCampaigns`) rather than the browser
+ * settings mirror, for the same measured reason as `creditsShownOf`: on
+ * affected deployments that mirror never picks up writes made through the Host
+ * save endpoint. Absent (older Host, or an error document) reads as SHOWN —
+ * the feed was there before this switch existed.
+ */
+function campaignsShownOf(usage: QoderWebUsage | undefined): boolean {
+  if (usage === undefined) return true
+  if (usage.status === 'error') return true
+  return usage.showCampaigns !== false
 }
 
 function creditsShownOf(usage: QoderWebUsage | undefined): boolean {

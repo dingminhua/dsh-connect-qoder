@@ -1,10 +1,14 @@
 /**
- * Browser half: Qoder model management inside Plugin configuration.
+ * Browser half: Qoder accounts, credits and model management, rendered as a
+ * **Settings page** (`settings.section`).
  *
- * 注册形态沿用 dsh-connect-workbuddy 的 `client/index.tsx`：`slots` /
- * `locale` 两项注入、`LocaleNamespaceMap` 模块增强、`plugins.bundle.config`
- * 与 `plugins.row.config` 槽位 + `key` / `priority` 写法；apply 体包
- * try/catch 以便槽位 API 变更时降级为 console.error 而不触发红色横幅。
+ * 注册形态沿用 dsh-connect-workbuddy 的 `client/index.tsx`：`slots` / `locale`
+ * 两项注入、`LocaleNamespaceMap` 模块增强、apply 体包 try/catch 以便槽位 API
+ * 变更时降级为 console.error 而不触发红色横幅。
+ *
+ * 1.18.0 起配置入口不再挂在插件市场详情页的卡片上
+ * （`plugins.bundle.config` / `plugins.row.config` 两处注册已删除），而是设置面板
+ * 左侧导航里的独立一页；同一份正文另有一个 opt-in 的侧边栏整屏入口。
  *
  * @module dsh-connect-qoder/client
  */
@@ -25,7 +29,7 @@ import { createQoderModelLabel, QODER_MODEL_LABEL_SLOT } from './QoderModelLabel
 import type { QoderModelLabelSlots } from './QoderModelLabel.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
-import { QODER_CARD_SLOT_KEYS } from './slot-keys.ts'
+import { openQoderSettingsSection } from './settings-jump.ts'
 import { QODER_PACKAGE_NAME } from '../version.ts'
 import { QODER_PLUGIN_ICON } from './icon.ts'
 import { setSidebarPanelWanted, sidebarPanelWanted, subscribeSidebarPanelWanted } from './panel-switch.ts'
@@ -58,27 +62,17 @@ export function apply(ctx: QoderClientContext): void {
     const softGet = (name: string): unknown => (ctx as unknown as { get(name: string): unknown }).get(name)
 
     /**
-     * 打开本插件的设置页，交给宿主自己的 Plugins 页去做。
+     * 打开本插件的设置页（「设置 → Qoder」）。
      *
-     * `pluginNavigation` 由 `ui-plugin-manager` 通过 `reflect.provide` 提供，签名为
-     * `openBundle(<npm 包名>)`：它选中 Plugins 面板、切到「已安装」并打开那个 bundle
-     * 的详情页 —— 我们的配置卡片就渲染在那一页上。语音输入插件是同样的用法。
+     * 由 `settings-jump.ts` 在 DOM 里自己找路（点侧边栏的设置触发器 → 在面板里
+     * 按导航标签找本插件那一行 → 点它），不依赖任何宿主服务到货 —— 所以它在
+     * `apply` 里就有一个确定的值，积分面板那颗按钮因此**总是**渲染。
      *
-     * **不是硬依赖**：`inject: ['slots','locale']` 是本插件的全部依赖。把
-     * `pluginNavigation` 加进那份清单会让整个客户端插件在没装 Plugins 页的 profile
-     * 上**不激活**（卡片、读数、模型徽标一起消失），而这里只该丢一颗按钮。所以它
-     * 由下面那个 `ctx.inject([...])` 子作用域等：服务不到就不传 `openSettings`，
-     * 面板干脆不渲染它（一个点了没反应的按钮比没有更糟）。
-     *
-     * **也不能用 `ctx.get()` 探一次**（第一版就是这么写的，结果按钮永不出现）：
-     * 该服务由 `ui-plugin-manager` 在自己 apply 里的 `ctx.slots.inject('main',
-     * function* …)` 生成器内部 `reflect.provide`，而加载顺序由 profile 的 bundles
-     * 数组决定。本插件排在它前面，apply 那一刻它还没 provide —— 一次探测必然永远
-     * 拿到 `undefined`，且没有第二次机会。
-     *
-     * 包的**npm 名**（`QODER_PACKAGE_NAME`，构建期注入）而不是 Loader entry id：
-     * Plugins 页按包名索引 bundle 行（`openBundle` 的参数就是它），而 entry id 是
-     * 另一件事（故意不带作用域，见 `slot-keys.ts`）。
+     * 唯一的外部依赖是 `pluginNavigation.openBundle(<npm 包名>)`，而它只在跳转
+     * 找不到导航行时被当作退路：那时把用户送回插件市场本插件那一页，比一颗点了
+     * 没反应的按钮好。它是软探测（`ctx.get`），缺席时退路静默不做任何事 ——
+     * 绝不能把它写进 `inject: ['slots','locale']`，那会让整个客户端插件在没装
+     * Plugins 页的 profile 上不激活（读数、模型徽标一起消失）。
      */
     let openPluginSettings: (() => void) | undefined
 
@@ -101,35 +95,85 @@ export function apply(ctx: QoderClientContext): void {
     // 一个写不进去的地方。绑定统一交给下面的 `bindSettingsScope()`：宿主镜像说话之后
     // 才绑，说话之前是 `undefined`（只读降级，这是有文档的降级形态）。
 
-    const registerCard = (slotName: string, key: string): (() => void) | undefined => {
+    /**
+     * 设置页分区（`settings.section`）—— 本插件**唯一**的配置入口。
+     *
+     * 从 1.18.0 起，配置界面不再挂在插件市场详情页的卡片里
+     * （`plugins.bundle.config` / `plugins.row.config` 两处注册已删除），而是
+     * 注册成设置面板左侧导航里的独立一页，与「账号与余额 / 通用设置 / 模型 /
+     * 插件」并列。理由是那张卡片一直兼任两件事：它是插件列表里的一行（谁装的、
+     * 在跑什么），同时又是一整页配置（PAT、账号池、模型目录、诊断）。把入口
+     * 挪进设置之后，插件列表只回答「装了什么」。
+     *
+     * **没有能力探测**：`settings.section` 是 0.2.1-rc.5 才引入的槽位，而本插件
+     * 的 peer 下限更低，但 `ctx.slots.inject()` 本身就是探测 —— 宿主没声明这个
+     * 槽位时它只等待、不抛错、也不执行回调，插件其余部分完全不受影响。反过来
+     * 写一层 `typeof ctx.slots.specOf === 'function'` 的探测会让失败的探测静默
+     * 关掉整页（兄弟项目 dsh-subagent-default-model 2.1.16/2.1.17 就是这么丢了
+     * 整个设置页的）。**探测失败必须往「能用」的方向失败。**
+     *
+     * 图标与页面在**同一个** `inject` 回调里注册、disposer 成对返回：外壳给导航
+     * 行取图标用的是 `renderSlot('settings.section.icon', …, { only: row.id })`，
+     * id 必须与页面完全一致才会命中，否则静默回落到默认齿轮。
+     */
+    const registerSection = (): (() => void) | undefined => {
       try {
-        return ctx.slots.inject(slotName as never, () => (ctx.slots as unknown as {
-          register(
-            options: { name: string; key: string; priority: number; inject: () => QoderCardInjected },
-            component: unknown,
-          ): () => void
-        }).register({
-          name: slotName,
-          key,
-          priority: 30,
-          inject: () => settingsScope === undefined
-            ? { t }
-            : { t, settingsScope },
-        }, QoderCard))
+        return ctx.slots.inject('settings.section' as never, () => {
+          const disposers: Array<() => void> = []
+          disposers.push((ctx.slots as unknown as {
+            register(
+              options: {
+                name: string
+                id: string
+                order: number
+                label: () => string
+                locale: string
+                inject: () => QoderCardInjected
+              },
+              component: unknown,
+            ): () => void
+          }).register({
+            name: 'settings.section',
+            id: QODER_SETTINGS_NS,
+            // 排在内置分区之后（账号 -10 / 通用 0 / 模型 10 / 插件 15）。
+            order: 30,
+            label: () => t('section.label'),
+            locale: namespace,
+            // `surface: 'section'`：设置页不是插件列表里的一行，正文按页面渲染
+            // （见 QoderCard 的三种形态）。不传它就会掉回 `<li>` 折叠外壳。
+            inject: () => settingsScope === undefined
+              ? { t, surface: 'section' as const }
+              : { t, settingsScope, surface: 'section' as const },
+          }, QoderCard))
+          try {
+            const iconDisposer = (ctx.slots as unknown as {
+              inject(name: string, factory: () => () => void): (() => void) | undefined
+            }).inject('settings.section.icon', () => (ctx.slots as unknown as {
+              register(options: { name: string, id: string, locale: string }, component: unknown): () => void
+            }).register({
+              name: 'settings.section.icon',
+              id: QODER_SETTINGS_NS,
+              locale: namespace,
+            }, QoderSectionIcon))
+            if (typeof iconDisposer === 'function') disposers.push(iconDisposer)
+          } catch (error: unknown) {
+            // 图标失败不该带走页面：少一枚品牌标，导航行仍在，外壳回落到默认齿轮。
+            console.error('[dsh-connect-qoder] settings.section.icon failed to register (page still renders):', error)
+          }
+          return () => {
+            for (const dispose of disposers) {
+              try { dispose() } catch { /* 已被槽位服务 dispose 过 */ }
+            }
+          }
+        })
       } catch (error: unknown) {
-        console.error(`[dsh-connect-qoder] card slot "${slotName}" failed to register (host provider unaffected):`, error)
+        console.error('[dsh-connect-qoder] settings.section failed to register (host provider unaffected):', error)
         return undefined
       }
     }
 
-    // Slot keys are keyed by PACKAGE identity, not by our settings namespace:
-    // `plugins.bundle.config` wants the bare package name and
-    // `plugins.row.config` wants `<package name>#<row id>`. Both are built from
-    // the build-injected package name — see `slot-keys.ts` for why hardcoding
-    // them made the card render nothing after the scoped rename.
-    //
-    // 注册改由 `bindSettingsScope()` 在下方统一收口：settings 命名空间在宿主镜像
-    // 就绪后才确定，早期就注册会绑错 scope 且永不回看（workbuddy #46/#55）。
+    // 配置入口的注册改由 `bindSettingsScope()` 在下方统一收口：settings 命名空间
+    // 在宿主镜像就绪后才确定，早期就注册会绑错 scope 且永不回看（workbuddy #46/#55）。
 
     /**
      * Credit readout in the composer row (`conversation.input.right`, a
@@ -254,8 +298,7 @@ export function apply(ctx: QoderClientContext): void {
     }
 
     const registerAllSlots = (): Array<() => void> => [
-      registerCard('plugins.bundle.config', QODER_CARD_SLOT_KEYS.bundle),
-      registerCard('plugins.row.config', QODER_CARD_SLOT_KEYS.row),
+      registerSection(),
       registerComposerCredits(),
       registerStatsCredits(),
       registerModelLabel(),
@@ -265,6 +308,34 @@ export function apply(ctx: QoderClientContext): void {
 
     /** 当前绑定下已注册的槽位 disposer。 */
     let liveDisposers: Array<() => void> = []
+
+    /**
+     * 设置面板左侧导航那一格的图标（`settings.section.icon`）。
+     *
+     * 外壳以 `{ size, active }` 渲染它，尺寸由外壳给（不是硬编码 16），选中态
+     * 由外壳围着画、我们只把未选中时的不透明度降一档。`inline: true` 的槽位把
+     * cell 包在 `<span>` 里，所以用 `<img>` + `display:block` 精确占位，不破坏
+     * 导航行的基线。
+     */
+    function QoderSectionIcon(props: { size?: number, active?: boolean }): ReactElement {
+      const edge = typeof props.size === 'number' && props.size > 0 ? props.size : 16
+      return h('img', {
+        className: 'dsm-qoder-section-icon',
+        src: QODER_PLUGIN_ICON,
+        alt: '',
+        width: edge,
+        height: edge,
+        style: {
+          width: `${edge}px`,
+          height: `${edge}px`,
+          display: 'block',
+          borderRadius: '3px',
+          objectFit: 'contain',
+          opacity: props.active === false ? 0.75 : 1,
+        },
+        'aria-hidden': 'true',
+      })
+    }
 
     /**
      * 侧边栏那一行的图标（`sidebar.panellist` 的组件位置）。
@@ -472,51 +543,48 @@ export function apply(ctx: QoderClientContext): void {
       rebindSlots()
     }
 
-    bindSettingsScope()
-
     /**
-     * 「设置」按钮的目的地：等宿主把 `pluginNavigation` 挂上来。
+     * 「设置」按钮的目的地：**设置 → Qoder** 那一页。
      *
-     * **为什么不能用 `ctx.get()` 探一次**（第一版就是这么写的，结果按钮永不出现）：
-     * 那个服务由 `ui-plugin-manager` 在自己 apply 里的 `ctx.slots.inject('main',
-     * function* …)` 生成器内部 `reflect.provide`，而插件加载顺序由 profile 的
-     * bundles 数组决定。本插件排在它前面，apply 那一刻它还没 provide —— 一次探测
-     * 拿到的必然永远是 `undefined`，并且没有第二次机会。
+     * 1.18.0 之前这里等的是 `pluginNavigation.openBundle(包名)`（打开插件市场里
+     * 本插件那一页），因为配置卡片就渲染在那儿。卡片搬进设置之后那个落点已经
+     * 没有配置可看，所以改成驱动真实 chrome：`settings-jump.ts` 点开设置面板、
+     * 再点本插件的导航行。
      *
-     * **为什么不是 `inject: ['pluginNavigation']`**：那会让整个客户端插件变成硬依赖，
-     * 在没装 Plugins 页的 profile 上**根本不激活** —— 卡片、积分读数、模型徽标一起
-     * 消失，而这里只该丢一颗按钮。`ctx.inject([...], scope => …)` 只为这个**子作用域**
-     * 等服务：服务不到，回调不跑，插件其余部分照常工作；服务晚到或消失，回调也能跟着
-     * 跑/收回。
+     * **为什么还要留一条 `pluginNavigation` 的退路**：跳转靠导航行的**标签**定位，
+     * 而标签是本地化字符串。万一宿主换了外壳（标签被截断、面板换了容器属性），
+     * 那次跳转会落空；此时退回 `openBundle(包名)` 至少把用户送到插件市场那一页
+     * ——比一颗彻底死掉的按钮好，也不会误导（那一页现在只说「已安装」，不再承诺
+     * 有配置）。
      *
-     * 服务到货后 `rebindSlots()`：渲染器按 entry 身份缓存 inject 结果，注册不变就
-     * 一直是旧 props（`openSettings` 缺席）。重注册换掉 entry 身份，缓存才会重算。
+     * `openPluginSettings` 因此**总是**有值：不再取决于某个宿主服务是否到货。
+     * 一颗「服务不到就不渲染」的按钮，在跳转这件事上已经没有必要 —— 跳转本身
+     * 在 DOM 里自己找路。
+     *
+     * ⚠️ **必须在 `bindSettingsScope()` 之前赋值**（1.18.0 的第一个发布候选就把
+     * 这颗按钮弄丢过）：`bindSettingsScope()` 会立刻 `registerAllSlots()` 跑一次
+     * 首次注册，而 `inject` 闭包在**那一刻**读的就是 `openPluginSettings`。写在
+     * 它后面，首次注册拿到的就是 `undefined` —— 积分面板据此不渲染那颗齿轮，
+     * 之后也没有任何东西会再去纠正它。
+     *
+     * 也不能指望「之后再重绑一次」来救：渲染器对 `inject()` 的结果做了
+     * `useMemo`（依赖是 `[actions, definition, scopeBinding]`），注册对象不变就
+     * 不会重算 —— 只有**换掉 entry 身份**（重建注册）才会。那意味着每次改设置
+     * 都要拆了重挂一遍 composer 读数，代价远大于「先赋值再注册」。
      */
-    try {
-      ctx.inject(['pluginNavigation'], (scope: QoderClientContext) => {
-        const navigation = (scope as unknown as { pluginNavigation?: { openBundle?: (name: string) => void } })
-          .pluginNavigation
-        if (navigation === undefined || typeof navigation.openBundle !== 'function') return
-        openPluginSettings = () => {
-          try {
-            navigation.openBundle!(QODER_PACKAGE_NAME)
-          } catch (error: unknown) {
-            console.error('[dsh-connect-qoder] could not open the settings page:', error)
+    openPluginSettings = () => {
+      openQoderSettingsSection({
+        label: () => t('section.label'),
+        onGiveUp: () => {
+          const navigation = softGet('pluginNavigation') as { openBundle?: (name: string) => void } | undefined
+          if (navigation !== undefined && typeof navigation.openBundle === 'function') {
+            try { navigation.openBundle(QODER_PACKAGE_NAME) } catch { /* 退路自己失败：保持 no-op */ }
           }
-        }
-        rebindSlots()
-        return () => {
-          openPluginSettings = undefined
-          try { rebindSlots() } catch { /* fiber 正在拆：槽位服务可能已经先走一步 */ }
-        }
+        },
       })
-    } catch (error: unknown) {
-      // 一个等按钮的目的地失败，不该把下面那条侧边栏订阅与种子一起带走 —— 整段
-      // apply 外面只有一个只打日志的 try/catch（那正是 workbuddy #55 的形态：
-      // 一次异常让后面所有注册都消失，且页面上没有任何提示）。这里单独兜住，
-      // 代价只是按钮不出现。
-      console.error('[dsh-connect-qoder] pluginNavigation wait failed (settings button hidden):', error)
     }
+
+    bindSettingsScope()
 
     /**
      * 跟随 opt-in 开关，并用 Host 的答案做**种子**。

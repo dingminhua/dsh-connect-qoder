@@ -60,6 +60,7 @@ function usageDoc(): Record<string, unknown> {
     enabled: true,
     source: 'vault',
     showCreditsInMainUi: true,
+    showCampaigns: true,
     creditPosition: 'composer',
     selectionExplicit: true,
     accounts: [{ id: 'acc-id', accountName: 'dingminhua', source: 'vault', selected: true }],

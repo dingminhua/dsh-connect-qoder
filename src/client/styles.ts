@@ -379,21 +379,93 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-empty{margin:0;padding:9px 11px;border-radius:9px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-secondary,#666);background:var(--dsw-alias-fill-tertiary,rgba(127,127,127,.08));border:1px dashed var(--dsw-alias-border-secondary,rgba(127,127,127,.3))}
 .dsm-qoder-pool-error{margin:0;font-size:12px;line-height:17px;color:var(--dsw-alias-state-error-primary,#ef4444);white-space:pre-line}
 .dsm-qoder-pool-table{border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
-.dsm-qoder-pool-row{display:grid;grid-template-columns:1.6fr 1fr 1.3fr .9fr .8fr;gap:10px;align-items:center;padding:10px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
-/* 没有签到列时（国际版暂不通），把空出的轨道让给操作列。
-   CN 有签到，走上面那套 5 列默认值。 */
-.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin) .dsm-qoder-pool-row{grid-template-columns:1.6fr 1fr 1.3fr 1.7fr}
+/* 行布局：**默认是两行的紧凑排法**，宽屏才升级成 5 列。
+ *
+ * 为什么默认不是 5 列：这一页住在设置面板里，而面板的内容栏是**固定 612px**
+ * （800 的对话框 − 188 的导航栏）。原来的写法是「5 列 + @media(max-width:760px)
+ * 折成 2 列」，于是**在设置页里那条件恒成立** —— 每个账号都被折成 264px 宽的两列
+ * 堆叠，五行内容竖着摞成 155px 高，横向还空着整片位置。155px × N 个账号，就是
+ * 那一栏显得那么长的原因。
+ *
+ * 窄形态用**显式 grid 两行 × 两列**，不用 flex-wrap：wrap 的换行位置取决于每格
+ * 的实测宽度（长账号名、长模型名都会改变折行点），行高会跟着内容抖动，甚至折成
+ * 三行。网格把「谁在哪一行」写在样式里，与名字长短无关。
+ *
+ *   第一行：账号（占满左） │ 积分（右）
+ *   第二行：状态（占满左） │ 签到 · 操作（右）
+ */
+.dsm-qoder-pool-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto;
+  grid-template-areas:"who credits" "state tail";
+  gap:4px 12px;align-items:center;padding:10px 14px;
+  border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0);
+}
+.dsm-qoder-pool-account{grid-area:who;display:flex;align-items:center;gap:8px;min-width:0}
+.dsm-qoder-pool-credits{grid-area:credits;display:flex;flex-direction:column;gap:1px;align-items:flex-end;text-align:right;font-variant-numeric:tabular-nums}
+/* 状态列与右侧尾部合成第二行；尾部自己是一行 flex（签到 + 测试 + 删除）。 */
+.dsm-qoder-pool-probe{grid-area:state;display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;overflow-wrap:anywhere}
+.dsm-qoder-pool-checkin{grid-area:auto;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap}
+.dsm-qoder-pool-row-actions{grid-area:auto;justify-self:end;display:flex;gap:6px;align-items:center;flex:none}
+/* 第二行右侧那一格：签到与操作按钮并排，靠右。用 :where 给两个格子挂同一个
+   grid 区域名，避免再包一层 <span>（DOM 结构被已有用例按直接子元素断言）。 */
+.dsm-qoder-pool-row > .dsm-qoder-pool-checkin,
+.dsm-qoder-pool-row > .dsm-qoder-pool-row-actions{grid-row:2}
+.dsm-qoder-pool-row:not(.dsm-qoder-pool-table-checkin) > .dsm-qoder-pool-row-actions{grid-column:2}
+.dsm-qoder-pool-row > .dsm-qoder-pool-checkin{grid-column:2;justify-self:end;margin-right:0}
+.dsm-qoder-pool-row > .dsm-qoder-pool-row-actions{grid-column:2}
+/* 有签到列时：签到与操作**同一格**，所以让签到右对齐后操作继续贴右。
+   两者都在 column 2 会叠在一起——用 auto-flow 把操作放到第三列。 */
+.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row{grid-template-columns:minmax(0,1fr) auto auto}
+.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row > .dsm-qoder-pool-checkin{grid-column:2}
+.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row > .dsm-qoder-pool-row-actions{grid-column:3}
+.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row > .dsm-qoder-pool-credits{grid-column:2 / 4}
+/* 表头跟着同一套轨道走，否则标签会与数据错位（比没有表头更糟）。第 5 格没有
+   标签可写，窄屏下不占位；宽屏那套 5 列会把它放回来。 */
+.dsm-qoder-pool-row-head{display:grid;grid-template-columns:minmax(0,1fr) auto auto;gap:4px 12px}
+.dsm-qoder-pool-row-head > span:nth-child(1){grid-column:1;grid-row:1}
+.dsm-qoder-pool-row-head > span:nth-child(2){grid-column:2 / -1;grid-row:1;justify-self:end}
+.dsm-qoder-pool-row-head > span:nth-child(3){grid-column:1;grid-row:2}
+.dsm-qoder-pool-row-head > span:nth-child(4){grid-column:2;grid-row:2;justify-self:end}
+.dsm-qoder-pool-row-head > span:nth-child(5){display:none}
+/* 宽屏（侧边栏整屏面板、或窗口足够大）：回到 5 列，一眼能横向比较。 */
+@media (min-width:761px){
+.dsm-qoder-pool-row{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.95fr) minmax(0,1.35fr) minmax(0,.85fr) auto;gap:12px;align-items:center}
+/* 没有签到列时（国际版暂不通），把空出的轨道让给操作列。 */
+.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin) .dsm-qoder-pool-row{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.4fr) auto}
+/* 宽屏那张表是**单行**，所以每一格回到自己的默认轨道，两行网格的
+   grid-area / grid-column 覆盖必须在这里让位。 */
+.dsm-qoder-pool-row > .dsm-qoder-pool-checkin,
+.dsm-qoder-pool-row > .dsm-qoder-pool-row-actions,
+.dsm-qoder-pool-row > .dsm-qoder-pool-credits,
+.dsm-qoder-pool-row > .dsm-qoder-pool-account,
+.dsm-qoder-pool-row > .dsm-qoder-pool-probe{grid-area:auto;grid-row:auto;grid-column:auto;justify-self:auto}
+.dsm-qoder-pool-credits{align-items:flex-start;text-align:left}
+.dsm-qoder-pool-probe{flex-direction:column;align-items:flex-start;gap:4px}
+.dsm-qoder-pool-row-head{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(0,.95fr) minmax(0,1.35fr) minmax(0,.85fr) auto;gap:12px}
+.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin) .dsm-qoder-pool-row-head{grid-template-columns:minmax(0,1.5fr) minmax(0,1fr) minmax(0,1.4fr) auto}
+.dsm-qoder-pool-row-head > span{display:block;grid-column:auto;grid-row:auto;justify-self:auto}
+.dsm-qoder-pool-row-head > span:nth-child(5){display:block}
+}
 .dsm-qoder-pool-row:first-child{border-top:0}
 .dsm-qoder-pool-row-head{padding:8px 14px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:11px;font-weight:600;letter-spacing:.02em;text-transform:uppercase}
 .dsm-qoder-pool-row-current{background:rgba(86,134,254,.07)}
 /* 左侧 3px 竖条：正在计费的那一行必须一眼可见。只靠 7% 的背景色，在暗色主题
    下几乎看不出区别（workbuddy 同规，两条规则共用同一个类名）。 */
 .dsm-qoder-pool-row-current{box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-qoder-pool-account{display:flex;align-items:center;gap:8px;min-width:0}
-.dsm-qoder-pool-account-name{display:flex;flex-direction:column;gap:1px;min-width:0}
-.dsm-qoder-pool-account-name b{font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dsm-qoder-pool-account{display:flex;align-items:center;gap:8px}
+.dsm-qoder-pool-account-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+/* 第一行：名字 + 名次 + 「当前使用」+ 上下移，全部**同一行**。
+   这一列原来是 5 行竖排（名次 / 箭头 / 徽章 / 测试于 / 上一行结果），把整行
+   撑到 90px 以上，而同一行的另外四列各自都只有一行 —— 高度全浪费在这里。
+   现在压缩成 2 行：身份 + 一句话原因。 */
+.dsm-qoder-pool-account-line{display:flex;align-items:center;gap:6px;min-width:0;flex-wrap:wrap}
+.dsm-qoder-pool-account-name b{font-weight:600;font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .dsm-qoder-pool-account-name span{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
-.dsm-qoder-pool-account-name .dsm-qoder-pool-current-tag{align-self:flex-start;margin-top:2px;padding:1px 6px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
+.dsm-qoder-pool-account-name .dsm-qoder-pool-current-tag{margin:0;padding:1px 6px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:11px;font-weight:600;line-height:16px;white-space:nowrap;flex:none}
+/* 上下移贴着名字那一行的右端：它是这一行唯一一组成对控件，贴着名字会让人
+   以为它只作用于名字（它改的是名次，而名次就画在名字旁边）。 */
+.dsm-qoder-pool-account-line .dsm-qoder-pool-move{margin-left:auto}
 .dsm-qoder-pool-excluded{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-qoder-pool-credits{display:flex;flex-direction:column;gap:1px;min-width:0;font-variant-numeric:tabular-nums}
 .dsm-qoder-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}
@@ -402,8 +474,6 @@ export const QODER_CARD_CSS = `
 /* 套餐到期（issue #31 建议 1）：与「积分何时作废」是两件事，所以不用警告色 ——
    套餐到期是账号事实，不是「有分要浪费了」那种需要立刻行动的信号。 */
 .dsm-qoder-pool-plan{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999);opacity:.85}
-.dsm-qoder-pool-probe,.dsm-qoder-pool-checkin{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;overflow-wrap:anywhere}
-.dsm-qoder-pool-probe{display:flex;flex-direction:column;gap:4px}
 .dsm-qoder-pool-probe-main{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-probe-prov{display:flex;align-items:center;gap:5px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;flex-wrap:wrap}
 .dsm-qoder-pool-prov-tag{padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:10px;font-weight:600;line-height:15px;white-space:nowrap}
@@ -526,7 +596,7 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-confirm-text{font-size:11px;line-height:15px;color:var(--dsw-alias-state-error-primary,#ef4444);text-align:right}
 .dsm-qoder-pool .dsm-btn-danger{border-color:var(--dsw-alias-state-error-primary,#ef4444);color:#fff;background:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-qoder-pool .dsm-btn-danger:hover:not(:disabled){opacity:.9}
-@media (max-width:760px){.dsm-qoder-pool-row{grid-template-columns:1fr 1fr;row-gap:6px}.dsm-qoder-pool-select{max-width:180px}}
+@media (max-width:760px){.dsm-qoder-pool-select{max-width:180px}}
 /* Pool switch, namespaced under .dsm-qoder-pool so it cannot collide with host styles. */
 .dsm-qoder-pool .sw{position:relative;display:inline-block;width:38px;height:22px;flex:none;cursor:pointer}
 .dsm-qoder-pool .sw input{position:absolute;opacity:0;width:0;height:0}
@@ -657,6 +727,19 @@ export const QODER_CARD_CSS = `
  * 边框与内边距，这里没有那个 <li>，所以由这条规则补上同一套外观——整页与
  * 设置页看到的是同一个盒子，而不是一个没有边界的裸列表。
  */
+/*
+ * 设置页（settings.section）形态：标题 → 总述 → 三条用途 → 正文。
+ *
+ * 这里不套 .dsm-plugin-card 那套列表外壳（折叠 header、边框）：设置页本身就是
+ * 独立界面；正文自带的那层 .dsm-plugin-card-body 靠下面这条补上盒子外观，
+ * 与侧边栏整页看到的是同一个盒子。
+ */
+.dsm-qoder-section{display:flex;flex-direction:column;gap:14px;min-width:0}
+.dsm-qoder-section-heading{margin:0;font-size:16px;font-weight:600;line-height:24px;color:var(--dsw-alias-label-primary,#e6e6e6)}
+.dsm-qoder-section-intro{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary,#b8b8b8)}
+.dsm-qoder-section-values{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary,#b8b8b8)}
+.dsm-qoder-section-values li::marker{color:var(--dsw-alias-label-tertiary,#999)}
+.dsm-qoder-section-body .dsm-plugin-card-body{margin:0;padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
 .dsm-qoder-page-body .dsm-plugin-card-body{margin:0;padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
 /*
  * 可选侧边栏开关那一行。类名与积分开关**刻意不同**（.dsm-qoder-pref-check
@@ -666,6 +749,38 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-sidebar-panel-pref{cursor:pointer}
 /* 开关自己的失败提示：与那一行同宽缩进（借复选框那一列），红字。 */
 .dsm-qoder-sidebar-panel-error{padding-left:25px;color:var(--dsw-alias-state-error-primary,#ef4444)}
+
+/* 活动区（Campaigns.tsx）。**这一段曾经住在 QODER_COMPOSER_CSS 里** —— 那份样式
+   表由 composer 积分读数组件注入，而设置页从不渲染那个组件，于是活动区的类名
+   一条规则都没有：界面上是一列没有边框、没有分栏的裸文字（见 1.18.0 的截图）。
+   样式必须跟着**渲染它的组件**走：QoderCampaigns 挂在卡片正文里，它就该在卡片
+   样式表里。 */
+.dsm-qoder-campaigns{display:flex;flex-direction:column;gap:10px;margin-top:6px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
+/* 区块标题，不是表格头。 */
+.dsm-qoder-campaigns-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
+.dsm-qoder-campaigns-empty{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
+.dsm-qoder-campaigns-error{margin:0;color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
+/* 瓦片网格：auto-fill + 260px 下限，在约 580px 宽的正文栏里自然排成两列，
+   窄容器（侧边栏面板更窄时）退回一列。minmax(0,...) 而不是 1fr：没有它，
+   一条长英文标题会把整列撑破（grid 的 min-content 陷阱）。 */
+.dsm-qoder-campaigns-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+/* 每条活动是一张等高小卡片：边框 + 底色把它和相邻那条分开，align-items 默认
+   stretch 让同一排的两张高度一致。 */
+.dsm-qoder-campaign-row{display:flex;flex-direction:column;gap:6px;min-width:0;padding:11px 13px;border:1px solid var(--dsw-alias-border-l2,#36373b);border-radius:10px;background:var(--dsw-alias-bg-layer-3,#202126)}
+/* 标题行：标题吃掉剩余宽度，额度不换行。 */
+.dsm-qoder-campaign-row-head{display:flex;align-items:baseline;gap:8px;min-width:0;flex-wrap:wrap}
+.dsm-qoder-campaign-row-title{flex:1 1 auto;min-width:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;line-height:19px;font-weight:600}
+.dsm-qoder-campaign-row-amount{padding:1px 7px;border-radius:6px;background:rgba(34,160,107,.18);color:var(--dsw-alias-state-success-primary,#22a06b);font-size:11px;font-weight:600;line-height:16px;white-space:nowrap;flex:none}
+/* 描述限两行：这是摘要位，不是正文。三条活动各带一段长描述时，不限行会让
+   卡片高度随上游文案长短跳动，整排格子高低不齐 —— 全文仍在 title 悬停里。 */
+.dsm-qoder-campaign-row-desc{margin:0;color:var(--dsw-alias-label-secondary,#b8b8b8);font-size:12px;line-height:17px;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+/* 页脚贴底：状态在左、出口在右，同一排卡片因此共用一条基线。 */
+.dsm-qoder-campaign-row-foot{margin-top:auto;padding-top:2px;display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.dsm-qoder-campaign-row-status{padding:1px 6px;border-radius:6px;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap;flex:none}
+.dsm-qoder-campaign-row-status-claimable{background:rgba(34,160,107,.18);color:var(--dsw-alias-state-success-primary,#22a06b)}
+.dsm-qoder-campaign-row-status-claimed{background:var(--dsw-alias-bg-layer-2,#25262b);color:var(--dsw-alias-label-tertiary,#9aa0a8);border:1px solid var(--dsw-alias-border-l2,#36373b)}
+.dsm-qoder-campaign-row-link{font-size:12px;line-height:18px;color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none;white-space:nowrap;flex:none;margin-left:auto}
+.dsm-qoder-campaign-row-link:hover{text-decoration:underline}
 `
 
 /**
@@ -844,18 +959,5 @@ export const QODER_COMPOSER_CSS = `
 /* 活动（Campaigns.tsx）：卡在区域作用域内、额度读数之下的一条列表。
    与模型区同款分隔线 + 标题；每行 = 标题 · 额度 · 状态 · 查看详情。
    空列表只显示一行淡字「当前没有活动」——不凭空造 banner；读不到则红字原因。 */
-.dsm-qoder-campaigns{display:flex;flex-direction:column;gap:10px;margin-top:6px;padding-top:14px;border-top:1px solid var(--dsw-alias-border-l2,#36373b)}
-.dsm-qoder-campaigns-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
-.dsm-qoder-campaigns-empty{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
-.dsm-qoder-campaigns-error{margin:0;color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
-.dsm-qoder-campaign-row{display:flex;flex-direction:column;gap:2px;min-width:0}
-.dsm-qoder-campaign-row-head{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap}
-.dsm-qoder-campaign-row-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:13px;line-height:20px;font-weight:500}
-.dsm-qoder-campaign-row-amount{padding:1px 6px;border-radius:6px;background:var(--dsw-alias-state-success-primary,#22a06b);color:#0f1418;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
-.dsm-qoder-campaign-row-status{padding:1px 6px;border-radius:6px;font-size:11px;font-weight:600;line-height:16px;white-space:nowrap}
-.dsm-qoder-campaign-row-status-claimable{background:var(--dsw-alias-state-success-primary,#22a06b);color:#0f1418}
-.dsm-qoder-campaign-row-status-claimed{background:var(--dsw-alias-label-tertiary,#9aa0a8);color:#1b1d22}
-.dsm-qoder-campaign-row-desc{margin:0;color:var(--dsw-alias-label-secondary,#b8b8b8);font-size:12px;line-height:18px}
-.dsm-qoder-campaign-row-link{margin-top:2px;align-self:flex-start;font-size:12px;line-height:18px;color:var(--dsw-alias-brand-primary,#5686fe);text-decoration:none}
-.dsm-qoder-campaign-row-link:hover{text-decoration:underline}
+
 `

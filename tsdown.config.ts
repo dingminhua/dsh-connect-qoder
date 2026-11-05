@@ -37,12 +37,11 @@ const PACKAGE_VERSION = PACKAGE.version
  * Build-time constants injected into the source (`src/version.ts`).
  *
  * The **package name** is injected alongside the version because the browser
- * half needs it as a runtime string: the plugin manager keys the configuration
- * slots by package name (`plugins.bundle.config`) and by
- * `<package name>#<row id>` (`plugins.row.config`). Hardcoding the old unscoped
- * name there made the card render nothing on the bundle's page — the plugin
- * showed up as running, with its description and rows, but no configuration
- * body. Injecting the real name means a rename cannot silently orphan the card.
+ * half needs it as a runtime string: it addresses the bundle by installed
+ * package name (model-picker label, and the plugin-market fallback used when the
+ * settings jump cannot find its nav row). The configuration page itself is a
+ * `settings.section` keyed by `id` since 1.18.0 — it no longer depends on
+ * `plugins.bundle.config` / `plugins.row.config` keying.
  */
 const BUILD_DEFINE = {
   __DSH_QODER_VERSION__: JSON.stringify(PACKAGE_VERSION),

@@ -26,7 +26,9 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  nextRegionCampaignsShown,
   nextRegionCreditPosition,
+  regionCampaignsShownOf,
   regionCreditPositionOf,
   regionCreditsShownOf,
   unwrapVolatileDeep,
@@ -140,6 +142,23 @@ describe('积分读数席位', () => {
     expect(regionCreditPositionOf(written, 'cn')).toBe('stats')
     // 位置与显示开关是两件事：写位置不该把开关关掉，反之亦然。
     expect(regionCreditsShownOf(written, 'cn')).toBe(true)
+  })
+
+  it('活动显示开关：与积分开关互不干扰，读写往返，默认显示', () => {
+    // 两个开关都是区域级内容开关，住在同一个区域槽里 —— 所以最容易出的错是
+    // 「写一个把另一个吃掉」。逐项验证：
+    //   1. 从未写过 = 显示（内容开关的缺席不等于拒绝，与共享座位那条判据相反）；
+    //   2. 写活动开关不影响积分开关；
+    //   3. 写入的值能原样读回。
+    expect(regionCampaignsShownOf({ cn: {} }, 'cn')).toBe(true)
+    const off = { regions: nextRegionCampaignsShown({ cn: { showCreditsInMainUi: true } }, 'cn', false) }
+    expect(regionCampaignsShownOf(off, 'cn')).toBe(false)
+    expect(regionCreditsShownOf(off, 'cn')).toBe(true)
+    // 反向：写积分开关不该把活动开关打开。
+    const creditsOff = { regions: nextRegionCampaignsShown({ cn: {} }, 'cn', false) }
+    expect(regionCampaignsShownOf(creditsOff, 'cn')).toBe(false)
+    // 兄弟区域不受影响。
+    expect(regionCampaignsShownOf({ cn: { showCampaigns: false }, global: {} }, 'global')).toBe(true)
   })
 
   it('volatile 包装下的值也能读出正确席位（代理的 === 陷阱）', () => {

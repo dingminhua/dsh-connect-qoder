@@ -25,6 +25,18 @@ export const en = {
   'row.desc': 'Use Qoder (Lingma CN / global) models in DSH and see your remaining credits; the CN and international sides are two independent providers (qoder / qoder-global), each with its own PAT and accounts — use both at the same time.',
   'row.expand': 'Expand',
   'row.collapse': 'Collapse',
+
+  // ---- Settings page (settings.section) ----
+  // The nav-rail label doubles as the DOM anchor the composer's Settings button
+  // looks for (see `settings-jump.ts`), so it must equal what the shell renders
+  // — which is exactly this key. Two languages are both ours, so the search
+  // string cannot drift from the registered one.
+  'section.label': 'Qoder',
+  'section.title': 'Qoder (Lingma) accounts, credits & models',
+  'section.intro': 'Run one or more Qoder accounts as DSH providers and pick which of their models this profile may use.',
+  'section.value1': 'Accounts: one or more PATs per side (CN / global), pooled, check-in-capable, and switchable per region.',
+  'section.value2': 'Model catalog: refresh it from upstream, then tick exactly the models DSH is allowed to offer.',
+  'section.value3': 'Reading at a glance: the current balance sits next to the model picker, so you can see what a session is spending before it spends it.',
   'row.tabCn': 'CN',
   'row.tabGlobal': 'Global',
   'row.tabHint': 'Each tab is a separate provider (qoder / qoder-global) with its own PAT, accounts, credits, and models. Both sides are live at once: different sessions can pick from either side, and changes on one tab never touch the other.',
@@ -408,6 +420,9 @@ export const en = {
   'row.showCreditsGlobal': 'Show QD AI credits in the composer',
   'row.showCreditsCnHint': 'Show the CN (QD CN) credit balance in the composer toolbar, but only while this session uses a CN model. Click it for per-account balances and a manual refresh (refreshes by itself every 5 minutes).',
   'row.showCreditsGlobalHint': 'Show the international (QD AI) credit balance in the composer toolbar, but only while this session uses a global model. Click it for per-account balances and a manual refresh (refreshes by itself every 5 minutes).',
+  // ---- Campaign feed visibility ----
+  'row.showCampaigns': 'Show campaigns',
+  'row.showCampaignsHint': 'Show this region\'s campaign feed (the daily check-in offer and any limited-time banners the upstream is sending) above the tabs. Read-only — claiming stays in the account pool. Turn it off and the page goes straight to accounts; nothing else changes.',
   'row.showCreditsCnDesc': 'A clickable readout in the composer toolbar (shown only while this session uses a CN model): "QD CN · balance". Where it sits is the next line.',
   'row.showCreditsGlobalDesc': 'A clickable readout in the composer toolbar (shown only while this session uses a global model): "QD AI · plan". Where it sits is the next line.',
   'row.creditPositionLabel': 'Position',
@@ -416,7 +431,7 @@ export const en = {
   'row.creditPositionStats': 'Below the composer',
   'row.creditPositionHint': 'Where the credit readout sits. "In the composer toolbar" is the closer spot, but that row is a shared list slot — if another plugin parks something there and the readout disappears, choose "Below the composer" (the ambient row next to the session token counts).',
   'row.sidebarPanelLabel': 'Show Qoder in the sidebar',
-  'row.sidebarPanelHint': 'Adds a Qoder row to the DSH sidebar that opens this card as a full page. Off by default: the row takes a global sidebar slot shared by every installed plugin, and the Plugins page already reaches the same content. Takes effect on the click — no Save needed — and switching it off while the page is open returns you to the conversation.',
+  'row.sidebarPanelHint': 'Adds a Qoder row to the DSH sidebar that opens this page as a full-screen panel. Off by default: the row takes a global sidebar slot shared by every installed plugin, and Settings → Qoder already reaches the same content. Takes effect on the click — no Save needed — and switching it off while the page is open returns you to the conversation.',
   'row.sidebarPanelFailed': 'Could not change the sidebar setting: {message}',
   'nav.panel': 'Qoder',
   'nav.back': 'Back to conversation',
@@ -432,7 +447,7 @@ export const en = {
   'composer.noAccounts': 'No account in this region',
   'composer.signedOut': 'Not signed in',
   'composer.openSettings': 'Settings',
-  'composer.openSettingsHint': 'Open this plugin\'s settings page (account pool, model catalog, diagnostics)',
+  'composer.openSettingsHint': 'Open Settings → Qoder (account pool, model catalog, diagnostics)',
   // The header's REFRESH control (left of settings). Named for what the reader
   // gets — this table brought up to date — rather than for the mechanism, which
   // is a probe batch. The hint has to say the mechanism out loud, because
@@ -467,6 +482,17 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.desc': '在 DSH 中使用 Qoder（通义灵码 国内/国际）模型并随时查看剩余积分；国内版与国际版是两个独立供应商（qoder / qoder-global），各有自己的 PAT 与账号，可同时使用。',
   'row.expand': '展开',
   'row.collapse': '收起',
+
+  // ---- 设置页（settings.section）----
+  // 导航标签同时是 composer 那颗「设置」按钮在 DOM 里要找的锚点
+  // （见 `settings-jump.ts`）：外壳渲染的就是这个键的值，而两个语种都在本仓库里，
+  // 所以「找的」与「注册的」不可能漂移。
+  'section.label': 'Qoder',
+  'section.title': 'Qoder（通义灵码）账号、积分与模型',
+  'section.intro': '把一个或多个 Qoder 账号接成 DSH 的供应商，并决定这个 profile 可以用它们的哪些模型。',
+  'section.value1': '账号：国内版 / 国际版各一池 PAT，可签到、可按区域切换服务账号。',
+  'section.value2': '模型目录：从上游刷新，勾选哪些模型才出现在模型选择器里。',
+  'section.value3': '读数：余额就显示在模型选择器旁边，花之前先看见。',
   'row.tabCn': '国内版',
   'row.tabGlobal': '国际版',
   'row.tabHint': '每个 tab 是一个独立供应商（qoder / qoder-global），各有自己的 PAT、账号、积分与模型。两边同时生效：不同会话可各选一边，一侧的改动不影响另一侧。',
@@ -832,6 +858,9 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.showCreditsGlobal': '在对话框显示 QD AI 积分',
   'row.showCreditsCnHint': '在对话输入框工具栏显示国内版（QD CN）剩余额度，仅当本会话使用 CN 模型时出现。点击可看各账号余额并手动刷新（每 5 分钟也会自动刷新）。',
   'row.showCreditsGlobalHint': '在对话输入框工具栏显示国际版（QD AI）剩余额度，仅当本会话使用国际版模型时出现。点击可看各账号余额并手动刷新（每 5 分钟也会自动刷新）。',
+  // ---- 活动区显示开关 ----
+  'row.showCampaigns': '显示活动',
+  'row.showCampaignsHint': '在这个区域显示上游下发的活动（每日签到额度与限时活动公告），位置在 tab 栏之上。只读——签到仍在账号池里操作。关掉之后这一页直接从 tab 栏开始，其余功能不受影响。',
   'row.showCreditsCnDesc': '在输入框工具栏显示可点击读数（选中国内版模型时出现）：「QD CN · 余额」。读数位置在下一行。',
   'row.showCreditsGlobalDesc': '在输入框工具栏显示可点击读数（选中全球版模型时出现）：「QD AI · 套餐」。读数位置在下一行。',
   'row.creditPositionLabel': '显示位置',
@@ -840,7 +869,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.creditPositionStats': '输入框下方',
   'row.creditPositionHint': '积分读数放在哪里。「输入框工具栏」位置更近，但那一行是共享的 list 插槽——若另一个插件也把东西停在那里、读数消失，就选「输入框下方」（会话 token 统计旁边那行常驻栏）。',
   'row.sidebarPanelLabel': '在侧边栏显示 Qoder',
-  'row.sidebarPanelHint': '在 DSH 侧边栏加一个 Qoder 行，点开就是这张卡片的整页版。默认关闭：这一行占的是所有插件共用的全局侧边栏座位，而「插件」页本来就能看到同样的内容。点一下即生效，不用保存；页面开着时关掉它，会直接回到对话。',
+  'row.sidebarPanelHint': '在 DSH 侧边栏加一个 Qoder 行，点开就是这一页的整屏版。默认关闭：这一行占的是所有插件共用的全局侧边栏座位，而「设置 → Qoder」本来就能看到同样的内容。点一下即生效，不用保存；页面开着时关掉它，会直接回到对话。',
   'row.sidebarPanelFailed': '侧边栏开关没能保存：{message}',
   'nav.panel': 'Qoder',
   'nav.back': '返回会话',
@@ -856,7 +885,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.noAccounts': '该区域暂无账号',
   'composer.signedOut': '未登录',
   'composer.openSettings': '设置',
-  'composer.openSettingsHint': '打开本插件的设置页（账号池、模型目录、诊断）',
+  'composer.openSettingsHint': '打开「设置 → Qoder」（账号池、模型目录、诊断）',
   'composer.refresh': '刷新',
   'composer.refreshing': '正在刷新…',
   'composer.refreshHint': '刷新本区所有账号的状态——逐个探测每个账号（会消耗少量积分，最长约一分钟）',
