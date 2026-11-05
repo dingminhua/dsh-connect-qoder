@@ -585,11 +585,22 @@ export const QODER_CARD_CSS = `
    nowrap + 略收窄的左右 padding，比给这一列加宽更划算——加宽要从「账号」列
    拿空间，而账号名那一列本来就挤（名次、箭头、徽章都在里面）。 */
 .dsm-qoder-pool-row-actions .dsm-qoder-pool-small-btn{padding:2px 7px;font-size:12px;white-space:nowrap;flex:none}
-/* 「删除」在静止态刻意保持中性（outline）：它和「测试」并排，一个中性一个危险，
-   每次看都要重新判断哪个会丢数据。危险色留给按下去之后那条确认条里的按钮——
-   也就是用户已经明确表达「我要删」的那一刻。 */
-.dsm-qoder-pool-delete-btn{color:var(--dsw-alias-state-error-primary,#ef4444)}
-.dsm-qoder-pool-delete-btn:hover:not(:disabled){border-color:var(--dsw-alias-state-error-primary,#ef4444)}
+/* 「删除」分三档，按「用户离不可逆操作还有多远」决定红的浓度。
+ *
+ *   1. 静止态 —— 淡红。它和「测试」并排，两者都是 outline 小按钮，若删除也用
+ *      满饱和红，整行右侧会一直有一块红色在喊；而这一行在绝大多数时候是被扫视
+ *      而不是被操作的。用 color-mix 把危险色调到 62% 再混一点标签灰，得到一个
+ *      「看得出是危险动作、但不抢注意力」的强度。
+ *   2. 悬停 —— 回到满饱和红，边框也跟着点亮。指针已经停在它上面，此刻该明确。
+ *   3. 确认条里的「确认删除」—— 实心红底白字（见下面的 .dsm-btn-danger）。
+ *      只有走到这一步才是真的要删。
+ *
+ * 兜底值写成 #c76a6a 而不是 #ef4444：不支持 color-mix 的环境（老 WebView）
+ * 拿到的是同一条柔和红，而不是突然变回满饱和。
+ * （注释里不能用反引号 —— CSS 整段是模板字符串，反引号会把它拦腰截断。这条
+ * 在 1.17.x 里已经踩过两次。） */
+.dsm-qoder-pool-delete-btn{color:#c76a6a;color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ef4444) 62%,var(--dsw-alias-label-tertiary,#9aa0a8))}
+.dsm-qoder-pool-delete-btn:hover:not(:disabled){color:var(--dsw-alias-state-error-primary,#ef4444);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary,#ef4444) 55%,transparent)}
 /* 二次确认就地展开在这一行的操作格里，不弹窗：确认的是什么（哪个账号）必须
    和被确认的那一行待在同一视线内，隔到弹窗里就说错了对象。 */
 .dsm-qoder-pool-confirm{display:flex;gap:6px;align-items:center;justify-content:flex-end;flex-wrap:wrap}

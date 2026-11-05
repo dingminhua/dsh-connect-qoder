@@ -319,6 +319,28 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     expect(QODER_COMPOSER_CSS).not.toContain('.dsm-qoder-campaign-row{')
   })
 
+  it('「删除」的三档强度：静止淡红、悬停满饱和、确认条实心', () => {
+    // 用户实拍「删除按钮红色弱一点」。它和「测试」并排，两个都是 outline 小按钮
+    // —— 删除若用满饱和红，整行右侧会一直有一块红在喊，而这一行绝大多数时候是
+    // 被扫视而不是被操作的。
+    //
+    // 钉三件事，少一件就不是「分档」而是「统一变淡」：
+    //   1. 静止态不是满饱和（那条声明里必须有一个非 var 的兜底色，且带 color-mix）；
+    //   2. 悬停回到满饱和（指针停在上面时该明确）；
+    //   3. 确认条里的按钮仍是实心红底（真正要删的那一步不能被弱化）。
+    const resting = QODER_CARD_CSS.match(/\.dsm-qoder-pool-delete-btn\{[^}]*\}/)?.[0] ?? ''
+    expect(resting).toContain('color-mix')
+    // 兜底色必须是柔和的那条，不是 #ef4444 —— 老 WebView 上会原样用兜底值。
+    expect(resting).toContain('#c76a6a')
+    expect(resting).not.toContain('color:var(--dsw-alias-state-error-primary,#ef4444)')
+    // 悬停要查 **color 属性本身**，不能只查「这一条规则里出现过 error 变量」——
+    // 边框色里也有它，那样写的话「把文字色改成灰」也能过（这个宽松版本当时确实
+    // 放过了变异 2）。用 `(?:^|;)color:` 锚住属性名，避免匹配到 border-color。
+    const hover = QODER_CARD_CSS.match(/\.dsm-qoder-pool-delete-btn:hover[^{]*\{[^}]*\}/)?.[0] ?? ''
+    expect(hover).toMatch(/(?:^|[{;])color:var\(--dsw-alias-state-error-primary/)
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool \.dsm-btn-danger\{[^}]*background:var\(--dsw-alias-state-error-primary/)
+  })
+
   it('活动排成瓦片：用足宽度，不是一行一条压到底', () => {
     // 每条活动用掉整栏宽度 1/3 不到、右侧整片空白，三条就吃掉近 300px 高度。
     // 网格 auto-fill + 260px 下限让它在 612px 的正文栏里自然排两列。
