@@ -2,6 +2,84 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.19.1 (2026-11-06)
+
+> 版本号是 **patch**：只有 composer 积分浮层的表格布局与两处 `title`。配置键、请求
+> 形状、路由、CLI、已保存的值、宿主接口全都不动。
+
+### 修复
+
+- **composer 积分浮层：状态文案一长就把表格撑出浮层，右侧「积分」列跟着跑到框外**
+  （issue #34，报的是 `1.17.5`，而 `1.17.4` 及更早同样存在）。
+  配额被拒时那一行第二行拼出来的是「用量已达上限 · 约 7 小时后解禁（按今日额度窗口
+  推算）」，30 个字；1.17.5 新增的那一档（「上游未给出何时恢复 · 每 30 分钟自动重试
+  一次」）还更长。它不换行、不省略，于是把整张表撑宽、把「积分」列连同数字推出浮层，
+  而浮层又没有 `overflow:hidden` —— 看起来就是「文字写到框外」。
+
+  根因是三条凑在一起，逐条都量过（Chrome + 真实组件 DOM + 本仓库样式表；jsdom 不做
+  布局，所以这些数是浏览器实测，不是推断）：
+
+  | | 规则 | 后果 |
+  | --- | --- | --- |
+  | ① | 表格没有 `table-layout:fixed`，列宽跟着内容长 | `width:100%` 只是下限，内容有多长表就有多宽 |
+  | ② | `.dsm-qoder-composer-panel-switch` 的 `white-space:nowrap` 被状态文案**继承**，而它既没有 `overflow` 也没有 `text-overflow` | 那行字既不可能折行，也不可能被省略 |
+  | ③ | 账号名有 `ellipsis`、状态文案没有 | 名字被截断，红字一路顶出去（这条只解释「为什么名字没了、红字还在」，不是溢出本身） |
+
+  用**真实 `ComposerCredits`** 渲染（不是手写 DOM）后交给 Chrome 量，四种构造的溢出量：
+
+  | 构造 | 修前溢出 | 修后 |
+  | --- | --- | --- |
+  | 中文 `unlockSuffixWindow`（截图里那句，30 字） | **105px**（表 339px） | **0** |
+  | 中文 `poolRetryUnknown` + `poolRetryFallback`（1.17.5 新增，更长） | **133px**（表 367px） | **0** |
+  | 英文同一条文案（国际版更长） | **434px**（表 668px） | **0** |
+  | 超长账号名（无空格） | 名字撑开同一条通路 | **0** |
+
+  改法取的是 issue 建议里的 **A + B**，外加 D 的一部分：
+
+  - **表格 `table-layout:fixed`** —— 列宽按声明分配，内容再长也只在自己那格里；
+  - **「积分」列定宽 64px** + `overflow:hidden;text-overflow:ellipsis` 兜底。64px 是
+    实测值：Chrome、12px、`tabular-nums` 下「9,999,999」62px（最宽一档）、
+    「999,999」50.9px，11px 的表头「积分」/「Credits」更短。不写宽度的话 fixed 之后
+    两列平分剩下的 222px，账号列被砍一半去换一个三位数，反而更难读；
+    兜底截断是为了防十位数余额，正常量级永远不触发；
+  - **状态文案改成换行**（`white-space:normal; overflow-wrap:anywhere`），**不用**
+    截断也不用 `-webkit-line-clamp`。这一格里最该被读到的是「（按今日额度窗口推算）」
+    那半句 —— 它说明这个时刻是**推算**的、不是上游承诺的，截掉就等于把限定藏起来。
+    `overflow-wrap:anywhere` 是因为中文没有词间空格可断。（与
+    `dsh-connect-workbuddy` issue #108 同一个判断：那边也是先截断、后来改成换行。）
+  - **账号名与状态文案补 `title`** —— 折行之后长文案仍可能被窄浮层折得不好读，账号名
+    则会被 `ellipsis` 截掉，两者悬停都该能看到完整原文。「当前选用」不挂（它短得不
+    折行，多一个原生气泡只是噪音）。
+
+  修完后浮层的 `scrollWidth` 与 `clientWidth` 相等（246/246），每一行的「积分」格右沿
+  都落在浮层内边界之内。代价是高度：中文那句折成 3 行、英文折成 6 行，浮层从 237px
+  长到 282px（中文）/ 327px（英文）。浮层本来就没有高度上限（它挂在输入框上方的
+  `position:fixed` 里，视口收边由 `popover.ts` 负责），多两行只是多两行；而截断会
+  永久藏掉那半句限定。
+
+  守卫分两层：
+
+  - `tests/credit-position.spec.tsx` 的「面板表格不会被长文案撑开（issue #34）」——
+    三条**样式契约**（fixed 布局 / 积分列定宽 / 状态文案可折行），跑在 `pnpm test`
+    里，不依赖本机 Chrome；三条各做了变异验证（退回任一条都失败）；
+  - `scripts/composer-panel-overflow.preview.tsx`——**真实组件**交给 Chrome 做布局，
+    量 `scrollWidth - clientWidth` 与「积分」格右沿。它不进 `pnpm test`（和
+    `model-list-layout.preview.tsx` 同一个理由：要碰本机 Chrome），用
+    `npx vitest run --config scripts/vitest.preview.config.ts` 跑。四条构造在修前
+    分别溢出 105 / 133 / 434 / 105px，修后全为 0 —— 这组断言确实咬得住。
+
+  另有一组 `title` 用例（DOM 层）钉住「折行/省略之后仍能读到完整原文」：
+  `title` 必须与正文**逐字相同**（另写一套措辞等于让悬停看到的不是同一条事实）。
+
+### 说明
+
+- issue 里「顺带一提」的设置面板 `.dsm-qoder-pool-row` **本次没动**。按同样的构造在
+  Chrome 里量过：它在窄栏（578px）排三行、长文案在 `.dsm-qoder-pool-probe` 里
+  `flex-wrap` + `overflow-wrap:anywhere` 正常折行，`scrollWidth === clientWidth`
+  （576/576）；宽栏（900px）那套五列 grid 同样不溢出。它不缺 issue 报的那个毛病，
+  没有理由为了「一起改」去动一个没坏的东西 —— 若日后在别的字号/语言下真的长出边界，
+  那该是另一条 issue、另一组实测。
+
 ## 1.19.0 (2026-11-06)
 
 > 版本号是 **minor**：账号池成员区的**结构**变了 —— 从「标题 + 裸表格」变成一张

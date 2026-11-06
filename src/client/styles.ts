@@ -928,8 +928,15 @@ export const QODER_COMPOSER_CSS = `
   .dsm-qoder-composer-panel-refresh{transition:none}
   .dsm-qoder-composer-panel-refresh-icon-spin{animation:none;opacity:.55}
 }
+/* 表格**不许**被内容撑开（issue #34）。默认的 table-layout:auto 让列宽跟着内容走，
+   width:100% 只是下限：账号行第二行的状态文案是一条**可长可短**的翻译句子
+   （国内版「用量已达上限 · 约 7 小时后解禁（按今日额度窗口推算）」，国际版比它
+   更长），它一长，整张表就比 248px 的浮层还宽 —— 右侧「积分」列于是连数字一起
+   被推到浮层外面。实测（Chrome，真实 DOM + 本文件 CSS）：中文那条把表撑到 336px、
+   溢出 102px，英文那条撑到 543px、溢出 309px。
+   fixed 之后列宽按声明分配，内容再长也只在自己那格里换行或省略。 */
 .dsm-qoder-composer-panel-table{
-  width:100%;border-collapse:collapse;
+  width:100%;border-collapse:collapse;table-layout:fixed;
   font-size:12px;line-height:18px;
 }
 .dsm-qoder-composer-panel-table thead th{
@@ -939,6 +946,17 @@ export const QODER_COMPOSER_CSS = `
 }
 .dsm-qoder-composer-panel-num{
   text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+/* 「积分」这一列**定宽**（issue #34）。table-layout:fixed 之后列宽只认声明：
+   不写宽度的话它与账号列平分剩下的 222px，账号列被砍掉一半去换一个永远只有
+   三四位数的数字，反而更难读。
+   64px 的来历是实测：Chrome、12px、tabular-nums 下「999,999」50.9px、
+   「9,999,999」62px（最宽的一档），共用的 11px 表头「积分」/「Credits」更短。
+   overflow+ellipsis 是**兜底**：真出现十位数的余额时把它截断成省略号，而不是让它
+   画到浮层外面去（issue 报的正是「跑到框外」）。 */
+.dsm-qoder-composer-panel-table thead th.dsm-qoder-composer-panel-num,
+.dsm-qoder-composer-panel-table tbody td.dsm-qoder-composer-panel-num{
+  width:64px;overflow:hidden;text-overflow:ellipsis;
 }
 .dsm-qoder-composer-panel-table thead th.dsm-qoder-composer-panel-num{padding-right:0}
 .dsm-qoder-composer-panel-table tbody th{
@@ -961,9 +979,19 @@ export const QODER_COMPOSER_CSS = `
 .dsm-qoder-composer-panel-name{overflow:hidden;text-overflow:ellipsis}
 /* 第二行的两种文字：原因（不能用的红字，与红点同义）与「当前选用」
    （能用的正向提示，绿字）。此前只有一个琥珀色的 reason 样式。 */
+/* **换行，不截断**（issue #34）。
+   外层 .dsm-qoder-composer-panel-switch 为账号名设了 white-space:nowrap，这条会
+   被继承；而这一格的文字是**翻译句子**，长度不受布局控制（国内版那句「用量已达
+   上限 · 约 7 小时后解禁（按今日额度窗口推算）」30 个字，国际版那句更长），
+   nowrap 于是让它一路顶出浮层。这里的两种候选结局里，多一行是**读得完**的，
+   截断是**读不到**的 —— 「按今日额度窗口推算」正是这句里最该被读到的一半，
+   它说明这个时刻是**推算**的、不是上游承诺的。
+   overflow-wrap:anywhere：中文没有词间空格可断，不给它这条就只会在标点处折。
+   （与 dsh-connect-workbuddy 的 issue #108 同一个判断，那边也是先截断、后改成换行。） */
 .dsm-qoder-composer-panel-mark{
   font-size:11px;line-height:15px;
   color:var(--dsw-alias-state-error-primary,#ef4444);
+  white-space:normal;overflow-wrap:anywhere;
 }
 .dsm-qoder-composer-panel-pick{
   font-size:11px;line-height:15px;

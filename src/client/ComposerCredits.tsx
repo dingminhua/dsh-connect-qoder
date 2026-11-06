@@ -606,13 +606,18 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                                 aria-hidden="true"
                               />
                               <span className="dsm-qoder-composer-panel-who">
-                                <span className="dsm-qoder-composer-panel-name">{row.accountName}</span>
+                                {/* 两行文字都可能被**省略/换行**（issue #34）：账号
+                                    名有 ellipsis，状态文案换行但窄浮层里也可能被折到
+                                    很不好读。两种情况下悬停都该能读到完整原文 ——
+                                    尤其中文状态里「（按今日额度窗口推算）」这半句，
+                                    它说的是这个时刻**是推算的**、不是上游承诺的。 */}
+                                <span className="dsm-qoder-composer-panel-name" title={row.accountName}>{row.accountName}</span>
                                 {mark === undefined
                                   ? null
                                   : excluded === undefined
                                     // 「当前选用」是中性/正向信息，不该用告警色。
                                     ? <span className="dsm-qoder-composer-panel-pick">{mark}</span>
-                                    : <span className="dsm-qoder-composer-panel-mark">{mark}</span>}
+                                    : <span className="dsm-qoder-composer-panel-mark" title={mark}>{mark}</span>}
                               </span>
                             </button>
                           </th>

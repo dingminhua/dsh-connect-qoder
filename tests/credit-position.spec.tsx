@@ -560,6 +560,29 @@ describe('composer 面板的点色', () => {
     })
   })
 
+  it('账号名与状态文案都带 title —— 折行/省略之后仍能读到完整原文（issue #34）', async () => {
+    // 面板只有 248px：长账号名会被 ellipsis 截掉，长状态文案会折成两三行。两者
+    // 都需要一条悬停时能看到完整原文的退路，否则「（按今日额度窗口推算）」这种
+    // 关键限定在窄浮层里就真的读不到了。
+    const until = Date.now() + 7 * 60 * 60 * 1000
+    await withPanel([
+      { id: 'a-cur', accountName: 'cur', selected: true, current: true },
+      { id: 'a-l', accountName: 'a-very-long-account-name', selected: false, current: false, excludedBy: 'rate-limited', retryAtMs: until, retrySource: 'quota-refresh' },
+    ], async panel => {
+      const rows = Array.from(panel.querySelectorAll('tbody tr'))
+      const long = rows.find(tr => tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent === 'a-very-long-account-name')!
+      expect(long.querySelector('.dsm-qoder-composer-panel-name')?.getAttribute('title')).toBe('a-very-long-account-name')
+      const mark = long.querySelector('.dsm-qoder-composer-panel-mark')!
+      // title 与正文**逐字相同**：title 里另写一套措辞，等于让悬停看到的和屏幕上的
+      // 不是同一条事实。
+      expect(mark.getAttribute('title')).toBe(mark.textContent)
+      expect(mark.getAttribute('title')).toContain('row.unlockSuffixWindow')
+      // 「当前选用」不重复挂 title：它短得不折行，多一个原生气泡只是噪音。
+      const cur = rows.find(tr => tr.querySelector('.dsm-qoder-composer-panel-name')?.textContent === 'cur')!
+      expect(cur.querySelector('.dsm-qoder-composer-panel-pick')?.getAttribute('title')).toBeNull()
+    })
+  })
+
   it('页头有两颗按钮：左边「刷新」（重测玩家池），右边「设置」（打开插件设置页）', async () => {
     let opened = 0
     await withPanel([
@@ -766,5 +789,63 @@ describe('页头控件的 CSS 契约', () => {
     // 变暗，而不是消失。
     const dimmed = blocks.find(block => block.includes('dsm-qoder-composer-panel-refresh-icon-spin')) ?? ''
     expect(dimmed).toContain('opacity:')
+  })
+})
+
+/**
+ * 面板表格**不许被长文案撑开**（issue #34）。
+ *
+ * 报的现场：账号行第二行的状态文案（「用量已达上限 · 约 7 小时后解禁（按今日额度
+ * 窗口推算）」，约 30 字）不换行、不省略，于是把整张表横向撑开，右侧「积分」列
+ * 连同数字一起被推出 248px 的浮层；浮层本身又没有 overflow:hidden，所以看起来是
+ * 「文字写到框外」。
+ *
+ * 这里是**样式表层面的**契约 —— jsdom 不做布局，量不出溢出；真正的溢出量在
+ * commit 说明里给了 Chrome 实测数（旧：中文 102px、英文 309px 溢出；新：0）。
+ * 断言盯的是那三条**根因规则**，任何一条退回原样，浏览器里就会重新溢出：
+ *   1. 表格用 fixed 布局（列宽不再跟着内容长）；
+ *   2. 积分列有定宽（否则 fixed 之后两列平分，账号列被砍一半去换一个三位数）；
+ *   3. 状态文案 white-space:normal（它继承 switch 上的 nowrap，那才是「不可能折行」）。
+ */
+describe('面板表格不会被长文案撑开（issue #34）', () => {
+  /** 取出**声明体里**带某个类的所有规则（含合并选择器，如 `a th.num, a td.num{...}`）。 */
+  const rulesMentioning = (className: string): string[] => {
+    const bodies: string[] = []
+    for (const match of QODER_COMPOSER_CSS.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+      const selector = match[1] ?? ''
+      const body = match[2] ?? ''
+      // 只认**类选择器**：`.dsm-qoder-x` 后面不能再接标识符字符（否则 x-y 也会命中 x）。
+      if (new RegExp(`\\.${className}(?![\\w-])`).test(selector)) bodies.push(body)
+    }
+    return bodies
+  }
+
+  it('表格用 table-layout:fixed —— 列宽按声明分配，不跟内容长', () => {
+    const table = rulesMentioning('dsm-qoder-composer-panel-table')
+      .filter(body => body.includes('border-collapse'))
+    expect(table.length, '没找到表格那条规则').toBeGreaterThan(0)
+    expect(table.join(';'), 'table-layout 退回 auto，issue #34 会重现').toContain('table-layout:fixed')
+  })
+
+  it('「积分」列定宽，且超长时截断而不是画到浮层外', () => {
+    const cells = rulesMentioning('dsm-qoder-composer-panel-num').join(';')
+    expect(cells).toContain('width:64px')
+    // 兜底：真出现十位数余额时截断成省略号，别溢出去。
+    expect(cells).toContain('overflow:hidden')
+    expect(cells).toContain('text-overflow:ellipsis')
+    // 数字本身仍然不折行（定宽之后折行会把「1,234」拆成两行，比省略号更糟）。
+    expect(rulesMentioning('dsm-qoder-composer-panel-num').join(';')).toContain('white-space:nowrap')
+  })
+
+  it('状态文案可以折行 —— 它继承的 nowrap 正是根因', () => {
+    const mark = rulesMentioning('dsm-qoder-composer-panel-mark')
+      .find(body => body.includes('font-size:11px'))
+    expect(mark, '没找到状态文案那条规则').toBeDefined()
+    expect(mark!, 'mark 必须显式 white-space:normal，否则继承 switch 的 nowrap').toContain('white-space:normal')
+    expect(mark!, '中文没有词间空格可断，必须给 overflow-wrap').toContain('overflow-wrap:anywhere')
+    // 不许退回到「截断」：这句里「（按今日额度窗口推算）」是最该被读到的一半。
+    expect(mark!).not.toContain('text-overflow:ellipsis')
+    // 也不许用 -webkit-line-clamp 把句子截成两行 —— 行数上限同样会吃掉结论。
+    expect(mark!).not.toContain('line-clamp')
   })
 })
