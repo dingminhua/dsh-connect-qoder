@@ -221,6 +221,55 @@ describe('仓库里没有真实账号数据', () => {
   }
 })
 
+/**
+ * 规则本身也要被 CI 盯住。
+ *
+ * 这一组防的是「文档被悄悄削弱」：一份写着「不得跳过」的清单，只要有人把某一项删掉，
+ * 就再也不会有人执行它——而删文档不会让任何测试变红。所以要断言**关键条款还在**。
+ *
+ * 只断言「这些词存在」，不校验措辞：文档可以改写，但那几条硬约束不能消失。
+ */
+describe('规则文档仍然在位且没被削弱', () => {
+  const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8')
+
+  it('AGENTS.md 有隐私硬约束一节，并列全六类禁止内容', () => {
+    const text = read('AGENTS.md')
+    expect(text).toMatch(/## 一、隐私/)
+    // 六类：邮箱/昵称、显示名、财务状态、凭据指纹、本机路径、凭据库键名
+    for (const word of ['邮箱', '显示名', '财务状态', '凭据指纹', '绝对路径', '凭据库键名']) {
+      expect(text, `AGENTS.md 少了「${word}」这一类`).toContain(word)
+    }
+    // 截图那条最容易退化成「遮一下就行」
+    expect(text).toContain('模糊')
+    expect(text).toContain('不算脱敏')
+  })
+
+  it('AGENTS.md 指出护栏测不了财务数值（防止把「测过了」当成「查过了」）', () => {
+    const text = read('AGENTS.md')
+    expect(text).toMatch(/只能靠人/)
+  })
+
+  it('RELEASING.md 的第 0 步仍在，且清单含财务数字与独立复核', () => {
+    const text = read('RELEASING.md')
+    expect(text).toMatch(/### 0\. 隐私审查/)
+    expect(text, '清单里少了「截图里的数字」这一项').toMatch(/数字也是假的|余额/)
+    expect(text, '清单里少了独立复核这一项').toMatch(/维护者之外/)
+    expect(text).toMatch(/tests\/privacy\.spec\.ts/)
+  })
+
+  it('docs/PRIVACY.md 仍在，且写明护栏的能力边界', () => {
+    const text = read('docs/PRIVACY.md')
+    expect(text).toMatch(/绝对禁止/)
+    expect(text, '能力边界没写清楚的活，下一个人会误信护栏').toMatch(/能力边界|读不了图片/)
+    expect(text).toMatch(/黑名单/)
+  })
+
+  it('PRIVACY.md 随 npm 包发布（否则使用者看不到这些规则）', () => {
+    const pkg = JSON.parse(read('package.json')) as { files?: string[] }
+    expect(pkg.files, 'docs/PRIVACY.md 必须在 files 里').toContain('docs/PRIVACY.md')
+  })
+})
+
 describe('发布清单不会把内部文件带出去', () => {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')) as {
     files?: string[]

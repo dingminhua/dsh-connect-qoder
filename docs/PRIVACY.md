@@ -67,9 +67,13 @@ Markdown 里的 alt 文字。alt 是写给读者的，不是写给你自己核�
 
 ```bash
 # 1) 代码与文档里不该有的东西（与 tests/privacy.spec.ts 的规则一一对应）
-grep -rnE 'nick[0-9]{7,}|@(msn|gmail|qq|163|126)\.com|pat-[0-9a-f]{16}|/Users/[A-Za-z0-9._-]+/|(?<!\d)1[3-9][0-9]{9}(?!\d)|"(machineId|machineToken|machineType)"\s*:\s*"' \
+# 占位值（pat-aaaa… / pat-deadbeef… / pat-0123456789abcdef）被排除在外，
+# 否则输出会被测试夹具淹没，而「看不完的输出」等于没人看。
+grep -rnE 'nick[0-9]{4,}|@[A-Za-z0-9.-]+\.[a-z]{2,}|pat-[0-9a-f]{12,}|/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|(?<!\d)1[3-9][0-9]{9}(?!\d)|"?(machineId|machineToken|machineType)"?\s*[:=]' \
   --include='*.md' --include='*.ts' --include='*.tsx' --include='*.mjs' --include='*.json' \
-  --include='*.yml' --include='*.reg' . | grep -v node_modules
+  --include='*.yml' --include='*.css' --include='*.reg' . \
+  | grep -v node_modules | grep -v example.com \
+  | grep -viE 'pat-(0{6,}|a{6,}|b{6,}|c{6,}|d{6,}|e{6,}|f{6,}|deadbeef|cafebabe|deadc0de|feedface|0123456789abcdef|fedcba9876543210)'
 
 # 2) 本次改动的图片，逐张打开看一眼（自动化查不了内容）
 git diff --stat -- docs/assets
@@ -82,6 +86,12 @@ pnpm exec vitest run tests/privacy.spec.ts
 > - 它扫的是**已知坏值的黑名单**，不是「未知好值的白名单」。新人名、新邮箱域、
 >   新昵称形态一律漏——这次事故的主体（一个不是邮箱也不像昵称的显示名）它就抓不到。
 > - 它**读不了图片内容**。截图只能靠人打开看。
+> - **它测不了「财务数值」这一整类。** 试过一版「余额…数字…到期」并列的规则，
+>   而测试夹具里 `{ credits: 100, nearestExpiryMs: … }` 一屏十几条，满屏误报，
+>   逼得人加 `allow` 白名单，最后变成「谁改测试谁顺手放宽」——比没有更糟，已撤回。
+>   这一类**只能靠人**：改图时同时改正文里引用那张图的数字（见 §2 第 3 条）。
+> - 序号 2 的 `lib/` 已纳入扫描（它是 gitignore 的构建产物，却随包发布）；
+>   但干净 clone 上还没构建时，那部分为空——**发布前必须先 `pnpm build`**。
 > - 所以 §2 的第 1 条（先造数据再截图）才是治本的；护栏只防回退。
 
 ## 5. 已经泄露了怎么办
