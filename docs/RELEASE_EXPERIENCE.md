@@ -336,6 +336,82 @@ npm whoami        # 期望 dmh2002；401 就先 npm login，再 npm publish
 
 `npm login` 走浏览器授权，和 publish 一样属于**用户在自己终端做**的那一半。
 
+#### 9.1.1 令牌失效时 `npm publish` 报的是 **404**，不是 401（1.19.1 实测，2026-11-06）
+
+这一条是 9.1 的补充，值得单列，因为**报错文本会把人引到完全错的方向**。
+
+1.19.1 发布时，`npm publish` 失败并打印：
+
+```
+npm error code E404
+npm error 404 Not Found - PUT https://registry.npmjs.org/@dmh2002%2fdsh-connect-qoder - Not found
+npm error 404  The requested resource '@dmh2002/dsh-connect-qoder@1.19.1' could not be found
+               or you do not have permission to access it.
+```
+
+「404 / 找不到」看起来像版本号写错、包名写错、或根本没发布过 —— 但真正的原因是
+**令牌已失效**。三个判据合起来才能定性，缺一条都会被误导：
+
+| 证据 | 读到的东西 | 意味着 |
+| --- | --- | --- |
+| `npm whoami` | `E401 Unauthorized`（直连 `GET /-/whoami` 也是 401） | 令牌失效，不是权限粒度问题 |
+| debug 日志第 29 行 | `GET 200 …/@dmh2002%2fdsh-connect-qoder` | **读**包元数据不需要令牌，所以读得到 |
+| debug 日志第 31 行 | `PUT 404 …/@dmh2002%2fdsh-connect-qoder` | **写**才需要身份；被拒的写一律回 404 |
+
+**为什么是 404 而不是 401**：npm 对 scoped 包的写操作，在「令牌无效 / 无该包写权限」时
+统一返回 **404**（而不是 404 与 401 分开）—— 这样调用方无法探测「这个包存在但你没权限」，
+是刻意的信息隐藏。所以 **`npm publish` 的 404 一定要先跑 `npm whoami` 排除令牌问题**，
+再去怀疑版本号或包名。
+
+对照 9.1 那条：1.3.0 那次拿到的是干净的 401，这次拿到的是伪装成 404 的 401。**同一个
+根因，两种报错**，所以「发布前先敲 `npm whoami`」这条纪律不能省。
+
+修复方式：`npm login`（浏览器授权，属于用户在自己终端做的那一半），然后重跑 `npm publish`。
+**不需要改版本号** —— 被拒的 PUT 一个字节都没上传（直连 registry 回查确认 `latest` 仍是
+旧版本、新版本号不存在）。
+
+成功那次的输出形态（用户终端，2026-11-06）：
+
+```
+Authenticate your account at:
+https://www.npmjs.com/auth/cli/<uuid>
+Press ENTER to open in the browser...
+npm notice Your package is being processed and may take a few minutes to become available.
++ @dmh2002/dsh-connect-qoder@1.19.1
+```
+
+#### 9.1.2 `+` 行出现之后，registry 仍可能查不到（1.19.1 实测）
+
+`+ @dmh2002/dsh-connect-qoder@1.19.1` 打出来了，但紧接着用 `--noproxy '*'` 直连回查，
+`dist-tags.latest` **仍是 1.19.0**、`versions['1.19.1']` **不存在**。npm 自己也提示了
+`Your package is being processed and may take a few minutes to become available`。
+
+实测传播用了 **约 90 秒**（每 15 秒轮询一次，第 6 次才看到）。所以第 8 步的核验要**轮询**，
+不要拿单次结果下结论 —— 这与 `RELEASING.md` §8 那条「packument 与 tarball 是两个传播时刻」
+是同一件事的不同侧面：`+` 行只代表「CLI 认为上传成功」，**只有 packument 里的 `time` 与
+`dist.shasum` 才作数**。
+
+轮询到之后核对三样，缺一不可：
+
+```bash
+curl -s --noproxy '*' -H "Cache-Control: no-cache" \
+  https://registry.npmjs.org/@dmh2002%2Fdsh-connect-qoder \
+| node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{const j=JSON.parse(s);
+  const v=j.versions['X.Y.Z'];
+  console.log('latest:',j['dist-tags'].latest);
+  console.log('published:',j.time['X.Y.Z']);
+  console.log('shasum:',v.dist.shasum)})"
+```
+
+- `latest` 是新版本；
+- `time['X.Y.Z']` 是本次时刻；
+- `dist.shasum` **等于**本地 `npm pack --dry-run` 的 shasum（1.19.1 是 `abd1e04e…`）。
+
+想再稳一层，就把 tarball 下下来做 `shasum` + 解开看产物内容 —— 1.19.1 那次解包后确认
+`lib/client.js` 里确实带着 `table-layout:fixed` 与 `width:64px`，且包内 28 个文件、不含
+`tests/` `scripts/` `node_modules/`。
+
+
 ### 9.2 客户端改动在**运行中的宿主**里刷新页面看不到
 
 1.3.0 期间踩到并反复解释的一条：改完 `src/client/*`、构建也过了，让用户「刷新页面」
