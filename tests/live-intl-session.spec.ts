@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { existsSync, readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { QODER_REGIONS, QoderUpstreamClient } from '../src/upstream.ts'
 
 /**
@@ -15,7 +17,8 @@ import { QODER_REGIONS, QoderUpstreamClient } from '../src/upstream.ts'
  * 不会因为网络不通而变红。
  */
 const LIVE = process.env['QODER_LIVE_TESTS'] === '1'
-const REAL_HOME = '/Users/dmh2002/.dsh'
+// 真实 DSH home 由 `os.homedir()` 推导，不写死任何一个人的本机路径。
+const REAL_HOME = join(homedir(), '.dsh')
 
 /**
  * 国际版的 sash 面（积分 / 签到 / 额度）需要**另一族令牌**。
@@ -44,7 +47,7 @@ const REAL_HOME = '/Users/dmh2002/.dsh'
 /** The real vault for a region, or undefined when this machine has none. */
 function vaultPat(region: 'cn' | 'global'): string | undefined {
   try {
-    const path = `${REAL_HOME}/.qoder-accounts.${region}.json`
+    const path = join(REAL_HOME, `.qoder-accounts.${region}.json`)
     if (!existsSync(path)) return undefined
     const doc = JSON.parse(readFileSync(path, 'utf8')) as {
       accounts?: Array<{ pat?: string }>

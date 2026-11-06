@@ -55,7 +55,7 @@ function usageDoc(): Record<string, unknown> {
   return {
     status: 'signed-in',
     accountId: 'acc-id',
-    accountName: 'dingminhua',
+    accountName: 'acct-demo',
     region: 'cn',
     enabled: true,
     source: 'vault',
@@ -63,7 +63,7 @@ function usageDoc(): Record<string, unknown> {
     showCampaigns: true,
     creditPosition: 'composer',
     selectionExplicit: true,
-    accounts: [{ id: 'acc-id', accountName: 'dingminhua', source: 'vault', selected: true }],
+    accounts: [{ id: 'acc-id', accountName: 'acct-demo', source: 'vault', selected: true }],
     models: [
       {
         key: 'qwen3.8-max', name: 'Qwen3.8-Max', contextWindow: 200_000, nativeContextWindow: 1_000_000,
@@ -83,10 +83,10 @@ function usageDoc(): Record<string, unknown> {
     offModelKeys: [],
     imageModelKeys: ['qwen3.8-max'],
     credits: {
-      total: 1_240,
-      expiringSoon: 100,
-      nearestExpiryMs: Date.UTC(2026, 10, 20),
-      packages: [{ packageName: 'base', remain: 1_140, size: 2_000, monthly: false }],
+      total: 888,
+      expiringSoon: 50,
+      nearestExpiryMs: Date.UTC(2027, 0, 1),
+      packages: [{ packageName: 'base', remain: 838, size: 1_000, monthly: false }],
     },
     contextBudgets: { 'qwen3.8-max': 400_000 },
     thinkingEfforts: { 'qwen3.8-max': 'xhigh' },
@@ -98,9 +98,9 @@ function usageDoc(): Record<string, unknown> {
       effectiveMemberAccountIds: ['acc-id', 'acc-2'],
       accounts: [
         {
-          accountId: 'acc-id', accountName: 'dingminhua', current: true, member: true,
-          checkedInToday: true, source: 'vault', credits: 1_240, expiringSoon: 100,
-          nearestExpiryMs: Date.UTC(2026, 10, 20),
+          accountId: 'acc-id', accountName: 'acct-demo', current: true, member: true,
+          checkedInToday: true, source: 'vault', credits: 888, expiringSoon: 50,
+          nearestExpiryMs: Date.UTC(2027, 0, 1),
           probe: { outcome: 'ok', atMs: Date.now() - 60_000, elapsedMs: 1_500, source: 'test-batch' },
         },
         {
@@ -199,7 +199,7 @@ describe('卡片三栏的真机结构（截图留在系统临时目录）', () =
   it('账号栏：账号池与积分偏好都在，且默认是这一栏', async () => {
     const { text } = await capture('accounts')
     expect(text).toContain('账号池')
-    expect(text).toContain('dingminhua')
+    expect(text).toContain('acct-demo')
     expect(text).not.toContain('row.panelAccounts')  // 文案键漏出 = 真 bug
   })
 
@@ -214,7 +214,7 @@ describe('卡片三栏的真机结构（截图留在系统临时目录）', () =
     const { text } = await capture('diag')
     expect(text).toContain(QODER_UPSTREAM_DOMAIN.cn)
     expect(text).toContain('HTTP 503 from gateway.qoder.com.cn')
-    expect(text).toContain('dingminhua')
+    expect(text).toContain('acct-demo')
     expect(text).not.toContain('acc-id')
   })
 

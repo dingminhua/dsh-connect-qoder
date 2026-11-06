@@ -382,10 +382,10 @@ describe('QoderCard render', () => {
           status: 200,
           json: async () => ({
             ...doc,
-            accountId: 'pat-5d76517ac7699f87',
+            accountId: 'pat-0123456789abcdef',
             accounts: [
-              { id: 'pat-84ad6cf5b4f62d10', accountName: 'same@msn.com', source: 'vault', selected: false },
-              { id: 'pat-5d76517ac7699f87', accountName: 'same@msn.com', source: 'vault', selected: true },
+              { id: 'pat-fedcba9876543210', accountName: 'same@example.com', source: 'vault', selected: false },
+              { id: 'pat-0123456789abcdef', accountName: 'same@example.com', source: 'vault', selected: true },
             ],
           }),
         } as Response
@@ -426,7 +426,7 @@ describe('QoderCard render', () => {
   })
 
   it('卡片正文不再重复额度明细（下方账号池已按账号逐行显示）', async () => {
-    // 用户实拍：红框那行「附加额度 · 92 / 100」与账号池表格的「积分」列说的是
+    // 用户实拍：红框那行「附加额度 · 88 / 100」与账号池表格的「积分」列说的是
     // 同一组数字（连到期时间都一样），而池里是逐账号显示、粒度更细。
     // 但**读不到**的情况必须留下：池行只能显示一个「—」，说不出为什么，而
     // `creditsError` 只存在于这份 usage 文档里。

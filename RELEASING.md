@@ -18,10 +18,35 @@
 
 ## 每次发布的完整步骤
 
+### 0. 隐私审查（**不得跳过，且必须由维护者以外的一双眼睛过一遍**）
+
+发出去就收不回来 —— 截图会进 GitHub 首屏、进 npm 页面、进每一份 tarball。
+早期版本就带着真实账号数据发出去过，隔了一个版本才发现。
+
+```bash
+# 自动化那一道（CI 也会跑，这里先本地过一遍）
+pnpm exec vitest run tests/privacy.spec.ts
+
+# 图片那一道：自动化查不了，必须人看
+git diff --stat -- docs/assets
+```
+
+核对清单：
+
+- [ ] `tests/privacy.spec.ts` 绿
+- [ ] **本次改动过的每张 `docs/assets/*.png` 都打开看过实际像素**——不是在 Markdown 里读 alt 文字
+- [ ] 截图里的账号名是 `acct-demo` 之类假值；**没有模糊 / 马赛克 / 半透明遮罩**（它们保留字符宽度与字距，不算脱敏）
+- [ ] 本轮新增的文字里没有真实邮箱、上游昵称、`pat-<16 hex>` 指纹、本机绝对路径、凭据库键名
+- [ ] 源码注释也过了——`lib/` 是构建产物，注释会原样进 npm 包；改过注释就要重新 `build`
+- [ ] **由维护者之外的人（或一次独立的代理审查）复核本次 diff 里有没有私货**，并把结论写进 PR / 提交说明
+
+> 规则全文见 [`docs/PRIVACY.md`](docs/PRIVACY.md)。这条为什么单列成第 0 步：它和 CI、测试、
+> 类型都没有关系，漏掉时不会有任何东西报错——只能靠清单里写着。
+
 ### 1. 确认代码、测试与版权
 
 ```bash
-cd /Users/dmh2002/DshProject/dsh-connect-qoder
+cd ~/DshProject/dsh-connect-qoder
 pnpm run check        # typecheck + test + build，应全部通过
 grep -F "Copyright (c) 2026 LaoDing" LICENSE
 ```
@@ -89,12 +114,23 @@ git -C ../deepseek-harness tag -l 'dsh-v0.3.*'
 ### 5. 提交并打 git tag
 
 ```bash
-git add package.json CHANGELOG.md README.md README.en.md THIRD_PARTY_NOTICES.md
+git add -A          # 见下方警告：不要用文件白名单
 git commit -m "chore: 版本升级至 X.Y.Z"
 git tag -a vX.Y.Z -m "vX.Y.Z: <一句话说明>"
 git push origin main
 git push origin vX.Y.Z
 ```
+
+> ⚠️ **这里曾经写着一串 `git add package.json CHANGELOG.md README…` 的白名单，
+> 那是会出事的写法。** 一次隐私修复同时改了 `src/`、`tests/`、`docs/`、`.gitignore`
+> 与 `.github/`，照白名单 add 的话这些全都不进 commit，而 tag 与 CHANGELOG 已经
+> 宣称修复完成 —— push 之后 GitHub 上 README 链接的 `docs/PRIVACY.md` 会 404、
+> CI 新加的那一步在仓库里根本不存在，而 npm 包（由 `prepack` 从工作树重建）却
+> 带着修复。两边永久分叉。
+>
+> 改用 `git add -A` 的前提是 `.gitignore` 已经挡住本机状态（`.tmp-*/`、
+> `_backup_*/`、`*.reg`、`.env*`）。**add 之后必须 `git status` 看一遍**：
+> 出现任何你不认识的路径，先查清楚再提交。
 
 > ⚠️ **tag 必须指向包含本次代码的提交**。若目标 tag 已存在且指向旧提交，需先删除并强制移动，修正后用 `git rev-list -n1 vX.Y.Z` 确认指向当前 HEAD。
 
@@ -130,7 +166,7 @@ npm publish
 
 **作用域包**：`package.json` 的 `name` 是 `@dmh2002/dsh-connect-qoder`，且带 `publishConfig.access: "public"`——**没有这一项，`npm publish` 会按 restricted 报价并可能失败**。发布名与插件在 DSH 内的标识是两件事：`cordis.patch.yml` 的 entry `id`、设置命名空间、`/plugins/dsh-connect-qoder/…` 路由与 CLI 程序名**故意保持不带作用域**（改名会孤儿化老配置）。
 
-**打包内容**：`package.json` 的 `files` 字段限定只发布 `lib/`、`icons/`、`docs/assets/`、`docs/PAT.md`、`docs/DESIGN.md`、`docs/PROMO_BADGE.md`、`docs/DSH-0.2.1-RC1-FOLLOWUP.md`、`docs/DSH-0.2.2-RC1-FOLLOWUP.md`、`screenshots.json`、`cordis.patch.yml`、README 双语、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`。`tests/`、`scripts/`、`docs/audit/` 与 `node_modules/` 不会进入发布包——`npm pack --dry-run` 的输出里若出现它们（或任何 `pt-` 样式的字符串），先修再发。
+**打包内容**：`package.json` 的 `files` 字段限定只发布 `lib/`、`icons/`、`docs/assets/`、`docs/PAT.md`、`docs/PRIVACY.md`、`docs/DESIGN.md`、`docs/PROMO_BADGE.md`、`docs/DSH-0.2.1-RC1-FOLLOWUP.md`、`docs/DSH-0.2.2-RC1-FOLLOWUP.md`、`screenshots.json`、`cordis.patch.yml`、README 双语、`CHANGELOG.md`、`THIRD_PARTY_NOTICES.md`、`LICENSE`。`tests/`、`scripts/`、`docs/audit/` 与 `node_modules/` 不会进入发布包——`npm pack --dry-run` 的输出里若出现它们（或任何 `pt-` 样式的字符串），先修再发。
 
 > **README 里相对链接到的 `docs/` 文件必须在这份清单里**：README 在 npm 页面上是正文，相对链接指向包内路径，清单漏一项就是一个 404（`docs/PROMO_BADGE.md` 首次加进来时就漏过一次）。改 `files` 时对照 README 双语里的 `](docs/…)` 全量核一遍。
 

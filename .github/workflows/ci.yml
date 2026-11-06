@@ -42,6 +42,11 @@ jobs:
       - name: Run tests
         run: pnpm run test
 
+      - name: Repository content check
+        # 单独一步：红了要一眼看出是哪一类内容不合规，而不是被淹没在
+        # 500 条测试的失败列表里。规则见 docs/PRIVACY.md。
+        run: pnpm exec vitest run tests/privacy.spec.ts
+
       - name: Build
         run: pnpm run build
 

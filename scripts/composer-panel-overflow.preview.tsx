@@ -217,7 +217,7 @@ const CASES: { title: string, locale: 'zh' | 'en', rows: RowSpec[] }[] = [
     title: '中文：`unlockSuffixWindow` 那条（issue 截图里的一句）',
     locale: 'zh',
     rows: [
-      { id: 'a1', accountName: 'dingminhua', credits: 12_345 },
+      { id: 'a1', accountName: 'acct-demo', credits: 12_345 },
       { id: 'a2', accountName: 'work-account-2', excludedBy: 'out-of-credit', retrySource: 'quota-refresh', retryAtMs: now + 7 * HOUR, credits: 0 },
     ],
   },
@@ -225,7 +225,7 @@ const CASES: { title: string, locale: 'zh' | 'en', rows: RowSpec[] }[] = [
     title: '中文：`poolRetryUnknown` + `poolRetryFallback`（1.17.5 新增，比上面更长）',
     locale: 'zh',
     rows: [
-      { id: 'a1', accountName: 'dingminhua', credits: 12_345 },
+      { id: 'a1', accountName: 'acct-demo', credits: 12_345 },
       { id: 'a2', accountName: 'third', excludedBy: 'out-of-credit', retrySource: 'unknown-cooldown', credits: 88 },
     ],
   },
@@ -233,7 +233,7 @@ const CASES: { title: string, locale: 'zh' | 'en', rows: RowSpec[] }[] = [
     title: '英文：同一条文案在国际版里更长',
     locale: 'en',
     rows: [
-      { id: 'a1', accountName: 'dingminhua', credits: 12_345 },
+      { id: 'a1', accountName: 'acct-demo', credits: 12_345 },
       { id: 'a2', accountName: 'work-account-2', excludedBy: 'out-of-credit', retrySource: 'unknown-cooldown', credits: 0 },
     ],
   },
@@ -241,7 +241,7 @@ const CASES: { title: string, locale: 'zh' | 'en', rows: RowSpec[] }[] = [
     title: '超长账号名（账号名只有 ellipsis，它不该反过来撑开表）',
     locale: 'zh',
     rows: [
-      { id: 'a1', accountName: 'dingminhua-verylongaccountnamewithoutspaces', credits: 12_345 },
+      { id: 'a1', accountName: 'acct-demo-verylongaccountnamewithoutspaces', credits: 12_345 },
       { id: 'a2', accountName: 'work-account-2', excludedBy: 'out-of-credit', retrySource: 'quota-refresh', retryAtMs: now + 7 * HOUR, credits: 0 },
     ],
   },

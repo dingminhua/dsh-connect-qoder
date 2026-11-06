@@ -146,7 +146,7 @@ Qoder 是三者里唯一「文案自带 + 不需要换身份 + 不需要额外�
 
 ```
 $ node --experimental-transform-types scripts/probe-promo.mjs --shifts
-account=QODERCN_ACCOUNT_6C2D6327 region=cn uid=019ec9…
+account=QODERCN_ACCOUNT_EXAMPLE region=cn uid=<uid 前 6 位>
 GET /algo/api/v2/model/list?Encode=1 → HTTP 200 / 55477 bytes
 chat rows: 11
 parsed models: 11   carrying a rule: 2
@@ -185,7 +185,7 @@ parsed models: 11   carrying a rule: 2
 
 顺带确认：`quest-ultimate` / `experts-ultimate` 只出现在 `quest` / `experts` 分组里，
 而插件目录只读 `chat`，所以国际区实际能画的是 `chat` 分组里的三条：`ultimate`、
-`qmodel_38max`、`qmodel`（同上命令换成 `QODER_ACCOUNT_B2109944` 即可复核）。
+`qmodel_38max`、`qmodel`（同上命令换成 `QODER_ACCOUNT_EXAMPLE` 即可复核）。
 
 ## 6. 落地位置
 

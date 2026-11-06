@@ -13,7 +13,7 @@
 
 ```bash
 git config --global user.name    # LaoDing（必须与 LICENSE 版权一致）
-git config --global user.email   # shangxinyu2002@gmail.com
+git config --global user.email   # <maintainer-email>
 git config --global --get http.https://github.com.proxy   # http://127.0.0.1:7897
 npm whoami                       # dmh2002
 ```

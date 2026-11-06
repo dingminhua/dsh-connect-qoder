@@ -23,9 +23,9 @@ CHANGELOG 判断「国际版已接通」冲突，而**两边都不是完全错�
 
 ```bash
 $ ls -la ~/.dsh/.qoder-*
--rw-------  1 dmh2002  staff   249 Oct 12 17:44 /Users/dmh2002/.dsh/.qoder-accounts.cn.json
--rw-------  1 dmh2002  staff   129 Oct 12 21:27 /Users/dmh2002/.dsh/.qoder-host-heartbeat.json
--rw-------  1 dmh2002  staff  541 Oct 12 18:52 /Users/dmh2002/.dsh/.qoder-pool.cn.json
+-rw-------  1 dmh2002  staff   249 Oct 12 17:44 ~/.dsh/.qoder-accounts.cn.json
+-rw-------  1 dmh2002  staff   129 Oct 12 21:27 ~/.dsh/.qoder-host-heartbeat.json
+-rw-------  1 dmh2002  staff  541 Oct 12 18:52 ~/.dsh/.qoder-pool.cn.json
 ```
 
 **没有** `.qoder-accounts.global.json`，也没有 `.qoder-pool.global.json`。
@@ -145,7 +145,7 @@ usage 请求确实带上了三个 Cosy-Machine* 头**（现有测试只断言了
 
 ```bash
 $ /Applications/Qoder.app/Contents/Resources/umid/runtime-info
-{"machineToken":"P1g…","machineType":"<16 hex，设备身份，已脱敏>","machineCode":"<16 hex，已脱敏>","vmInfo":{…}}
+{"machineToken":"<43 字符，设备身份，已脱敏>","machineType":"<16 hex，已脱敏>","machineCode":"<16 hex，已脱敏>","vmInfo":{…}}
 ```
 
 > 输出里的 `machineToken` / `machineType` / `machineCode` 是**设备身份**（上游风控用它识别本机），

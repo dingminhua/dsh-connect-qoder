@@ -14,3 +14,22 @@ coverage/
 # of the machine's `cordis.patch.yml` once landed in a release commit.
 .tmp-restore/
 .tmp-*/
+
+# Manual backups of machine-local state (registry exports, device dumps, driver
+# backups). They describe THIS computer — usernames, instance IDs, serial-ish
+# values — so they must never reach the repo. Same reason as above: `git add -A`
+# is the usual way they leak in. See docs/PRIVACY.md.
+_backup_*/
+backup-local/
+*.reg
+
+# Windows 保留设备名：MSYS 会把 `CON` 之类映射成字符设备节点，
+# 它们不是真文件（删不掉，也不该出现在 `git status` 里）。
+CON
+PRN
+AUX
+NUL
+COM1
+COM2
+COM3
+LPT1

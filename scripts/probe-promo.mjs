@@ -23,7 +23,7 @@ import { promoLiveAt } from '../src/promo.ts'
 import { promoBadgeLabel } from '../src/client/promo-badge.ts'
 import { QODER_REGIONS } from '../src/upstream.ts'
 
-const DEFAULT_ACCOUNT = 'QODERCN_ACCOUNT_6C2D6327'
+const DEFAULT_ACCOUNT = 'QODERCN_ACCOUNT_EXAMPLE'
 
 /** 从 DSH 凭证库里取一条账号记录（值是一段 JSON 字符串）。 */
 function accountRef(name) {

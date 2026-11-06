@@ -1129,17 +1129,19 @@ describe('AccountPool「使用哪个账号」设置行', () => {
     // （这条规则原先在 QoderCard 的旧下拉里，随控件一起搬过来。）
     const fixture = poolOff()
     const accounts = [
-      { ...((fixture['accounts'] as Record<string, unknown>[])[0]!), accountId: 'pat-84ad6cf5b4f62d10', accountName: 'same@msn.com', current: false },
-      { ...((fixture['accounts'] as Record<string, unknown>[])[1]!), accountId: 'pat-5d76517ac7699f87', accountName: 'same@msn.com', current: true },
+      { ...((fixture['accounts'] as Record<string, unknown>[])[0]!), accountId: 'pat-fedcba9876543210', accountName: 'same@example.com', current: false },
+      { ...((fixture['accounts'] as Record<string, unknown>[])[1]!), accountId: 'pat-0123456789abcdef', accountName: 'same@example.com', current: true },
     ]
     const { container, unmount } = await mountPool({ pool: { ...fixture, accounts }, onSelectAccount: () => {} })
     try {
       const labels = Array.from(manualSelect(container)!.querySelectorAll('option'))
         .map(o => o.textContent ?? '')
-        .filter(text => text.startsWith('same@msn.com'))
+        .filter(text => text.startsWith('same@example.com'))
       expect(labels).toHaveLength(2)
-      expect(labels.some(text => text.includes('2d10'))).toBe(true)
-      expect(labels.some(text => text.includes('9f87'))).toBe(true)
+      // 尾号取自上面两条占位 id（`pat-fedcba9876543210` / `pat-0123456789abcdef`）：
+      // 这里钉的是「同名时用 id 末 4 位区分」，不是某两条真实记录。
+      expect(labels.some(text => text.includes('3210'))).toBe(true)
+      expect(labels.some(text => text.includes('cdef'))).toBe(true)
     } finally {
       await unmount()
     }
@@ -1289,7 +1291,7 @@ describe('AccountPool 优先级排序', () => {
 /**
  * 名次表必须与实际发号顺序一致。
  *
- * 用户实拍（2026-10-18）：`nick1064248741` 用量已达上限却排在第 1 位，
+ * 用户实拍（2026-10-18）：`account-a` 用量已达上限却排在第 1 位，
  * 第 2 位才是「✓ 可用」的号。宿主 `rankPool` 第 1 层就是可用性，请求实际
  * 发给第 2 位，而表格宣称第 1 位优先 —— **名次表撒谎比没有名次表更糟**。
  */

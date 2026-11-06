@@ -114,7 +114,7 @@ pnpm run check        # typecheck + test + build 全绿后再安装
 以 `link:` 安装进当前 profile，改码后重启 DSH 即生效（不会重装依赖树）：
 
 ```bash
-dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-qoder
+dsh plugin --profile desktop add ~/DshProject/dsh-connect-qoder
 ```
 
 ### 验证安装
@@ -367,6 +367,16 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 - 图片输入与「可关闭思考」按**已核实**的清单给出：清单外的模型一律不预勾选，因此某些其实可用的模型可能需要你手动勾一次。**图片开关是白名单**——保存过一次选择后，未勾的模型就是关着的；把勾全部取消再保存，它们会保持关闭，不会被默认值重新打开。
 - 模型可用性测试与批量测试**都会发出真实请求**，会消耗少量上游额度；没有「测试已勾选」这类批量按钮，批量动作只作用于你显式勾选进池的账号。
 - **独立 CLI 依赖宿主提供的 peer 包**（`@deepseek-ai/dsh-atomic-write` / `dsh-home-paths`）。本机实测：pnpm 会随包把它们装进 profile 的依赖树，`pnpm exec dsh-connect-qoder …` 与 npm 装的 tarball 都跑得通；但这取决于 pnpm 版本与 `auto-install-peers` 配置，若报 `Cannot find package '@deepseek-ai/dsh-atomic-write'` 就是这一层没装上。provider 注册、设置页与对话**都不受影响**（它们在宿主进程内，宿主负责解析这些名字）。同族 workbuddy 的修复方案（宿主优先、按需回落自带实现）适用于本项目，尚未移植。
+
+## 隐私与截图
+
+**仓库与 npm 包里不出现任何真实账号数据。** 这一条是硬约束，规则与操作细则见 [docs/PRIVACY.md](docs/PRIVACY.md)：
+
+- README 与 `docs/` 里的截图**一律用假数据拍**：账号名是 `acct-demo`，邮箱是 `account-a@example.com`，余额是整数。**遮挡用不透明白块或直接换成假值，模糊 / 马赛克 / 半透明色块都不算脱敏**——它们保留了字符宽度与亮暗分布。
+- 代码、注释、CHANGELOG 里记录「用户实拍」现象时，同样只保留现象、换掉身份。
+- `tests/privacy.spec.ts` 会扫描仓库里不该出现的邮箱、上游昵称、凭据指纹、本机绝对路径与凭据本体，CI 单独跑一步。**它读不了图片内容**，所以新增或替换 `docs/assets/` 下的图仍必须自己打开看一眼实际像素。
+
+> 这条规则是吃过教训写下的：早期版本的截图里用过真实数据，后来统一换成了假值。「已经泄露了怎么办」写在 [docs/PRIVACY.md](docs/PRIVACY.md)。
 
 ## 免责声明
 

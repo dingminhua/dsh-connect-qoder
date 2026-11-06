@@ -111,7 +111,7 @@ pnpm run check        # typecheck + test + build must all pass first
 Install the repository directory with `link:` so edits take effect after a DSH restart (without reinstalling the dependency tree):
 
 ```bash
-dsh plugin --profile desktop add /Users/dmh2002/DshProject/dsh-connect-qoder
+dsh plugin --profile desktop add ~/DshProject/dsh-connect-qoder
 ```
 
 ### Verify the installation
@@ -364,6 +364,16 @@ Market screenshots and GitHub README badges are two different mechanisms:
 - Image input and "off-able thinking" are offered per a **verified** list: models outside it are never pre-checked, so one that actually works may need a manual check from you. **The image switch is a whitelist** — once you have saved a selection, un-checked models stay off; un-checking everything and saving keeps them off instead of letting the defaults switch them back on.
 - Per-model and batch tests **send real requests** and consume a little upstream credit. There is no "test all checked" button, and batch actions only touch accounts you explicitly checked into the pool.
 - **The standalone CLI depends on host-provided peers** (`@deepseek-ai/dsh-atomic-write` / `dsh-home-paths`). Locally pnpm installs them alongside the package and `pnpm exec dsh-connect-qoder …` works; if your pnpm configuration does not, the CLI reports `Cannot find package …`. Provider registration, the settings page and chat are unaffected — they run inside the host, which resolves those names. The workbuddy fix (host-first, fall back to a built-in copy) applies here and has not been ported yet.
+
+## Privacy & screenshots
+
+**No real account data ever appears in the repository or the npm tarball.** This is a hard rule; the details live in [docs/PRIVACY.md](docs/PRIVACY.md):
+
+- Every screenshot in the README and `docs/` is **captured with fake data**: the account name is `acct-demo`, addresses are `account-a@example.com`, balances are round numbers. **Redaction means an opaque block or a replaced value — blur, mosaic and translucent overlays do not count**, because they preserve character widths and the light/dark distribution.
+- Code comments and CHANGELOG entries that record "what the user saw" keep the observation and drop the identity.
+- `tests/privacy.spec.ts` scans the repo for real email addresses, upstream nicknames, credential fingerprints, absolute local paths and credential bodies, and CI runs it as its own step. **It cannot read image content**, so a new or replaced image under `docs/assets/` still has to be opened and looked at by a human.
+
+> This rule was written after a lesson: earlier releases used real data in the screenshots, which has since been replaced with fake values. "What to do after a leak" is in [docs/PRIVACY.md](docs/PRIVACY.md).
 
 ## Disclaimer
 

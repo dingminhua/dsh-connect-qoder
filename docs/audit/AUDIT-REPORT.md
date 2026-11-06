@@ -169,14 +169,14 @@ $ node --experimental-strip-types /tmp/verify-export.mjs
 === the exported FILE a user would download ===
 [ { "pat": "pt-secret",
     "accountName": "<上游回传的真实账号显示名（邮箱），已脱敏>",
-    "id": "pat-5d76517ac7699f87" } ]        ← 无 domain，字段名也不是 snake_case
+    "id": "pat-0123456789abcdef" } ]        ← 无 domain，字段名也不是 snake_case
 
 === re-import that same file into region=cn ===
 imported: 0 | skipped: 1 | changes: 0       ← *** 往返失败 ***
 
 === for contrast: a CORRECT record via transferRecordOf ===
 [ { "access_token": "pt-secret",
-    "uid": "pat-5d76517ac7699f87",
+    "uid": "pat-0123456789abcdef",
     "nickname": "a@b.c",
     "domain": "qoder.com.cn" } ]
 imported: 1 | skipped: 0                    ← 正确形状即可成功
