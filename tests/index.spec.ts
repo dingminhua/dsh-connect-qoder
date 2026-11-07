@@ -149,17 +149,19 @@ describe('Qoder provider registration', () => {
     const globalIds = globalModels.map(m => m.id)
     expect(globalIds.length).toBeGreaterThan(0)
     expect(cnIds).toContain('qmodel_38max')
-    // 兜底表是**两个区域共用**的（它没有区域轴），所以 `fast` 这种条目在国内版
-    // 的兜底目录里也存在——上游只把 `fast` 发给新协议，而兜底表不区分区域。
-    // 用户的要求只针对**国际版**：所以国内版这里不做断言（它列不列 `fast`
-    // 是上游的事，我们不改），只钉住国际版确实没有了。
+    // 兜底表是**两个区域共用**的（它没有区域轴），所以 `fast` 这种条目在两个
+    // 区域的兜底目录里都会出现。用户先要求国际版不要显示，随后在国内版模型栏里
+    // 看到 `Fast (0.80x)` 仍在，追加「国内版的 fast 也取消掉」——所以这条判据
+    // 不属于区域，两个区域都要断言。
     for (const abstractId of ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']) {
       expect(globalIds, `国际版还在列 ${abstractId}`).not.toContain(abstractId)
+      expect(cnIds, `国内版还在列 ${abstractId}`).not.toContain(abstractId)
     }
   })
 
-  it('国际版的抽象命名条目不出现在模型选择器里，国内版不受影响', async () => {
-    // 用户：「国际版不要显示这些抽象选项」——Fast / Ultimate / Efficient / Sonus /
+  it('抽象命名的条目在两个区域的模型选择器里都不出现', async () => {
+    // 用户先要求「国际版不要显示这些抽象选项」，随后在国内版看到 `Fast (0.80x)`
+    // 仍在，追加「国内版的 fast 也取消掉」。Fast / Ultimate / Efficient / Sonus /
     // Cantus 这几行只有一个抽象形容词，看不出背后是哪个模型。
     //
     // 这条走**真实的选择器路径**（`ctx.llm.listModels` → 适配器 → 运行时目录），
@@ -173,15 +175,19 @@ describe('Qoder provider registration', () => {
 
     const abstractIds = ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']
     const globalIds = (await ctx.llm.listModels('qoder-global')).map(m => m.id)
+    const cnIds = (await ctx.llm.listModels('qoder')).map(m => m.id)
     expect(globalIds.length).toBeGreaterThan(0)
+    expect(cnIds.length).toBeGreaterThan(0)
     for (const id of abstractIds) {
       expect(globalIds, `国际版选择器里还有 ${id}`).not.toContain(id)
+      // 用户实拍国内版的 `Fast (0.80x)` 那一行 —— 这条就是钉它。
+      expect(cnIds, `国内版选择器里还有 ${id}`).not.toContain(id)
     }
-    // 国内版原样：它的上游本来就不下发这几条，所以这里断言的是「没被误伤」——
-    // 目录里该有的那几个真模型一个都不少。
-    const cnIds = (await ctx.llm.listModels('qoder')).map(m => m.id)
-    expect(cnIds).toContain('qmodel_38max')
-    expect(cnIds).toContain('dmodel')
+    // 过滤只认显式表：两个区域该有的真模型一个都不少。
+    for (const real of ['qmodel_38max', 'dmodel']) {
+      expect(cnIds, `国内版丢了真模型 ${real}`).toContain(real)
+      expect(globalIds, `国际版丢了真模型 ${real}`).toContain(real)
+    }
   })
 
   it('卡片读实时目录而不是保存快照（否则思考档位永远出不来）', async () => {

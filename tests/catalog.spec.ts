@@ -243,10 +243,14 @@ describe('selection derivation', () => {
     expect(withoutRouters(models).map(m => m.key)).toEqual([models[1]!.key])
   })
 
-  it('国际版那几个抽象命名的条目不出现在可勾选目录里', () => {
-    // 用户：「国际版不要显示这些抽象选项」，指的是上游只给国际版下发的
-    // `Fast` / `Ultimate` / `Efficient` / `Sonus` / `Cantus` —— 它们只有一个抽象
-    // 名字，看不出背后是哪个模型，勾了也不知道自己勾了什么。
+  it('那几个抽象命名的条目不出现在可勾选目录里（两个区域都一样）', () => {
+    // 用户先要求「国际版不要显示这些抽象选项」，随后在国内版模型栏里看到
+    // `Fast (0.80x)` 仍在，追加「国内版的 fast 也取消掉」。
+    //
+    // 所以这条判据**不属于区域**：`Fast` / `Ultimate` / `Efficient` / `Sonus` /
+    // `Cantus` 只有一个抽象形容词，换到哪个区域都看不出背后是哪个模型。
+    // 我此前按「只有国际版过滤」实现，依据是「上游只为国际版下发」——那条依据
+    // 是**错的**：兜底表里 `fast` 两个区域共用，国内版一样会出现。
     //
     // 判据用**显式表**（与 `auto` 路由器同一条做法）：名字启发式（「首字母大写的
     // 单词都丢」）会误伤真模型。
@@ -260,16 +264,23 @@ describe('selection derivation', () => {
     expect(kept, '抽象命名的条目没被过滤掉').toEqual([models[0]!.key])
   })
 
-  it('抽象条目只在**国际版**过滤；国内版目录原样保留', () => {
-    // 要求是「国际版不要显示」。这两个 id 在 CN 目录里本来就不存在（上游不下发），
-    // 但过滤条件仍然按区域写清楚，而不是依赖「反正 CN 没有」——那是上游的事实，
-    // 不是本插件能保证的。
+  it('国内版与国际版都过滤：这条判据不属于区域', () => {
+    // 我此前写成「只有 global 过滤」，理由是「CN 的上游不下发这几条」——实测
+    // 推翻了这个理由：兜底表两个区域共用，`fast` 在国内版目录里就在（用户实拍
+    // 「国内版的 fast 也取消掉」）。
+    //
+    // 保留区域参数是**为了不影响别的判据**（有些过滤确实按区域），但这个函数
+    // 自己的答案与区域无关 —— 两个区域必须给出同一个结果。
     const ids = ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']
     const models = ids.map(key => ({
       ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key,
     }))
     expect(withoutAbstractModels(models, 'global')).toEqual([])
-    expect(withoutAbstractModels(models, 'cn').map(m => m.key), '国内版被误伤').toEqual(ids)
+    expect(withoutAbstractModels(models, 'cn'), '国内版还在列这些条目').toEqual([])
+    // 真模型在两个区域都必须保留（过滤只认显式表）。
+    const real = [fallbackModelInfo(QODER_FALLBACK_MODELS[0]!)]
+    expect(withoutAbstractModels(real, 'cn').map(m => m.key)).toEqual([real[0]!.key])
+    expect(withoutAbstractModels(real, 'global').map(m => m.key)).toEqual([real[0]!.key])
   })
 
   it('withoutRouters leaves real models alone and never mutates its input', () => {
