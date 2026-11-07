@@ -22,6 +22,24 @@
  *    provider 之间切换时 hook 数量一变，React 直接崩。`jsx(Other, …)` 让它跑在
  *    自己的 fiber 里，两条路径的 hook 数量与顺序都恒定。
  *
+ * ## 三处出口，一条底线
+ *
+ * 本组件占的是 single 槽，**所有** provider 的行都从这里出去：
+ *
+ * | 行 | 出口 |
+ * | --- | --- |
+ * | 本插件的 provider | 自己的标签（名字 + 活动徽标 + 免费标记），见下方 |
+ * | 别家 provider，账本里有可委托的组件 | `jsx(Other, ownerProps)`，把对方自己的 `t` 绑好递过去 |
+ * | 别家 provider，交不出去 | `ForeignModelLabel`：名字 + 该模型自带的 `model.badge` |
+ *
+ * 第三条那一格此前是裸名字。`docs/MODEL-LABEL-SPEC.md` §4 的结论是它必须复现
+ * 宿主 fallback 的「名字 + 可选胶囊」：我们占了槽，宿主那句 fallback 就再也不会
+ * 执行，只画名字等于把别家挂在目录里的胶囊抹掉。委托仍然是首选（它保住了别人的
+ * 完整装饰），只是退路不再是「什么都不画」。
+ *
+ * 底线是这一支**绝不抛、绝不发请求**：它一抛，宿主会把整个组件从那一格摘掉，
+ * 整片模型标签换成别家或裸名字。
+ *
  * @module dsh-connect-qoder/client/QoderModelLabel
  */
 import { useEffect, useState } from 'react'
@@ -29,6 +47,7 @@ import type { ReactElement, ReactNode } from 'react'
 import { promoDisplayAt } from '../promo.ts'
 import type { QoderPromotion } from '../promo.ts'
 import { hostLanguage, promoBadgeLabel, promoBadgeTooltip } from './promo-badge.ts'
+import { ForeignModelLabel } from './host-badge.tsx'
 import { QODER_COMPOSER_PROVIDERS } from './ComposerCredits.tsx'
 import { QODER_USAGE_PATH, withQoderRegionFastDetail } from '../status-paths.ts'
 import type { QoderWebModel, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
@@ -88,7 +107,20 @@ export interface QoderModelLabelSlots {
  */
 export interface QoderModelLabelProps {
   provider: { id: string }
-  model: { id: string, name: string }
+  model: {
+    id: string
+    name: string
+    /**
+     * The model's own catalog badge, if its provider published one.
+     *
+     * 宿主 0.2.2 起把模型目录里的每一项整个展开成这组 props，所以同族插件在**它
+     * 自己的** `adapter.listModels()` 里挂上的 `LlmModelInfo.badge` 会从这里到达。
+     * 类型写成 `unknown` 而不是 `HostModelBadge`：这一格是**别人**的数据，我们
+     * 读不懂的形状必须能安全退化（`host-badge.tsx` 的 `drawableHostBadge`）。
+     * 0.2.2 之前它永远缺席，两种情况在运行时不可区分 —— 所以没有任何版本分支。
+     */
+    badge?: unknown
+  }
   placement: string
   /** 宿主恒给；类型允许缺席是「拿不到的线也别崩」（exactOptionalPropertyTypes 下 `?:` 不含 undefined）。 */
   selected?: boolean | undefined
@@ -314,26 +346,38 @@ export function createQoderModelLabel(
     // 唯一一处跨插件调用，也是「不做插件联动」的唯一例外（见 docs/DESIGN.md
     // 「一、边界：不做什么」）：single 槽只容一个占位者，占了槽就得把别家 provider
     // 的行还给它的标签组件——只经过宿主公开的槽位账本与 ownerProps，不按名字找人。
+    //
+    // 但「交还」有时交不出去（账本里没有别人、拿不到 locale 面、对方要求的
+    // 命名空间绑不出来）。这些情况下**不能只画裸名字**：宿主自己的 fallback 在
+    // 0.2.2 起是「名字 + 该模型自带的 model.badge」，我们占了槽，那句 fallback 就
+    // 再也不会执行 —— 只画名字等于把别家挂在目录里的胶囊一起抹掉。所以每一条
+    // 退路都落到 {@link ForeignModelLabel}（顺序、文案、退化规则见那里与
+    // docs/MODEL-LABEL-SPEC.md §4）。
+    //
+    // 这一支是**纯函数**：不发请求、不读快照、不起定时器。一个菜单可能同时有二十
+    // 行别家的模型，二十个请求会随「打开选择器」这个动作一起发出去。
     const foreign = region === undefined
     if (foreign) {
       const entries = slots.entries(QODER_MODEL_LABEL_SLOT)
         .filter(entry => entry.component !== QoderModelLabel && typeof entry.component === 'function')
       const other = entries[0]
-      // 没有可委托的组件，或拿不到 locale 面 → 裸名字（也是宿主的 fallback）。
-      if (other === undefined || slots.bindLocale === undefined) return <span>{model.name}</span>
+      // 没有可委托的组件，或拿不到 locale 面 → 自己的 fallback（名字 + 胶囊）。
+      if (other === undefined || slots.bindLocale === undefined) {
+        return <ForeignModelLabel model={model} placement={placement} t={t} />
+      }
       const Other = other.component as (p: QoderModelLabelProps) => ReactNode
       // **对方自己命名空间的 t**（issue #23）：宿主按 entry 的 locale 注入，
       // 我们绕过框架直接渲染，就得自己替它绑。
       //
-      // 绑不出来（命名空间没注册 / 面缺席）时**不委托**、落回裸名字 —— 不能
-      // 带着 `t: undefined` 硬渲染：对方若无条件调用 t，抛错会把整片 label 槽
+      // 绑不出来（命名空间没注册 / 面缺席）时**不委托**、落回自己的 fallback ——
+      // 不能带着 `t: undefined` 硬渲染：对方若无条件调用 t，抛错会把整片 label 槽
       // 打掉，那正是 #23 的后果。少一枚别家的徽标比整片消失好。
       let otherT: Translate | undefined
       if (other.locale !== undefined && other.locale !== '') {
         try {
           otherT = slots.bindLocale(other.locale)
         } catch {
-          return <span>{model.name}</span>
+          return <ForeignModelLabel model={model} placement={placement} t={t} />
         }
       }
       return (
@@ -352,16 +396,29 @@ export function createQoderModelLabel(
     const language = hostLanguage(t)
     const translate: Translate = t ?? ((key: string, params?: Record<string, unknown>) =>
       params === undefined ? key : `${key} ${JSON.stringify(params)}`)
+    // 位置规则：**胶囊永远在名字后面，不随 placement 换边**。
+    //
+    // 这里曾经是「自己的行永远把胶囊放在名字后」，而外来行按 placement 换边 —— 同一份
+    // 菜单里两种摆法并存：别家模型是「胶囊 名字」，自家模型是「名字 胶囊」。这不是
+    // 审美差异，是两条分支各写了一套顺序。
+    //
+    // 后来的修法是「自己行也跟着换边」，与宿主 fallback 对齐；但那样又有了新问题：
+    // 宿主 fallback 只在**没人占格**时出现，一旦本插件赢下这一格，全菜单都由本插件画，
+    // 于是「换边」不再带来任何好处，只剩「同一份菜单里胶囊位置会变」这一个坏处。
+    // 现在的规则是**所有行、所有 placement 一律在后**，见 `docs/MODEL-LABEL-SPEC.md`。
+    const promo = row?.promotion === undefined
+      ? null
+      : <QoderModelLabelPromoChip promo={row.promotion} language={language} compact={compact} t={translate} />
+    // 免费标签也在最后：它说的是**模型属性**（这个模型不消耗积分），不是限时事件。
+    const freeTag = row?.isFree !== true
+      ? null
+      : <span className="dsm-qoder-model-meta-tag" title={translate('row.modelFreeHint')}>{translate('row.modelFree')}</span>
     return (
       <span className={compact ? 'dsm-qoder-model-label dsm-qoder-model-label-compact' : 'dsm-qoder-model-label'}>
         {/* 名字原样在位：宿主契约是「addition 渲染在旁边，名字归宿主」，永不替换。 */}
         <span>{model.name}</span>
-        {row?.promotion === undefined
-          ? null
-          : <QoderModelLabelPromoChip promo={row.promotion} language={language} compact={compact} t={translate} />}
-        {row?.isFree !== true
-          ? null
-          : <span className="dsm-qoder-model-meta-tag" title={translate('row.modelFreeHint')}>{translate('row.modelFree')}</span>}
+        {promo}
+        {freeTag}
       </span>
     )
   }

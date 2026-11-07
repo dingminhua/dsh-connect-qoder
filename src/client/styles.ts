@@ -262,6 +262,23 @@ export const QODER_CARD_CSS = `
  */
 .dsm-qoder-model-label{display:inline-flex;align-items:center;gap:5px;white-space:nowrap;vertical-align:baseline;min-width:0}
 .dsm-qoder-model-label-promo{max-width:6em;overflow:hidden;text-overflow:ellipsis}
+/*
+ * 别家 provider 行上那枚胶囊：**逐条复现宿主 Tag 的几何**（0.2.2-rc.1 的
+ * Tag.module.css）。颜色由行内样式给（四个 tone 各一对主题变量，见
+ * host-badge.tsx），这里只管形状：
+ *
+ *   display:inline-flex / align-items:center / border-radius:999px /
+ *   corner-shape:round / padding:1px 8px / font-size:11px / line-height:17px /
+ *   font-weight:500 / white-space:nowrap
+ *
+ * 宿主那颗**没有描边**，所以这里也不画 —— 加了描边，同一行里两颗胶囊就会一个
+ * 有圈一个没有。同理**不加 max-width / 省略号**：宿主不截断，我们截了就会在同一
+ * 行宽下显示成「限时免…」，比不显示更糟。
+ *
+ * vertical-align:baseline 与 .dsm-qoder-model-label 同一取舍：行高由 picker
+ * 决定，自己抬到 middle 会跟名字错位。
+ */
+.dsm-qoder-model-label-host-badge{display:inline-flex;align-items:center;border-radius:999px;corner-shape:round;padding:1px 8px;font-size:11px;line-height:17px;font-weight:500;white-space:nowrap;vertical-align:baseline;flex:none}
 .dsm-qoder-model-desc{margin:0;color:var(--dsw-alias-label-tertiary,#9aa0a8);font-size:12px;line-height:18px}
 .dsm-qoder-model-details{display:flex;align-items:center;justify-content:space-between;gap:12px;min-width:0}
 .dsm-qoder-model-meta{display:flex;align-items:center;gap:7px 12px;flex-wrap:wrap;color:var(--dsw-alias-label-tertiary,#999);font-size:11px;line-height:16px}

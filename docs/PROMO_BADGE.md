@@ -202,9 +202,12 @@ parsed models: 11   carrying a rule: 2
 | `src/web-status.ts` `webModelOf` | 投影时原样带出（对象展开，运行期无需改） |
 | `src/client/promo-badge.ts` `hostLanguage` / `promoBadgeLabel` / `promoBadgeTooltip` | 选中文/英文文案、拼悬停 |
 | `src/client/QoderCard.tsx` `renderModels` | 模型行渲染（名旁一枚胶囊） |
+| `src/model-badge.ts` `modelBadgeOf` | 选择器胶囊的**数据侧**：此刻该挂哪一枚（`live` 才挂）、文案表、16 grapheme 上限 |
+| `src/adapter.ts` `listModels` | 把胶囊挂进 `LlmModelInfo.badge`（展开写法，0.1.x 也能编译） |
 | `src/client/QoderModelLabel.tsx` `createQoderModelLabel` | 选择器里的同一枚胶囊（issue #12；工厂按 fiber 捕获槽位表，非本插件 provider 委托回账本下一位） |
-| `src/client/index.tsx` `registerModelLabel` | `conversation.input.model.label` 注册（`priority: -1` 抢在 workbuddy 的默认 0 之前，single 槽同优先级会抛） |
-| `src/client/styles.ts` `.dsm-qoder-model-promo` | 胶囊样式 |
+| `src/client/host-badge.tsx` `ForeignModelLabel` | 别家 provider 的行：名字 + 该模型自带的 `model.badge`（trigger 在前、菜单在后） |
+| `src/client/index.tsx` `registerModelLabel` | `conversation.input.model.label` 注册（`priority: -101`；single 槽同优先级会抛，升序只渲染最低者 ⇒ 实测赢家是 workbuddy 的 `-105`，本组件不渲染，胶囊靠 `listModels()` 的数据通道） |
+| `src/client/styles.ts` `.dsm-qoder-model-promo` / `.dsm-qoder-model-label-host-badge` | 本插件自己的胶囊 / 别家行上复现宿主 `Tag` 的几何 |
 | `scripts/probe-promo.mjs` | 真机只读探针（解析 + 判定 + 时钟平移） |
 
 ## 7. 已知限制
@@ -226,11 +229,20 @@ parsed models: 11   carrying a rule: 2
 - **选择器里的数据可能比卡片旧至多一分钟**：标签组件读 `detail=fast` 文档（不触发
   上游重读，只答本地已有状态），行数据按区域共享缓存 60 秒；窗口边界的翻面靠
   共享分钟时器重读时钟，不依赖新数据到达。徽标本身仍是渲染时刻现算（与卡片同规）。
+- **选择器里的胶囊是目录数据，不是实时状态**：`LlmModelInfo.badge` 随模型目录一起刷新，
+  所以窗口关掉之后那枚胶囊会挂到下一次目录刷新为止（卡片与本插件自己的行不受影响，
+  它们按分钟重算）。要做到分钟级准确得在每次翻面时发 `llm/models-updated`，而宿主收到
+  它会对**每个模型**调一次 `resolveModelInfo()` —— 代价不成比例。文案上限是 16 个
+  grapheme、超了整枚不画（不截断），理由见 `src/model-badge.ts` 文件头。
 - **single 槽的跨插件耦合**：`conversation.input.model.label` 只渲染第一条注册。
-  本插件以 `priority: -1` 抢位后必须把非本插件的 provider **委托**回账本里的下一位
-  （workbuddy 的标签），否则对方的倍率后缀与忙闲图标会一起消失。若对方将来也开始
-  委托，理论上存在互委托环 —— 宿主的错误边界会把抛错的 entry 一次性弃权（下一帧
-  换幸存者渲染），不会死循环。
+  实测优先级 workbuddy `-105` / trae `-102` / 本插件 `-101`：**赢家是 workbuddy**，
+  本插件注册成功但从不渲染，所以「委托」只在它真的赢了那格时才有意义。
+  一旦赢下，就必须把非本插件的 provider **委托**回账本里的下一位
+  （workbuddy 的标签），否则对方的倍率后缀与忙闲图标会一起消失。**委托不出去时**
+  的退路是「名字 + 该模型自带的 `model.badge`」（`src/client/host-badge.tsx`），
+  不再是裸名字——0.2.2 宿主的 fallback 就是这个形状，只画名字等于把别家挂在目录里的
+  胶囊一起抹掉。若对方将来也开始委托，理论上存在互委托环 —— 宿主的错误边界会把
+  抛错的 entry 一次性弃权（下一帧换幸存者渲染），不会死循环。
 - **委托必须带上「对方自己命名空间的 `t`」**（issue #23 的教训，此处此前写错过）：
   这段曾断言「当前生态（workbuddy、1017 参考实现）都是终点型组件」，**这条断言是
   错的**。宿主内置的 `DeepSeekModelLabel`（`locale: deepseek-model-label-1017`）

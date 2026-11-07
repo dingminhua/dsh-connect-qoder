@@ -16,7 +16,7 @@ import { createProvider } from '@earendil-works/pi-ai'
 import type { Api, AuthContext, Context, CredentialStore, Message, Model, Provider, ProviderStreams } from '@earendil-works/pi-ai'
 import { openAICompletionsApi } from '@earendil-works/pi-ai/api/openai-completions.lazy'
 import { resolveRetryPolicy, type RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
-import { ReasoningEffortId, type LlmResolvedModelInfo, type PreparedAdapterCall } from '@deepseek-ai/dsh-llm'
+import { ReasoningEffortId, type LlmModelInfo, type LlmResolvedModelInfo, type PreparedAdapterCall } from '@deepseek-ai/dsh-llm'
 import { PiAiAdapter } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { ResolvedPiAiProviderProfile } from '@deepseek-ai/dsh-llm-pi-ai'
 import type { AttachmentStore } from '@deepseek-ai/dsh-attachment'
@@ -24,6 +24,8 @@ import type { QoderShim } from './shim.ts'
 import { modelDisplayName } from './catalog.ts'
 import type { QoderCatalog, QoderModelInfo } from './catalog.ts'
 import { defaultEffortFor } from './default-effort.ts'
+import { modelBadgeOf } from './model-badge.ts'
+import type { QoderModelBadge } from './model-badge.ts'
 import type { QoderRegion } from './upstream.ts'
 import { piAiRuntimeInfo } from './pi-ai-runtime.ts'
 import type { PiAiGeneration } from './pi-ai-runtime.ts'
@@ -314,9 +316,9 @@ function toPiModel(
 }
 
 /**
- * 把**逐模型**的默认档位报给宿主的适配器。
+ * 把**逐模型**的默认档位报给宿主的适配器；顺带把促销胶囊挂进模型目录。
  *
- * ## 为什么需要它
+ * ## 为什么需要默认档（第一件事）
  *
  * 宿主把 `reasoning.defaultEffort` **物化进每一个没指名档位的请求**
  * （`LlmRuntime.resolveCallWithInfo`），而 DSH 的模型选择器也从同一份元数据取
@@ -341,8 +343,21 @@ function toPiModel(
  * 才是**真正**随请求走的那份（`resolveModel` 只服务于目录与选择器）。两处都要
  * 改，否则界面上是 Default、请求里却带着档位（或反过来）。
  *
+ * ## 为什么胶囊要在这里挂（第二件事）
+ *
+ * `LlmModelInfo.badge` 只走**目录**这条路：它是 `listModels()` 的返回值，宿主把它
+ * 原样搬运到选择器的 `props.model.badge`。`resolveModel()` 返回的那份**不带**它
+ * （宿主的 `normalizeModelInfo` 不复制这个字段），请求与 Session 事件也不带 ——
+ * 所以想显示胶囊，只能从 `listModels()` 走，别指望在 `resolveModel()` 里塞。
+ *
+ * 这也是「同族插件三个各自有胶囊」唯一可行的通道：标签槽是 single 槽，只有一个
+ * 占位者渲染所有行，别人只会复现**数据**里的胶囊，不会替我们画。见
+ * 同族仓库 dsh-connect-workbuddy 的 `docs/MODEL-LABEL-SPEC.md` 与
+ * `src/model-badge.ts`。
+ *
  * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
- *   —— 它的 `EffortNormalizingAdapter` 是同一件事（它的 issue #179）。
+ *   —— 它的 `EffortNormalizingAdapter` 是同一件事（它的 issue #179），
+ *   `listModels` 的展开写法与理由也沿用自它。
  */
 class DefaultEffortAdapter extends PiAiAdapter {
   /**
@@ -353,12 +368,60 @@ class DefaultEffortAdapter extends PiAiAdapter {
    */
   private readonly defaultEffort: (model: string) => string | undefined
 
+  /**
+   * 该模型此刻该挂的选择器胶囊；`undefined` = 不挂。
+   *
+   * 与 `defaultEffort` 一样是**取值器**而不是快照：胶囊的判定依赖时钟（夜间窗口
+   * 会开也会关），而宿主重建目录的时机不由我们决定。每次 `listModels()` 现问一次，
+   * 答案就是那一刻的。
+   */
+  private readonly modelBadge: (model: string) => QoderModelBadge | undefined
+
   constructor(
     config: ConstructorParameters<typeof PiAiAdapter>[0],
     defaultEffort: (model: string) => string | undefined = () => undefined,
+    modelBadge: (model: string) => QoderModelBadge | undefined = () => undefined,
   ) {
     super(config)
     this.defaultEffort = defaultEffort
+    this.modelBadge = modelBadge
+  }
+
+  /**
+   * 目录：宿主 `listModels()` 的答案，给自己那几行各挂一枚胶囊，**别的一个字段
+   * 都不动**。
+   *
+   * 为什么是展开 `{ ...model, ...(badge ? { badge } : {}) }` 而不是在对象字面量里
+   * 直写 `badge`：本插件的 peer 范围仍从 `0.1.7-rc.1` 起，那一版的 `LlmModelInfo`
+   * 没有这个字段。
+   *
+   * **实测（2026-11-08：把 `@deepseek-ai/dsh-llm@0.1.7-rc.1` 的类型直接当 paths 映射
+   * 编译，不是推断）**：
+   *
+   * | 写法 | 0.1.7 结果 |
+   * | --- | --- |
+   * | `return { provider, id, name, badge }`，回调**带** `: LlmModelInfo` 注解 | ❌ `TS2353` |
+   * | 同上，回调**不写**注解（就是本文件的形状） | ✅ 通过 —— 无上下文类型则不做多余属性检查 |
+   * | `{ ...model, ...(badge ? { badge } : {}) }` | ✅ 通过（有无注解都通过） |
+   *
+   * 所以这不是硬约束，而是**抗**未来改动：给回调补一个 `: LlmModelInfo` 看起来只是
+   * 「让类型更明确」，却会让直写那条路在 0.1.x 上突然编译不过，展开不受影响。
+   * 旧宿主会在注册表里把 `badge` 静默丢掉，不报错、不崩 —— 这就是降级。
+   *
+   * 也没有任何版本探测：字段存在与否是**类型层**的事实，运行时只看得到
+   * `undefined`，写了 `if (字段存在)` 也走同一个分支。
+   *
+   * 同一行里**没有**胶囊时返回的对象与 `super` 给出的逐字段相同（不写
+   * `badge: undefined`）—— 宿主对「缺席」与「显式 undefined」的处理一样，但多一个
+   * 键会让断言 `toEqual` 的失败信息多一行噪音。**更不能用 `null`**：注册表会在
+   * `badge.text` 上抛错，那一整个 provider 会从目录里消失（进 `failures`）。
+   */
+  override async listModels(provider: string): Promise<readonly LlmModelInfo[]> {
+    const models = await super.listModels(provider)
+    return models.map((model) => {
+      const badge = this.modelBadge(model.id)
+      return { ...model, ...(badge === undefined ? {} : { badge }) }
+    })
   }
 
   override resolveModel(provider: string, model: string, signal?: AbortSignal): Promise<LlmResolvedModelInfo> {
@@ -666,12 +729,26 @@ export function createQoderAdapter(options: QoderAdapterOptions): QoderAdapter {
     return defaultEffortFor(info, options.defaultThinkingEfforts?.() ?? {})
   }
 
+  /**
+   * 一行目录此刻该挂的胶囊（`src/model-badge.ts` 的全部判定都在那里）。
+   *
+   * 同样对着**活的**目录：宿主问一次 `listModels()` 就是此刻的答案，而目录会被
+   * 整体替换（换号、刷新、勾选变化），捕获一份快照会让胶囊跟着旧目录走到重启。
+   *
+   * 时钟在**每次**问的时候读：夜间窗口 22:00–08:00 会开也会关，冻结一个时刻等于
+   * 让徽标在早上还挂着（`src/promo.ts` 文件头第 3 节「时段怎么算」是同一件事）。
+   */
+  const resolveModelBadge = (model: string): QoderModelBadge | undefined => {
+    const info = catalog.current().find(entry => entry.key === model)
+    return modelBadgeOf(info, new Date())
+  }
+
   const adapter = new DefaultEffortAdapter({
     profiles: () => profiles,
     auth: INERT_AUTH,
     resolveApiKey: async () => shim.secret,
     ...(options.resolveAttachments === undefined ? {} : { resolveAttachments: options.resolveAttachments }),
-  }, resolveDefaultEffort)
+  }, resolveDefaultEffort, resolveModelBadge)
 
   return {
     adapter,

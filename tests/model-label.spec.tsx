@@ -213,6 +213,24 @@ describe('选择器标签：免费与菜单行', () => {
     await unmount()
   })
 
+  it('自己的行也不换边：trigger 与菜单行胶囊都在名字后面', async () => {
+    // 这段历史有两个阶段，别退回第一个：
+    //   1. 曾经「外来行按 placement 换边，自己的行永远在后」——同一份菜单两种摆法。
+    //   2. 改成「自己的行也换边」，与宿主 fallback 一致。
+    //   3. 现在：**一律在后，不换边**。宿主 fallback 只在没人占格时出现；一旦本插件
+    //      赢下这一格，全菜单都由本插件画，「换边」就不再带来任何好处，只剩
+    //      「同一份菜单里胶囊位置会变」这一个坏处。见 `docs/MODEL-LABEL-SPEC.md`。
+    stubFetch([row({ promotion: parsedPromo({ active: true }) })])
+    for (const placement of ['trigger', 'menu'] as const) {
+      const view = await mount({ placement })
+      const text = view.container.textContent ?? ''
+      expect(text, `${placement} 行`).toBe('Qwen3.8-Max错峰 4 折')
+      expect(text.indexOf('Qwen3.8-Max'), `${placement} 行胶囊跑到了名字前面`)
+        .toBeLessThan(text.indexOf('错峰'))
+      await view.unmount()
+    }
+  })
+
   it('菜单行给胶囊加限宽修饰类，trigger 行不加', async () => {
     stubFetch([row({ promotion: parsedPromo({ active: true }) })])
     const menu = await mount({ placement: 'menu' })
@@ -248,11 +266,93 @@ describe('选择器标签：免费与菜单行', () => {
 
 describe('选择器标签：外来 provider 的委托', () => {
   it('外来 provider 且没人可委托时画裸名字，且不发请求', async () => {
+    // 没有 `model.badge` 时就是纯名字：那是宿主 fallback 在没有胶囊时画的东西，
+    // 也是槽位契约的下限。
     const { urls } = stubFetch([])
     const { container, unmount } = await mount({ provider: { id: 'workbuddy' }, model: { id: 'wb-1', name: 'WB One' } })
     expect(container.textContent).toBe('WB One')
     expect(urls).toHaveLength(0)
     await unmount()
+  })
+
+  it('没人可委托但模型自带 badge 时，复现宿主 fallback（名字 + 胶囊）', async () => {
+    // docs/MODEL-LABEL-SPEC.md §4：本插件占了 single 槽，宿主自己的 fallback 就再也
+    // 不会执行 —— 退化成裸名字等于把别家挂在目录里的胶囊一起抹掉。
+    const { urls } = stubFetch([])
+    const { container, unmount } = await mount({
+      provider: { id: 'workbuddy' },
+      model: {
+        id: 'wb-1',
+        name: 'WB One',
+        badge: { text: { en: 'Night discount', zh: '夜间折扣' }, tone: 'info' },
+      },
+    } as Partial<QoderModelLabelProps>)
+    const chip = container.querySelector('.dsm-qoder-model-label-host-badge')
+    expect(chip?.textContent).toBe('夜间折扣')
+    expect(container.textContent).toBe('WB One 夜间折扣')
+    // 这一支必须仍然**不发请求**：一个菜单可能有二十行别家的模型。
+    expect(urls).toHaveLength(0)
+    await unmount()
+  })
+
+  it('trigger 位（当前选中）时胶囊在前，菜单行在后', async () => {
+    const badge = { text: { en: 'Night discount', zh: '夜间折扣' }, tone: 'info' }
+    const props = { provider: { id: 'workbuddy' }, model: { id: 'wb-1', name: 'WB One', badge } } as Partial<QoderModelLabelProps>
+    stubFetch([])
+
+    const trigger = await mount({ ...props, placement: 'trigger' })
+    expect(trigger.container.textContent).toBe('夜间折扣 WB One')
+    await trigger.unmount()
+
+    const menu = await mount({ ...props, placement: 'menu' })
+    expect(menu.container.textContent).toBe('WB One 夜间折扣')
+    await menu.unmount()
+  })
+
+  it('locale 面拿不到（bindLocale 缺席）时也不退回裸名字，而是画名字 + 胶囊', async () => {
+    // 不委托是为了避开 issue #23（递一个会让对方抛错的 t）。但避开委托不等于
+    // 什么都不画：这一行自己的 badge 与对方组件的 hooks 无关。
+    const { urls } = stubFetch([])
+    const { container, unmount } = await mount(
+      {
+        provider: { id: 'workbuddy' },
+        model: { id: 'wb-1', name: 'WB One', badge: { text: 'Night discount', tone: 'success' } },
+      } as Partial<QoderModelLabelProps>,
+      slotsStub([{ component: () => React.createElement('b', null, 'other') }], { bindLocale: false }),
+    )
+    expect(container.textContent).toBe('WB One Night discount')
+    expect(container.querySelector('b')).toBeNull()
+    expect(urls).toHaveLength(0)
+    await unmount()
+  })
+
+  it('对方命名空间绑不出来时同样退回名字 + 胶囊（不让整片槽陪葬）', async () => {
+    stubFetch([])
+    const { container, unmount } = await mount(
+      {
+        provider: { id: 'workbuddy' },
+        model: { id: 'wb-1', name: 'WB One', badge: { text: 'Night discount', tone: 'success' } },
+      } as Partial<QoderModelLabelProps>,
+      {
+        entries: () => [{ component: () => React.createElement('b', null, 'other'), locale: 'workbuddy-labels' }],
+        bindLocale: () => { throw new Error('namespace missing') },
+      },
+    )
+    expect(container.textContent).toBe('WB One Night discount')
+    expect(container.querySelector('b')).toBeNull()
+    await unmount()
+  })
+
+  it('badge 形状读不懂时退成纯名字，不抛（抛会让整个组件被宿主摘掉）', async () => {
+    stubFetch([])
+    for (const badge of [null, 42, { text: '' }, { tone: 'info' }]) {
+      const { container, unmount } = await mount({
+        provider: { id: 'workbuddy' },
+        model: { id: 'wb-1', name: 'WB One', badge },
+      } as Partial<QoderModelLabelProps>)
+      expect(container.textContent).toBe('WB One')
+      await unmount()
+    }
   })
 
   it('外来 provider 委托给账本里的下一个组件，且作为子元素渲染（替身带 hooks）', async () => {

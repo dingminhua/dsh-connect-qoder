@@ -12,7 +12,7 @@
  *     user-first 消息，所以没有系统消息时原样放行，而非像 workbuddy 那样塞一个。
  */
 
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createQoderAdapter,
   qoderModelInput,
@@ -24,6 +24,7 @@ import {
 } from '../src/adapter.ts'
 import { QoderCatalog } from '../src/catalog.ts'
 import type { QoderModelInfo } from '../src/catalog.ts'
+import { parseQoderPromotion } from '../src/promo.ts'
 
 const MODEL: QoderModelInfo = {
   key: 'qmodel',
@@ -538,5 +539,106 @@ describe('逐模型的默认思考档位', () => {
     // 报一个默认档给一个不存在的模型，等于凭空造出一个能用的模型。
     const adapter = adapterOf(QWEN)
     await expect(adapter.adapter.resolveModel('qoder-test', 'not-in-catalog')).rejects.toThrow()
+  })
+})
+
+/**
+ * 选择器胶囊走的是**目录**那条路（`listModels`），不是 `resolveModel`。
+ *
+ * 这一组钉住三件在源码里看不出来的事：
+ *
+ * 1. **只有 `listModels()` 能带 badge。** 宿主的 `normalizeModelInfo` 不复制这个
+ *    字段 —— 塞进 `resolveModel()` 的 badge 永远到不了选择器。
+ * 2. **没有胶囊时返回的对象与不带 badge 时逐字段相同**（不写 `badge: undefined`，
+ *    更不写 `null`：后者会让注册表抛错，整个 provider 从目录里消失）。
+ * 3. **时钟在读目录那一刻**（`modelBadgeOf(info, new Date())`），不是装配那一刻。
+ */
+describe('选择器胶囊：只有 listModels 这条路能带 badge', () => {
+  const shim = { baseUrl: 'http://127.0.0.1:9999', secret: 'shim-secret' } as never
+
+  /** 一个窗口内的促销（22:00–08:00 Asia/Shanghai）。 */
+  function promoOf(active: boolean): NonNullable<QoderModelInfo['promotion']> {
+    const parsed = parseQoderPromotion({
+      active,
+      badge: { zh: '错峰 4 折', en: 'Off-Peak 60% off' },
+      timezone: 'Asia/Shanghai',
+      window_start: '22:00',
+      window_end: '08:00',
+    })
+    if (parsed === undefined) throw new Error('fixture 解析失败')
+    return parsed
+  }
+
+  const adapterWith = (info: QoderModelInfo): ReturnType<typeof createQoderAdapter> =>
+    createQoderAdapter({
+      shim,
+      catalog: { current: () => [info] } as never,
+      provider: 'qoder-test',
+      displayName: 'Qoder Test',
+      piAiGeneration: 'modern',
+    })
+
+  /** 23:00 Asia/Shanghai（窗口内）。 */
+  const IN_WINDOW = new Date('2026-10-21T15:00:00Z')
+  /** 12:00 Asia/Shanghai（窗口外 → pending）。 */
+  const OUTSIDE_WINDOW = new Date('2026-10-21T04:00:00Z')
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('窗口内的促销在 listModels 里出现，形状是 { text, tone }', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(IN_WINDOW)
+    const adapter = adapterWith({ ...MODEL, key: 'qmodel_38max', promotion: promoOf(true) })
+    const models = await adapter.adapter.listModels('qoder-test')
+    expect(models[0]?.badge).toEqual({
+      text: { en: 'Off-Peak 60% off', zh: '错峰 4 折' },
+      tone: 'success',
+    })
+  })
+
+  it('窗口外的同一条规则不挂胶囊，且对象里没有 badge 键（不是 undefined、更不是 null）', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(OUTSIDE_WINDOW)
+    const adapter = adapterWith({ ...MODEL, key: 'qmodel_38max', promotion: promoOf(false) })
+    const models = await adapter.adapter.listModels('qoder-test')
+    expect(models[0]?.badge).toBeUndefined()
+    // `null` 会让注册表在 badge.text 上抛错 → 一整个 provider 从目录里消失。
+    expect(Object.prototype.hasOwnProperty.call(models[0] ?? {}, 'badge')).toBe(false)
+  })
+
+  it('没有促销的模型照旧列出（只是没有胶囊，别的字段一个不动）', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(IN_WINDOW)
+    const adapter = adapterWith({ ...MODEL, key: 'qmodel' })
+    const [model] = await adapter.adapter.listModels('qoder-test')
+    expect(model).toEqual({
+      provider: 'qoder-test',
+      id: 'qmodel',
+      name: 'Qwen3.7-Plus · x1.00',
+      inputModalities: ['text', 'image'],
+    })
+  })
+
+  it('resolveModel 那份**不带** badge（宿主导出路由元数据时不复制它）', async () => {
+    // 这条钉的是方向：想显示胶囊只能从 listModels 走。把 badge 塞进
+    // resolveModel 是个静默无效的修法，源码里看着很对，界面上一次都不出现。
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(IN_WINDOW)
+    const adapter = adapterWith({ ...MODEL, key: 'qmodel_38max', promotion: promoOf(true) })
+    const info = await adapter.adapter.resolveModel('qoder-test', 'qmodel_38max')
+    expect(Object.prototype.hasOwnProperty.call(info, 'badge')).toBe(false)
+  })
+
+  it('时钟按「读目录那一刻」算：同一份目录在两个时刻给出不同答案', async () => {
+    // 目录会被宿主反复重建（换号、刷新、勾选变化），而窗口是墙钟时段。冻结装配
+    // 时刻的答案会让徽标在第二天中午还挂着。
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const adapter = adapterWith({ ...MODEL, key: 'qmodel_38max', promotion: promoOf(false) })
+
+    vi.setSystemTime(OUTSIDE_WINDOW)
+    expect((await adapter.adapter.listModels('qoder-test'))[0]?.badge).toBeUndefined()
+
+    vi.setSystemTime(IN_WINDOW)
+    expect((await adapter.adapter.listModels('qoder-test'))[0]?.badge).toBeDefined()
   })
 })

@@ -195,6 +195,27 @@ describe('QODER_CARD_CSS', () => {
     // 日后被当成冗余清掉。
     expect(rule, '圆角裁剪必须保留').toContain('overflow:hidden')
   })
+
+  it('别家行上的胶囊逐条复现宿主 Tag 的几何，且不加描边、不截断', () => {
+    // 这颗胶囊画的是**宿主导出的数据**（`model.badge`），外观必须与宿主自己的
+    // fallback 一致 —— 同一行里两颗胶囊并排时，差一个像素都看得出来。
+    // 逐条抄自 Tag.module.css（0.2.2-rc.1），见 host-badge.tsx 的注释。
+    const chip = ruleOf(QODER_CARD_CSS, 'dsm-qoder-model-label-host-badge') ?? ''
+    expect(chip).toContain('display:inline-flex')
+    expect(chip).toContain('padding:1px 8px')
+    expect(chip).toContain('border-radius:999px')
+    expect(chip).toContain('font-size:11px')
+    expect(chip).toContain('line-height:17px')
+    expect(chip).toContain('font-weight:500')
+    expect(chip).toContain('white-space:nowrap')
+    // 宿主那颗**没有描边**；加了描边就与它并排的两颗不一致。
+    expect(chip).not.toContain('border:')
+    // 同理**不截断**：截成「限时免…」比不显示更糟。
+    expect(chip).not.toContain('max-width')
+    expect(chip).not.toContain('text-overflow')
+    // 名字会省略号截断，胶囊必须不被压缩。
+    expect(chip).toContain('flex:none')
+  })
 })
 
 describe('QODER_CARD_CSS template literal', () => {
