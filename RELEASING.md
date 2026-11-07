@@ -28,13 +28,17 @@
 pnpm exec vitest run tests/privacy.spec.ts
 
 # 图片那一道：自动化查不了，必须人看
+# 必须同时看 status 与 diff：`git diff` 对**新加的图**什么都不显示，
+# 而「新加一张图」正是最容易出事的那一刻。
+git status --short docs/assets
 git diff --stat -- docs/assets
 ```
 
 核对清单：
 
 - [ ] `tests/privacy.spec.ts` 绿
-- [ ] **本次改动过的每张 `docs/assets/*.png` 都打开看过实际像素**——不是在 Markdown 里读 alt 文字
+- [ ] **本次改动过的每张 `docs/assets/*.png` 都打开看过实际像素**——不是在 Markdown 里读 alt 文字。
+      注意 `git diff` **不会**显示新加的图（未跟踪文件），必须先用 `git status` 看清哪些是这次新增的
 - [ ] 截图里的账号名是 `acct-demo` 之类假值；**没有模糊 / 马赛克 / 半透明遮罩**（它们保留字符宽度与字距，不算脱敏）
 - [ ] **截图里的数字也是假的**：积分余额、快过期积分、套餐到期时刻。这三项**同框时全部要换**，
       只换名字而把数字留着等于给出一枚可对照时间线的指纹（1.19.2 第一版正是这样被判回的）

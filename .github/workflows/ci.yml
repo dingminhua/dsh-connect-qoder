@@ -42,13 +42,17 @@ jobs:
       - name: Run tests
         run: pnpm run test
 
+      - name: Build
+        run: pnpm run build
+
       - name: Repository content check
+        # **必须排在 Build 之后**：护栏会扫 `lib/`（它被 gitignore，却随 npm 包
+        # 发布，源码注释会原样进去）。早先这一步在 Build 之前，CI 上 `lib/` 还不
+        # 存在，于是「真正发给用户的那一份」在 CI 里从未被检查过。
+        #
         # 单独一步：红了要一眼看出是哪一类内容不合规，而不是被淹没在
         # 500 条测试的失败列表里。规则见 docs/PRIVACY.md。
         run: pnpm exec vitest run tests/privacy.spec.ts
-
-      - name: Build
-        run: pnpm run build
 
       - name: Verify package contents
         run: npm pack --dry-run

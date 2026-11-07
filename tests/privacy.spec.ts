@@ -67,7 +67,17 @@ function libFiles(): string[] {
     .map(name => `lib/${name}`)
 }
 
-const TEXT_EXT = /\.(md|ts|tsx|jsx|js|mjs|cjs|json|jsonc|yml|yaml|txt|css|html|svg|sh|bat|toml|env)$/
+/**
+ * 二进制**黑**名单 —— 用「排除已知二进制」而不是「只认已知文本」。
+ *
+ * 白名单漏过一次：`.reg` 被 `.gitignore` 专门列出、`docs/PRIVACY.md` §4 的自检命令
+ * 也专门扫它（注册表导出正是本项目担心的一类本机状态），而它**不在**白名单里，
+ * 于是永远不会被检查。同理漏掉的还有 `.ps1` / `.py` / `.log` / `.csv` / `.patch`。
+ *
+ * 方向应当是「默认检查，已知读不了才跳过」：漏扫一个文本文件的代价，远大于
+ * 尝试把一个二进制当 UTF-8 读（那只会解出乱码，匹配不到任何真实值）。
+ */
+const BINARY_EXT = /\.(png|jpe?g|gif|webp|bmp|ico|icns|pdf|zip|gz|tgz|tar|7z|rar|woff2?|ttf|otf|eot|mp[34]|wav|ogg|webm|mov|mp4|so|dylib|dll|exe|node|wasm|class|jar|db|sqlite|ldb|pak|asar)$/i
 
 /**
  * 测试与示例里的**占位** token。它们长得像凭据，但显然是造的：
@@ -152,8 +162,26 @@ const RULES: Rule[] = [
     allow: match => /\/(Users|home)\/(<|\$|~|username|user|someone|your|xxx)/i.test(match),
   },
   {
-    pattern: /[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/,
-    why: '同上（Windows 形态）',
+    // Windows 形态。**要同时认单反斜杠和双反斜杠**：在 `.ts` / `.json` 源码里
+    // 一个真实路径写出来是 `C:\\Users\\name`（两个反斜杠），旧规则只匹配单个
+    // `\`，于是「写在源码里的本机路径」这一整类都漏掉了。
+    // 另外不限定必须是 `Users` 段：`D:\Projects\...` 同样带着用户名与项目名。
+    pattern: /[A-Za-z]:[\\/]{1,2}(?:Users|Documents and Settings)[\\/]{1,2}[A-Za-z0-9._-]+/,
+    why: '同上（Windows 形态，含源码里转义的双反斜杠写法）',
+    allow: match => /[\\/]{1,2}(<|\$|username|user|someone|your|xxx)/i.test(match),
+  },
+  {
+    // 其它盘符下的绝对路径：不要求出现 `Users`，但必须**深到至少三层**。
+    //
+    // 为什么要求三层：两层（`D:\Tools`、`C:\Other`）在测试夹具里大量出现，
+    // 而它们不指向任何具体用户；真正暴露本机布局的是
+    // 「盘符 + 项目名 + 子目录 + 更深一层」这种带项目名的深层路径。
+    //
+    // 必须用 `(?<![A-Za-z])` 卡住前面：否则 `https://github.com/...` 里的
+    // `s://github.com` 会被当成「盘符 s:」而误报整条 URL —— 这个误报出现过一次。
+    pattern: /(?<![A-Za-z])[A-Za-z]:[\\/]{1,2}[A-Za-z0-9._-]+(?:[\\/]{1,2}[A-Za-z0-9._-]+){2,}/,
+    why: '本机盘符绝对路径（三层以上，暴露目录布局与用户名）',
+    allow: match => /^[A-Za-z]:[\\/]{1,2}(<|\$|username|user|someone|your|xxx|node_modules|Tools|Other|temp|tmp|path|to)/i.test(match),
   },
   {
     pattern: /\bpt-[A-Za-z0-9]{16,}\b/g,
@@ -188,6 +216,39 @@ const RULES: Rule[] = [
 describe('仓库里没有真实账号数据', () => {
   const files = scannedFiles()
 
+  /**
+   * 规则**数量**与**身份**的护栏。
+   *
+   * 删掉一条规则不会让任何东西变红——它只是从此不再检查某一类东西，而这正是
+   * 最隐蔽的削弱方式。这里把每条规则的 `why` 钉成一份固定清单：删一条、改一条的
+   * 措辞，都会立刻变红，必须同时改这份清单（那次改动就留下痕迹了）。
+   *
+   * 清单本身要跟着规则一起维护：**新增规则时把它加进来**。
+   */
+  it('规则清单没有被悄悄删减', () => {
+    const EXPECTED = [
+      '维护者的真实邮箱前缀',
+      '上游真实账号昵称',
+      '真实邮箱地址',
+      'PAT 的 sha256 指纹',
+      '真实凭据库键名',
+      '本机绝对路径泄露操作系统用户名',
+      '同上（Windows 形态',
+      '本机盘符绝对路径',
+      'PAT 本体',
+      'GitHub / npm 令牌本体',
+      '私钥',
+      '手机号',
+      '设备标识的取值',
+    ]
+    const actual = RULES.map(rule => rule.why)
+    for (const expected of EXPECTED) {
+      const hit = actual.some(why => why.includes(expected))
+      expect(hit, `规则「${expected}」不见了 —— 删除规则不会让别的测试变红，所以在这里兜住`).toBe(true)
+    }
+    expect(RULES.length, '规则条数变少了').toBeGreaterThanOrEqual(EXPECTED.length)
+  })
+
   it('扫到了足够多的文件（护栏本身没瞎）', () => {
     // 这条防的是「git 命令失败 → 列表为空 → 所有断言真空通过」。
     expect(files.length).toBeGreaterThan(100)
@@ -197,7 +258,7 @@ describe('仓库里没有真实账号数据', () => {
     it(`没有${rule.why}`, () => {
       const offenders: string[] = []
       for (const path of files) {
-        if (!TEXT_EXT.test(path)) continue
+        if (BINARY_EXT.test(path)) continue
         if (path.includes('node_modules/')) continue
         if (!existsSync(join(ROOT, path))) continue
 
@@ -292,6 +353,63 @@ describe('发布清单不会把内部文件带出去', () => {
         expect(listed, `${name} 链接了 ${link}，但它不在 files 白名单里`).toContain(link)
       }
     }
+  })
+})
+
+/**
+ * 财务状态：**只认「余额/积分/到期」与数字的直接相邻**，且只扫散文文档。
+ *
+ * 这是本项目真实泄露过的那一类（余额 + 到期时刻），而它一直没有任何机器判据。
+ *
+ * 换了三次边界才定下来：
+ *   · 全仓库扫 → 被测试夹具 `{ credits: 100, nearestExpiryMs }` 淹没；
+ *   · 「关键词同一行」扫 → 连像素宽度（402px、108px）、HTTP 状态码（405/503）、
+ *     版本号全被当成余额，一屏几十条，等于没有；
+ *   · **最后这条**：要求数字**紧贴在**关键词之后（中间只允许冒号、空格、`·`），
+ *     例如「余额 1240」「积分 92」「到期 2027-03-14」。这样「402px 的行高、
+ *     积分列 134px」不会命中，而「余额 1240 积分」会。
+ *
+ * 代码与 `tests/` 仍然排除：那里的数字是夹具，不是某个人账户的真实状态。
+ */
+describe('散文文档里的财务数值必须是约定假值', () => {
+  /** 约定的假值：与 `docs/PRIVACY.md`、`AGENTS.md` 写的一致。 */
+  const PLACEHOLDER_NUMBERS = new Set(['888', '88', '50', '210', '100', '838', '1140'])
+
+  /** 只扫「给人读的散文」。 */
+  function proseFiles(): string[] {
+    return scannedFiles().filter(path => (
+      /^(README(\.en)?\.md|AGENTS\.md|RELEASING\.md|CHANGELOG\.md)$/.test(path)
+      || /^docs\/[^/]+\.md$/.test(path)
+    ))
+  }
+
+  it('扫到了足够多的散文文件（护栏本身没瞎）', () => {
+    expect(proseFiles().length).toBeGreaterThan(4)
+  })
+
+  it('「余额 / 积分 / 到期」紧跟的数字不是可疑的真实值', () => {
+    // 关键词 + 可选分隔 + 数字（3 位以上，排除「1 分钟」「2 行」这类量词）。
+    const tight = /(?:余额|积分|额度|到期|套餐|credits?|balance|quota|expir\w*)\s*[:：·处]?\s*(\d{3,6})(?!\s*(?:px|ms|tok|次|行|字|条|个|步|%))/gi
+    const offenders: string[] = []
+
+    for (const path of proseFiles()) {
+      if (!existsSync(join(ROOT, path))) continue
+      const text = readFileSync(join(ROOT, path), 'utf8')
+      const lines = text.split('\n')
+      for (const [index, line] of lines.entries()) {
+        for (const match of line.matchAll(tight)) {
+          const num = match[1]!
+          if (PLACEHOLDER_NUMBERS.has(num)) continue
+          if (PLACEHOLDER_NUMBERS.has(num.replace(/,/g, ''))) continue
+          // 四位年份不是余额（「到期 2027-03-14」的年份，日期本身另由下一条规则管）。
+          if (/^(19|20)\d{2}$/.test(num)) continue
+          offenders.push(`${path}:${index + 1}: ${num}  ← ${line.trim().slice(0, 110)}`)
+        }
+      }
+    }
+
+    expect(offenders, `这些数字紧跟在财务关键词后面，却不像是约定的假值：\n${offenders.join('\n')}`)
+      .toEqual([])
   })
 })
 

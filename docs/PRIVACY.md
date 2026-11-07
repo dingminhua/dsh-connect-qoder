@@ -66,7 +66,9 @@ Markdown 里的 alt 文字。alt 是写给读者的，不是写给你自己核�
 ## 4. 提交前自检（30 秒）
 
 ```bash
-# 1) 代码与文档里不该有的东西（与 tests/privacy.spec.ts 的规则一一对应）
+# 1) 快速自查。**它不是 `tests/privacy.spec.ts` 的镜像**：下面这条只管
+#    最常用的几类，护栏里还有私钥、令牌本体、Windows 路径等它没写的规则。
+#    两者都要跑——先看这个，再跑第 3 步。
 # 占位值（pat-aaaa… / pat-deadbeef… / pat-0123456789abcdef）被排除在外，
 # 否则输出会被测试夹具淹没，而「看不完的输出」等于没人看。
 grep -rnE 'nick[0-9]{4,}|@[A-Za-z0-9.-]+\.[a-z]{2,}|pat-[0-9a-f]{12,}|/Users/[A-Za-z0-9._-]+|/home/[A-Za-z0-9._-]+|(?<!\d)1[3-9][0-9]{9}(?!\d)|"?(machineId|machineToken|machineType)"?\s*[:=]' \
@@ -90,8 +92,8 @@ pnpm exec vitest run tests/privacy.spec.ts
 >   而测试夹具里 `{ credits: 100, nearestExpiryMs: … }` 一屏十几条，满屏误报，
 >   逼得人加 `allow` 白名单，最后变成「谁改测试谁顺手放宽」——比没有更糟，已撤回。
 >   这一类**只能靠人**：改图时同时改正文里引用那张图的数字（见 §2 第 3 条）。
-> - 序号 2 的 `lib/` 已纳入扫描（它是 gitignore 的构建产物，却随包发布）；
->   但干净 clone 上还没构建时，那部分为空——**发布前必须先 `pnpm build`**。
+> - 护栏会扫 `lib/`（它是 gitignore 的构建产物，却随包发布）；但干净 clone 上
+>   还没构建时那部分为空，所以 **CI 把这一步排在 Build 之后**，发布前也必须先 `pnpm build`。
 > - 所以 §2 的第 1 条（先造数据再截图）才是治本的；护栏只防回退。
 
 ## 5. 已经泄露了怎么办

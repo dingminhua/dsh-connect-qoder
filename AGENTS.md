@@ -10,11 +10,12 @@
 > 凡是进了仓库的东西，用户装一次包就落到他的磁盘上，也永远留在 git 历史与
 > npm 的每一份 tarball 里。**发出去就收不回来。**
 
-写代码、写文档、拍截图时，以下内容**一律用假值**（清单与 `docs/PRIVACY.md` §1 一致）：
+写代码、写文档、拍截图时，以下内容**一律用假值**（完整清单见 `docs/PRIVACY.md` §1）：
 
 - 真实邮箱 / 手机号 / 上游昵称 → `account-a`、`account-a@example.com`
 - 真实账号显示名 → `acct-demo`
 - **账户财务状态：积分余额、套餐档位、到期时刻** → `888`、`01/01/2027`
+- **凭据本体**：PAT（`pt-…`）、`access_token`、`ghp_…`、npm `_authToken`、私钥 → 一律不写
 - 凭据指纹 `pat-<16 位 hex>` → `pat-0123456789abcdef`
 - 本机绝对路径 → `~` 或 `os.homedir()`
 - 凭据库键名 → `QODERCN_ACCOUNT_EXAMPLE`
