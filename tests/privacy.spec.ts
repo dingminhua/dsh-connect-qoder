@@ -293,36 +293,74 @@ describe('仓库里没有真实账号数据', () => {
 describe('规则文档仍然在位且没被削弱', () => {
   const read = (path: string): string => readFileSync(join(ROOT, path), 'utf8')
 
-  it('AGENTS.md 有隐私硬约束一节，并列全六类禁止内容', () => {
+  /**
+   * 这一组防的是「文档被悄悄改软」。
+   *
+   * 早先只查关键词（`expect(text).toContain('邮箱')`），被一击即破：把
+   * `docs/PRIVACY.md` §1 的**整张禁止表**换成一句「（此处原本有一张表，删了）」，
+   * 5 条断言照样全绿——因为「绝对禁止」这个词还在标题里。
+   *
+   * 所以改成**按结构断言**：表有几行、清单有几项、每行含哪几列。
+   * 削弱性改写（删行、合并行、把具体形态换成笼统词）都会改变结构而变红。
+   * 保留措辞的自由（可以改写句子），但**不能减少被禁止的类别**。
+   */
+
+  it('PRIVACY.md §1 的禁止表仍是 7 类，每类都在', () => {
+    const text = read('docs/PRIVACY.md')
+    const section = text.slice(text.indexOf('## 1.'), text.indexOf('## 2.'))
+    // 表格数据行（跳过表头与分隔行）。
+    const rows = section.split('\n').filter(line => line.startsWith('| ') && !line.includes('---'))
+    const header = rows[0]!
+    expect(header, '§1 的表格结构变了').toContain('类别')
+    const categories = rows.slice(1).map(line => line.split('|')[1]?.trim() ?? '')
+    for (const expected of ['凭据', '凭据指纹', '真实账号标识', '账户财务状态', '本机路径', '凭据库键名', '设备标识']) {
+      expect(categories, `§1 禁止表里「${expected}」这一类不见了`).toContain(expected)
+    }
+    expect(categories.length, '§1 的禁止类别条数变少了（删行即等于放松规则）').toBe(7)
+  })
+
+  it('PRIVACY.md §2 的截图规则仍是 4 条', () => {
+    const text = read('docs/PRIVACY.md')
+    const section = text.slice(text.indexOf('## 2.'), text.indexOf('## 3.'))
+    const numbered = section.split('\n').filter(line => /^\d+\.\s/.test(line))
+    expect(numbered.length, '§2 截图规则条数减少了').toBe(4)
+    expect(section, '「模糊 / 马赛克不算脱敏」这条结论不见了').toMatch(/模糊|马赛克/)
+    expect(section, '「先造数据再截图」这条不见了').toMatch(/先造数据|先造/)
+  })
+
+  it('PRIVACY.md §4 仍写明护栏读不了图片、且是黑名单', () => {
+    const text = read('docs/PRIVACY.md')
+    const section = text.slice(text.indexOf('## 4.'), text.indexOf('## 5.'))
+    expect(section, '没写明护栏读不了图片，下一个人会误信它').toMatch(/读不了图片|图片内容/)
+    expect(section, '没写明这是黑名单，下一个人会误信它「全覆盖」').toMatch(/黑名单/)
+    // 这条最容易被「美化」掉：把边界描述改成「很全面」。
+    expect(section, '没写明财务数值测不了').toMatch(/财务|余额/)
+  })
+
+  it('AGENTS.md §1 仍是硬约束，且八类禁止内容都在', () => {
     const text = read('AGENTS.md')
     expect(text).toMatch(/## 一、隐私/)
-    // 六类：邮箱/昵称、显示名、财务状态、凭据指纹、本机路径、凭据库键名
-    for (const word of ['邮箱', '显示名', '财务状态', '凭据指纹', '绝对路径', '凭据库键名']) {
-      expect(text, `AGENTS.md 少了「${word}」这一类`).toContain(word)
+    expect(text, '「硬约束」被改软了').toMatch(/硬约束/)
+    for (const word of ['邮箱', '显示名', '财务状态', '凭据本体', '凭据指纹', '绝对路径', '凭据库键名', '设备标识']) {
+      expect(text, `AGENTS.md §1 少了「${word}」这一类`).toContain(word)
     }
-    // 截图那条最容易退化成「遮一下就行」
-    expect(text).toContain('模糊')
-    expect(text).toContain('不算脱敏')
+    expect(text, '模糊/马赛克这一条被删了').toContain('模糊')
+    expect(text, '「不算脱敏」的判定被删了').toContain('不算脱敏')
+    expect(text, '没写明财务数值只能靠人').toMatch(/只能靠人/)
   })
 
-  it('AGENTS.md 指出护栏测不了财务数值（防止把「测过了」当成「查过了」）', () => {
-    const text = read('AGENTS.md')
-    expect(text).toMatch(/只能靠人/)
-  })
-
-  it('RELEASING.md 的第 0 步仍在，且清单含财务数字与独立复核', () => {
+  it('RELEASING.md §0 的清单项没有减少，且关键几项都在', () => {
     const text = read('RELEASING.md')
-    expect(text).toMatch(/### 0\. 隐私审查/)
-    expect(text, '清单里少了「截图里的数字」这一项').toMatch(/数字也是假的|余额/)
-    expect(text, '清单里少了独立复核这一项').toMatch(/维护者之外/)
-    expect(text).toMatch(/tests\/privacy\.spec\.ts/)
-  })
-
-  it('docs/PRIVACY.md 仍在，且写明护栏的能力边界', () => {
-    const text = read('docs/PRIVACY.md')
-    expect(text).toMatch(/绝对禁止/)
-    expect(text, '能力边界没写清楚的活，下一个人会误信护栏').toMatch(/能力边界|读不了图片/)
-    expect(text).toMatch(/黑名单/)
+    const section = text.slice(text.indexOf('### 0.'), text.indexOf('### 1.'))
+    const items = section.split('\n').filter(line => /^- \[ \]/.test(line))
+    expect(items.length, '§0 的勾选项变少了（删一条就等于少一道关卡）').toBeGreaterThanOrEqual(6)
+    const joined = items.join('\n')
+    expect(joined, '少了「打开看实际像素」这一项').toMatch(/实际像素/)
+    expect(joined, '少了「没有模糊/马赛克」这一项').toMatch(/模糊/)
+    expect(joined, '少了「截图里的数字也是假的」这一项').toMatch(/数字也是假的|余额/)
+    expect(joined, '少了「正文引用数字与图一致」这一项').toMatch(/正文|一致/)
+    expect(joined, '少了「独立复核」这一项').toMatch(/维护者之外/)
+    expect(joined, '少了「源码注释也跟着 build」这一项').toMatch(/源码注释|build/)
   })
 
   it('PRIVACY.md 随 npm 包发布（否则使用者看不到这些规则）', () => {
