@@ -53,7 +53,7 @@ import { accountDotTone, accountStateColor } from './account-state.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
 import { inlineProbeReason } from './probe-reason.ts'
-import { probeLabelOf, formatExpiryMoment } from './probe-label.ts'
+import { probeLabelOf } from './probe-label.ts'
 import { probeAgeText, probeSourceText } from './probe-age.ts'
 import { PROBE_INPUT_TOKEN_CHOICES } from '../probe.ts'
 import { remainingText, countdownText } from './remaining.ts'
@@ -997,7 +997,8 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
             <span>{t('row.poolColumnCredits')}</span>
             <span>{t('row.poolColumnProbe')}</span>
             {checkinOn ? <span>{t('row.poolColumnCheckin')}</span> : null}
-            <span />
+            {/* 操作列的表头是空的：那一格只有按钮，没有可命名的数据列。 */}
+            <span aria-hidden="true" />
           </div>
           {/* 行序 = 当前生效的优先级（`orderIds`），不是宿主下发的原顺序。
               这是排序能「即时」的前提：点 ↑/↓ 之后必须**当场**换行，而不是
@@ -1102,6 +1103,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                           >↓</button>
                         </span>
                       ) : null}
+
                     </span>
                     {/* 第二行只回答一个问题：**这个号为什么现在不能用**。
                         没有话说时这一行不渲染（不占高度）。
@@ -1113,21 +1115,16 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                       ? null
                       : <span className="dsm-qoder-pool-excluded">{excluded}</span>}
                   </span>
-                </span>
-                <span className="dsm-qoder-pool-credits">
-                  {account.credits === undefined
-                    ? <span className="dsm-qoder-pool-unknown">{'—'}</span>
-                    : <b>{String(account.credits)}</b>}
-                  {account.expiringSoon !== undefined && account.expiringSoon > 0
-                    ? <span className="dsm-qoder-pool-soon">{t('row.poolCreditSoon', { count: String(account.expiringSoon) })}</span>
-                    : account.nearestExpiryMs === undefined ? null
-                      : <span className="dsm-qoder-pool-soon-plain">{t('row.poolCreditNearest', { at: formatExpiryMoment(account.nearestExpiryMs) })}</span>}
-                  {/* 套餐到期与积分到期是**两件事**（issue #31 建议 1），所以是
-                      两句话，各带各的时刻。此前那个日期被挂在积分包上，读起来像
-                      「这些积分那天作废」，而它其实是账号的 14 天试用 / 套餐。 */}
-                  {account.planExpiresAtMs === undefined
-                    ? null
-                    : <span className="dsm-qoder-pool-plan">{t('row.poolPlanExpires', { at: formatExpiryMoment(account.planExpiresAtMs) })}</span>}
+                  <span className="dsm-qoder-pool-credits">
+                    {/* **一行只留数字**。到期那两句（「最早一批签到积分约…到期」/
+                        「套餐…到期」）曾经并排在这里，占掉整整一个视觉行 —— 用户
+                        实拍三行布局时的第二行就是它们，明确要求「第二行的信息不要了」。
+                        按同一次决定，它们**彻底不渲染**，也不进 title 悬停提示：
+                        界面上不再提供到期时刻。 */}
+                    {account.credits === undefined
+                      ? <span className="dsm-qoder-pool-unknown">{'—'}</span>
+                      : <b>{String(account.credits)}</b>}
+                  </span>
                 </span>
                 <span className="dsm-qoder-pool-probe" {...(account.probe?.message === undefined ? {} : { title: account.probe.message })}>
                   {/* 主行 = 结果 · 原因（workbuddy 的 probeLine 同规）：原因写进主行
@@ -1167,6 +1164,7 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
                     </span>
                   )}
                 </span>
+
                 {/* 签到单元格（仅在有签到列时渲染）。**一格只说一句话**，四态：
                     · 没读到 → 「未知」（说「未签到」会与用户刚亲眼看到的领取结果矛盾）
                     · 已领取但上游没给开窗时刻 → 「已签到」（绝不编一个本地倒计时）
@@ -1367,13 +1365,14 @@ function RenderSettings(props: {
           先读说明的人会等一个根本不需要的按钮，先动手的人则会惊讶表格自己变了。
           虚线边框与「这里没有保存按钮」的对比就是真话：上面是动作，下面是偏好。 */}
       {accountTools === undefined ? null : <div className="dsm-qoder-pool-tools">{accountTools}</div>}
-      {/* 这是一个**小标题**，不是第二个页面标题：这一块是「剩下的设置」（一个
-          测试模型、一个测试体积），不是本面板的主角，不该和顶端的「账号池」
-          一样响。脏标记已上移到模式条——开关才是第一件能改脏的东西。 */}
-      <div className="dsm-qoder-pool-card-head">
-        <h4 className="dsm-qoder-pool-card-title">{t('row.poolSettingsTitle')}</h4>
-      </div>
-      <p className="dsm-qoder-pool-note">{t('row.poolSettingsHint')}</p>
+      {/* 「更多设置」这个标题与它下面那句偏好说明**已删除**（1.20.0，用户实拍）。
+          两条理由：
+            1. 下面每一行自己就写着是做什么的（「测试用模型（全池统一）」「测试
+               请求体积」都是行内标题）——再加一个总标题等于给同一件事命名两次；
+            2. 那句说明解释的是「点保存才生效」，而保存行就长在下面那一条里，
+               读的人到那里自然会看见。
+          立即生效的账号工具仍在上面（虚线框），那条对比现在靠**位置**表达：
+          框里是动作，框外是偏好。 */}
       <div className="dsm-qoder-pool-settings">
       {/* 「使用哪个账号」**不在这里**：它搬进了标题行，与「当前使用」芯片共用
           一个槽位（见本文件顶部的 `manualPicker`）。同一屏上第三次复述同一个

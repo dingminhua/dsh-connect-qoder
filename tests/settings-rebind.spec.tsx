@@ -4,6 +4,16 @@ import { describe, expect, it, vi } from 'vitest'
 import { apply } from '../src/client/index.tsx'
 
 /**
+ * workbuddy 在同一个 single 槽上的优先级。
+ *
+ * **抄成常量而不是从那个包里 import**：本仓库不依赖它（它只是文档里引用的参照
+ * 项目）。这个数字是对方 `src/client/WorkBuddyModelLabel.tsx` 的
+ * `MODEL_LABEL_PRIORITY = -100`；对方若哪天改了，这条测试会在**它抢走座位、
+ * 我们的徽标消失**时变红 —— 而那正是它该提醒的事。
+ */
+const WORKBUDDY_MODEL_LABEL_PRIORITY = -100
+
+/**
  * 针对**真实** `apply()`（`src/client/index.tsx`）的绑定回归，不是镜像副本。
  *
  * workbuddy 上游的同名测试只能测「手抄的 apply 镜像」，因为它那边导入真实入口会
@@ -419,14 +429,26 @@ describe('真实 apply() 的 settings 命名空间绑定', () => {
     expect(failures).toEqual([])
   })
 
-  it('模型选择器标签以 priority -1 + locale 注册（single 槽：与他人同优先级会直接抛）', () => {
+  it('模型选择器标签的 priority 必须排在 workbuddy（-100）之前，否则它的徽标整个不显示', () => {
     const stub = formsStub({ served: ['dsh-connect-qoder'] })
     const { injected } = mount(stub.forms)
     const label = injected.filter(e => e.slot === 'conversation.input.model.label').at(-1)
     expect(label).toBeDefined()
-    // workbuddy 占着默认优先级 0；同优先级注册在 single 槽上会抛
-    // 「already has a registration at priority ...」。升序取首条 ⇒ 要排在它前面。
-    expect(label?.options.priority).toBe(-1)
+    // **用户实拍**：卡片里有「错峰 4 折」胶囊（那是 qoder 自己画的行），
+    // 但模型选择器里没有。原因就是这个优先级。
+    //
+    // single 槽只渲染一条注册，按 priority **升序取首条**（小者先）。原先这里
+    // 写 -1，注释说「workbuddy 占着默认优先级 0」——那条判断是**错的**：
+    // workbuddy（src/client/WorkBuddyModelLabel.tsx 的 MODEL_LABEL_PRIORITY）
+    // 用的是 **-100**，比 -1 更小，所以它抢到了座位。
+    //
+    // 而 workbuddy 是**终点型**组件：它的文件头明说「does not read the slot
+    // ledger, does not render another plugin's component」——不委托，于是 qoder
+    // 的标签根本不会被渲染。同一槽里谁在前面，决定了谁的徽标能被看见。
+    //
+    // 所以这里必须**比 -100 更小**。取 -101 而不取一个更大的负数：只争一格，
+    // 不把将来的插件全挤到身后。
+    expect(label?.options.priority).toBeLessThan(WORKBUDDY_MODEL_LABEL_PRIORITY)
     // locale 决定渲染器是否把命名空间绑好的 t 递进来（#12 报告的坑 D）。
     expect(label?.options.locale).toBe('settings.qoder')
   })

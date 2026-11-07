@@ -33,10 +33,6 @@ export const en = {
   // string cannot drift from the registered one.
   'section.label': 'Qoder',
   'section.title': 'Qoder (Lingma) accounts, credits & models',
-  'section.intro': 'Run one or more Qoder accounts as DSH providers and pick which of their models this profile may use.',
-  'section.value1': 'Accounts: one or more PATs per side (CN / global), pooled, check-in-capable, and switchable per region.',
-  'section.value2': 'Model catalog: refresh it from upstream, then tick exactly the models DSH is allowed to offer.',
-  'section.value3': 'Reading at a glance: the current balance sits next to the model picker, so you can see what a session is spending before it spends it.',
   'row.tabCn': 'CN',
   'row.tabGlobal': 'Global',
   'row.tabHint': 'Each tab is a separate provider (qoder / qoder-global) with its own PAT, accounts, credits, and models. Both sides are live at once: different sessions can pick from either side, and changes on one tab never touch the other.',
@@ -52,6 +48,7 @@ export const en = {
   // column put the save button screens away from what it saves.
   'row.panelAccounts': 'Accounts',
   'row.panelModels': 'Models',
+  'row.panelCapabilities': 'Capabilities',
   'row.panelDiag': 'Diagnostics',
   'row.panelAria': 'Card sections',
   'row.diagHint': 'What this card actually read, so a report can quote it. Nothing here changes a setting.',
@@ -295,13 +292,6 @@ export const en = {
   'row.poolCheckinDueHint': 'The next window has opened, so this account can claim again now. "Checked in" referred to the previous window, so it is not repeated here.',
   'row.poolNeverTested': 'Untested',
   'row.poolTestedAt': 'Tested {at}',
-  'row.poolCreditSoon': '{count} expiring within 3 days',
-  // 「最近积分包 X 过期」这句话说的是**签到批次**推算出来的积分到期（issue #31），
-  // 不是套餐到期 —— 措辞必须点明「推算」，否则读者会把它当成上游承诺的时刻。
-  'row.poolCreditNearest': 'Earliest claimed batch expires around {at}',
-  // 套餐 / 试用到期（issue #31 建议 1）：与上一句是**两件事**，所以单出一句，
-  // 且不写「积分」二字 —— 这个日期与任何批次的积分都无关。
-  'row.poolPlanExpires': 'Plan ends {at}',
   'row.poolExcludedRateLimited': 'Rate limited',
   // Same reason as `probeOutOfCredit*`: this bucket covers the whole quota
   // family, and the account measured for code 110 still had 500 credits —
@@ -333,8 +323,6 @@ export const en = {
   'row.poolProbeSourceUnknown': 'source unknown',
   'row.poolProbeOtherModel': 'measured on {model}',
   'row.poolProbeOtherModelHint': 'This result is about a different model — it says nothing about the currently selected one. Qoder rate-limits per model, so the same account can be fine on one and throttled on another.',
-  'row.poolSettingsTitle': 'More settings',
-  'row.poolSettingsHint': 'These are preferences: they take effect when you save (same as the model list). Test results are written automatically and are not affected by this button.',
   'row.poolEnabled': 'Enable the account pool',
   'row.poolEnabledHint': 'On: the pool picks the account for every request and moves to the next one when it fails. Off: the account you select serves every request, and a failure is reported as it is.',
   'row.poolModeAuto': 'picking automatically',
@@ -489,10 +477,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   // 所以「找的」与「注册的」不可能漂移。
   'section.label': 'Qoder',
   'section.title': 'Qoder（通义灵码）账号、积分与模型',
-  'section.intro': '把一个或多个 Qoder 账号接成 DSH 的供应商，并决定这个 profile 可以用它们的哪些模型。',
-  'section.value1': '账号：国内版 / 国际版各一池 PAT，可签到、可按区域切换服务账号。',
-  'section.value2': '模型目录：从上游刷新，勾选哪些模型才出现在模型选择器里。',
-  'section.value3': '读数：余额就显示在模型选择器旁边，花之前先看见。',
   'row.tabCn': '国内版',
   'row.tabGlobal': '国际版',
   'row.tabHint': '每个 tab 是一个独立供应商（qoder / qoder-global），各有自己的 PAT、账号、积分与模型。两边同时生效：不同会话可各选一边，一侧的改动不影响另一侧。',
@@ -507,6 +491,7 @@ export const zh: Record<QoderSettingsKey, string> = {
   // 的东西隔着好几屏。
   'row.panelAccounts': '账号',
   'row.panelModels': '模型',
+  'row.panelCapabilities': '能力',
   'row.panelDiag': '诊断',
   'row.panelAria': '卡片分区',
   'row.diagHint': '这张卡片实际读到了什么，方便整段贴进问题反馈。这里没有任何会改动设置的控件。',
@@ -734,14 +719,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolCheckinDueHint': '下一窗已经开了，这个账号现在可以再签。「已签到」说的是上一窗，所以这里不再重复它。',
   'row.poolNeverTested': '未测试',
   'row.poolTestedAt': '测试于 {at}',
-  'row.poolCreditSoon': '{count} 积分 3 天内过期',
-  // 「最近积分包 X 过期」改口径（issue #31）：这个时刻是**签到批次**按
-  // `validity.days` 推算出来的，与套餐到期无关。写成「最近积分包」会让读者
-  // 把它当成上游给的确定时刻 —— 而它其实是我们按 FIFO 假设取的悲观上界。
-  'row.poolCreditNearest': '最早一批签到积分约 {at} 到期',
-  // 套餐 / 试用到期（issue #31 建议 1）：与上一句是**两件事**，所以单出一句，
-  // 且不写「积分」二字 —— 这个日期与任何批次的积分都无关。
-  'row.poolPlanExpires': '套餐 {at} 到期',
   'row.poolExcludedRateLimited': '被限流',
   // 与 `probeOutOfCredit*` 同一理由：这一档收的是整个配额族，实测 110 的账号
   // 还有 500 积分 —— 芯片说「积分耗尽」会与同一行的积分数字当面对撞。
@@ -772,8 +749,6 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolProbeSourceUnknown': '来源未知',
   'row.poolProbeOtherModel': '针对 {model} 测得',
   'row.poolProbeOtherModelHint': '这条结论是针对另一个模型的，对当前选中的模型不作数。Qoder 按模型限流，同一个账号可能在一个模型上正常、在另一个上被限。',
-  'row.poolSettingsTitle': '更多设置',
-  'row.poolSettingsHint': '下面是偏好设置：点保存才生效（与「模型管理」一致）。测试结果由插件自动写入，不受这个保存按钮影响。',
   'row.poolEnabled': '启用账号池',
   'row.poolEnabledHint': '开启：由账号池为每次请求挑号，失败就换下一个。关闭：你选的账号服务每一次请求，失败如实报错。',
   'row.poolModeAuto': '自动挑号',

@@ -25,7 +25,7 @@ import type { ReactElement } from 'react'
 import { QoderCard } from './QoderCard.tsx'
 import type { QoderCardInjected } from './QoderCard.tsx'
 import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
-import { createQoderModelLabel, QODER_MODEL_LABEL_SLOT } from './QoderModelLabel.tsx'
+import { createQoderModelLabel, QODER_MODEL_LABEL_PRIORITY, QODER_MODEL_LABEL_SLOT } from './QoderModelLabel.tsx'
 import type { QoderModelLabelSlots } from './QoderModelLabel.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
@@ -288,7 +288,19 @@ export function apply(ctx: QoderClientContext): void {
           register(options: { name: string; priority: number; locale: string }, component: unknown): () => void
         }).register({
           name: QODER_MODEL_LABEL_SLOT,
-          priority: -1,
+          // **必须小于 workbuddy 的 -100。**
+          //
+          // single 槽只渲染一条注册，按 priority **升序取首条**（小者先）。这里
+          // 原先是 -1，注释说「workbuddy 占着默认优先级 0」——那条判断是错的：
+          // workbuddy 用的是 -100，比 -1 小，所以它抢到了座位。
+          //
+          // 而 workbuddy 是**终点型**组件（它的文件头写明不读槽位账本、不渲染
+          // 别家的组件，所以永远不会把这一行交还给我们）。结果就是：卡片里
+          // 有「错峰 4 折」胶囊，模型选择器里却没有 —— 用户实拍的正是这个。
+          //
+          // 取 -101 而不是一个更大的负数（比如 -1000）：只争一格，不把将来
+          // 任何正常的插件挤到身后。
+          priority: QODER_MODEL_LABEL_PRIORITY,
           locale: namespace,
         }, label))
       } catch (error: unknown) {
@@ -551,6 +563,12 @@ export function apply(ctx: QoderClientContext): void {
      * 没有配置可看，所以改成驱动真实 chrome：`settings-jump.ts` 点开设置面板、
      * 再点本插件的导航行。
      *
+     * 1.20.0 起先走**外壳自己的 store 座位**：设置外壳把状态句柄发布在
+     * `sidebar.settings` 的 `store` 上，`create().actions.openSection(id)` 一次
+     * 调用同时设 `activeId` 与 `open` —— 没有重试窗口，也不依赖导航行的文案。
+     * 驱动 chrome 降为第二条路（老外壳没有座位时仍能到本插件页）。
+     * 依据读自 0.2.2-rc.1 的 `ui-settings-general`，逐条记在 `settings-jump.ts`。
+     *
      * **为什么还要留一条 `pluginNavigation` 的退路**：跳转靠导航行的**标签**定位，
      * 而标签是本地化字符串。万一宿主换了外壳（标签被截断、面板换了容器属性），
      * 那次跳转会落空；此时退回 `openBundle(包名)` 至少把用户送到插件市场那一页
@@ -575,6 +593,10 @@ export function apply(ctx: QoderClientContext): void {
     openPluginSettings = () => {
       openQoderSettingsSection({
         label: () => t('section.label'),
+        // 第 1 条路：设置外壳的 store 座位，一次调用就把对话框开在本插件这一页。
+        // 每次按下才探测（不在这里捕获），因为侧边栏那个 bundle 的 apply 顺序
+        // 不归我们假设 —— 早探一次，后加载的侧边栏会让按钮整个会话都是死的。
+        get: softGet,
         onGiveUp: () => {
           const navigation = softGet('pluginNavigation') as { openBundle?: (name: string) => void } | undefined
           if (navigation !== undefined && typeof navigation.openBundle === 'function') {

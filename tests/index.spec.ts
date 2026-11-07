@@ -142,7 +142,46 @@ describe('Qoder provider registration', () => {
     expect(cnModels.map(m => m.id)).toContain('dmodel')
     const globalModels = await ctx.llm.listModels('qoder-global')
     expect(globalModels.length).toBeGreaterThan(0)
-    expect(globalModels.map(m => m.id)).toEqual(cnModels.map(m => m.id))
+    // 国际版目录**不再**与国内版逐条相等（用户要求：国际版不列那几个抽象命名的
+    // 条目）。反过来也不做「CN 有的 GLOBAL 都要有」——共用的兜底表里 `fast`
+    // 这类条目本来两个区域都有，只在国际版这一侧被过滤，所以收窄方向是单向的。
+    const cnIds = cnModels.map(m => m.id)
+    const globalIds = globalModels.map(m => m.id)
+    expect(globalIds.length).toBeGreaterThan(0)
+    expect(cnIds).toContain('qmodel_38max')
+    // 兜底表是**两个区域共用**的（它没有区域轴），所以 `fast` 这种条目在国内版
+    // 的兜底目录里也存在——上游只把 `fast` 发给新协议，而兜底表不区分区域。
+    // 用户的要求只针对**国际版**：所以国内版这里不做断言（它列不列 `fast`
+    // 是上游的事，我们不改），只钉住国际版确实没有了。
+    for (const abstractId of ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']) {
+      expect(globalIds, `国际版还在列 ${abstractId}`).not.toContain(abstractId)
+    }
+  })
+
+  it('国际版的抽象命名条目不出现在模型选择器里，国内版不受影响', async () => {
+    // 用户：「国际版不要显示这些抽象选项」——Fast / Ultimate / Efficient / Sonus /
+    // Cantus 这几行只有一个抽象形容词，看不出背后是哪个模型。
+    //
+    // 这条走**真实的选择器路径**（`ctx.llm.listModels` → 适配器 → 运行时目录），
+    // 而不是只测那个纯函数：纯函数测绿了、但没人调用它，是这一版最容易犯的错。
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    await mountQoder(ctx, { regions: {} })
+    await expect.poll(() => ctx.llm.listProviders().map(p => p.id)).toContain('qoder-global')
+
+    const abstractIds = ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']
+    const globalIds = (await ctx.llm.listModels('qoder-global')).map(m => m.id)
+    expect(globalIds.length).toBeGreaterThan(0)
+    for (const id of abstractIds) {
+      expect(globalIds, `国际版选择器里还有 ${id}`).not.toContain(id)
+    }
+    // 国内版原样：它的上游本来就不下发这几条，所以这里断言的是「没被误伤」——
+    // 目录里该有的那几个真模型一个都不少。
+    const cnIds = (await ctx.llm.listModels('qoder')).map(m => m.id)
+    expect(cnIds).toContain('qmodel_38max')
+    expect(cnIds).toContain('dmodel')
   })
 
   it('卡片读实时目录而不是保存快照（否则思考档位永远出不来）', async () => {
@@ -259,6 +298,70 @@ describe('Qoder provider registration', () => {
    * displayModels，测试全绿而修复在生产路径上是死代码（catalog 永不为空 →
    * live 恒非空 → 修复分支不可达）。路由捕获的挂法见「签到」那条测试。
    */
+  it('上游刷新把抽象条目下发回来时，选择器与卡片都不列出它们（国际版）', async () => {
+    // 这一条钉的是**另一条路径**：`/models/refresh` 与启动后的自动重拉都走
+    // `refreshRegionCatalog` → `stampRuntimeCatalog`，**不经过** `configuredModels`。
+    // 只在 `configuredModels` 里过滤的话，用户点一次「从 Qoder 刷新」，
+    // Fast / Ultimate 这些条目就会重新出现在选择器里 —— 而这是最常被点的按钮。
+    //
+    // 变异检查：把 `stampRuntimeCatalog` 里的 `withoutAbstractModels` 换成原样，
+    // 这条会红（`fast` 出现在 global 的目录里）。
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/algo/api/v2/model/list')) {
+        // 上游如实下发：一个真模型 + 两个抽象命名的条目。
+        return new Response(JSON.stringify({
+          chat: [
+            { key: 'qmodel_38max', display_name: 'Qwen3.8-Max', price_factor: 0.5, is_vl: true, is_reasoning: true },
+            { key: 'fast', display_name: 'Fast', price_factor: 0.8, is_vl: true, is_reasoning: false },
+            { key: 'ultimate', display_name: 'Ultimate', price_factor: 2, is_vl: true, is_reasoning: true },
+          ],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 10, origin: 10, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return realFetch(input as Parameters<typeof fetch>[0])
+    }) as typeof fetch
+
+    const routes: CapturedRoute[] = []
+    try {
+      const ctx = new Context()
+      context = ctx
+      await ctx.plugin(LlmRuntime)
+      await ctx.plugin(MemorySettings)
+      ctx.provide('webServer', {
+        register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+      } as never)
+      await mountQoder(ctx, {
+        regions: {
+          global: { pat: 'pt-global-example', enabled: true },
+          cn: { pat: '' },
+        },
+      })
+      // 等启动那次刷新落地（成功），选择器里应当只剩真模型。
+      await expect.poll(
+        async () => (await ctx.llm.listModels('qoder-global')).map(m => m.id),
+        { timeout: 10_000 },
+      ).toContain('qmodel_38max')
+
+      const ids = (await ctx.llm.listModels('qoder-global')).map(m => m.id)
+      expect(ids, '刷新路径把 fast 放了进来').not.toContain('fast')
+      expect(ids, '刷新路径把 ultimate 放了进来').not.toContain('ultimate')
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
   it('重启后读到「全空档位」的旧快照时会触发一次拉取，而不是把空档位说成上游没声明', async () => {
     const realFetch = globalThis.fetch
     // 模型列表端点：第一次（启动那次刷新）失败 —— 模拟「重启后启动拉取恰好失败」；

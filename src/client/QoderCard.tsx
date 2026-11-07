@@ -79,9 +79,26 @@ import { installPluginStyle } from './style-injector.ts'
 import { imageDefaultFor, modalityKeyOf, nativeModalityOf } from '../native-modality.ts'
 import { promoDisplayAt } from '../promo.ts'
 import { promoBadgeLabel, promoBadgeTooltip, hostLanguage } from './promo-badge.ts'
-import type { Translate } from './locales.ts'
+import type { QoderSettingsKey, Translate } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
+/** 卡片正文的分栏。 */
+type QoderPanel = 'accounts' | 'models' | 'diag' | 'capabilities'
+
+/**
+ * 每个分栏的标签文案键。
+ *
+ * 查表而不是嵌套三元：三元在加第四项时必然退化成「其它情况都是诊断」——那一版的
+ * 第四栏会顶着「诊断」两个字。表的类型是 `Record<QoderPanel, ...>`，所以以后再加
+ * 一栏、忘了配文案，编译就会红。
+ */
+const PANEL_TAB_LABELS: Record<QoderPanel, QoderSettingsKey> = {
+  accounts: 'row.panelAccounts',
+  models: 'row.panelModels',
+  diag: 'row.panelDiag',
+  capabilities: 'row.panelCapabilities',
+}
+
 export interface QoderCardInjected {
   t: Translate
   /**
@@ -204,7 +221,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
    * 目录草稿、账号池的日志不重建；`hidden` 同时把它移出无障碍树，正是
    * `role="tabpanel"` 想要的效果——而 `display:none` 走 CSS 类会被后面的规则覆盖。
    */
-  const [panel, setPanel] = useState<'accounts' | 'models' | 'diag'>('accounts')
+  const [panel, setPanel] = useState<QoderPanel>('accounts')
   // 积分那两行的无障碍关联（复选框 aria-describedby → 它自己那行说明）。
   // 用 useId 而不是手写 id：同一页可能挂两张同样的卡片，写死的 id 会重复。
   const creditsLabelId = useId()
@@ -669,7 +686,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             )
           })}
         </div>
-        <p className="dsm-qoder-usage-hint">{t('row.tabHint')}</p>
+        {/* 那句「每个 tab 是一个独立供应商…」**不在这里**了（1.20.0）。
+            它被提到设置页的页头（见 sectionSurface 那个分支）：两处都说同一件事，
+            而在正文里它正好压在 tab 栏与账号池之间，把可操作的内容又推下去一行。 */}
         {!regionOn
           ? <p className="dsm-qoder-tab-off-notice">{t('row.tabOffNotice')}</p>
           : null}
@@ -717,7 +736,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             * 规则覆盖，`hidden` 不会。
             */}
           <div className="dsm-qoder-panels" role="tablist" aria-label={t('row.panelAria')}>
-            {(['accounts', 'models', 'diag'] as const).map(id => (
+            {(['accounts', 'models', 'capabilities', 'diag'] as const).map(id => (
               <button
                 key={id}
                 type="button"
@@ -728,7 +747,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                 className={`dsm-qoder-panel-tab${panel === id ? ' dsm-qoder-panel-tab-active' : ''}`}
                 onClick={() => { setPanel(id) }}
               >
-                {t(id === 'accounts' ? 'row.panelAccounts' : id === 'models' ? 'row.panelModels' : 'row.panelDiag')}
+                {/* 四栏的标签集中在这里取词：之前的嵌套三元在加第四项时会退化成
+                    「其它情况都是诊断」，所以改成查表。 */}
+                {t(PANEL_TAB_LABELS[id])}
               </button>
             ))}
           </div>
@@ -742,11 +763,9 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             aria-labelledby="dsm-qoder-tab-accounts"
             hidden={panel !== 'accounts'}
           >
-            {/* 积分显示那两行在账号池**之上**（用户实拍要求「这段内容移动到账号池
-                上面」）。它管的是读数显不显示、立即生效，既不属于「谁在服务」那张
-                表，也不属于要保存的偏好；放在两者之间的这道缝上最容易找到，且
-                不随区域有没有字节池而消失。 */}
-            {renderCreditsSwitch()}
+            {/* 积分显示那几个开关**已搬进「能力」栏**（1.20.0）。它们回答的是
+                「这个插件能替你做哪些显示上的事」，与「谁在服务、还剩多少」不是
+                同一个问题；压在账号池顶上时，那张表被往下推了一段。 */}
             {/* 还没拿到任何文档的那一瞬：说「正在加载」，而不是渲染一片空白。
                 空白与「这个区域没有账号」在屏幕上长得一模一样，用户无法分辨
                 （issue #77 同族：workbuddy 那边此时甚至渲染成了「未登录」）。
@@ -768,6 +787,21 @@ export function QoderCard(props: QoderCardProps): ReactElement {
             hidden={panel !== 'models'}
           >
             {renderModels()}
+          </div>
+
+          {/* 能力栏：**这个插件能替你做什么**（积分读数显不显示、放在哪、活动区、
+              侧边栏那一行）。它们全都是「立即生效」的开关，既不属于「谁在服务」
+              那张表，也不属于要保存的模型草稿——单独一栏之后，账号栏只剩账号。
+              排在诊断**之前**：诊断是「贴进 issue 的那份事实」，属于这一页最少用到
+              的部分；能力栏里的开关则是日常会去拨的。 */}
+          <div
+            className="dsm-qoder-panel"
+            role="tabpanel"
+            id="dsm-qoder-panel-capabilities"
+            aria-labelledby="dsm-qoder-tab-capabilities"
+            hidden={panel !== 'capabilities'}
+          >
+            {renderCreditsSwitch()}
           </div>
 
           {/* 诊断栏：这张卡片**实际读到了什么**。存在的唯一理由是被整段贴进
@@ -842,12 +876,12 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     return (
       <div className="dsm-qoder-section">
         <h2 className="dsm-qoder-section-heading">{t('section.title')}</h2>
-        <p className="dsm-qoder-section-intro">{t('section.intro')}</p>
-        <ul className="dsm-qoder-section-values">
-          <li>{t('section.value1')}</li>
-          <li>{t('section.value2')}</li>
-          <li>{t('section.value3')}</li>
-        </ul>
+        {/* 页头那句话就是原来排在 tab 栏下面的那句（`row.tabHint`）。
+            用户实拍把「总述 + 三条用途」圈成红框、把 tab 栏下那句圈成蓝框，要求
+            **用蓝框那句替代红框那段、蓝框那处不要了**。
+            两段原本讲的是同一件事（两个供应商各自独立、都在生效），同时存在等于
+            同一句话说两遍；而红框那四条把一个还能再压的页面又往下推了约 90px。 */}
+        <p className="dsm-qoder-section-intro">{t('row.tabHint')}</p>
         <div className="dsm-qoder-section-body">{cardBody}</div>
       </div>
     )

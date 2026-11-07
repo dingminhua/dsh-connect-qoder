@@ -125,6 +125,80 @@ export interface QoderAdapterOptions {
   defaultThinkingEfforts?: () => Readonly<Record<string, string | undefined>>
 }
 
+/**
+ * 一个随目录自动保鲜的 `configuredMaxTokens` 表（issue #35）。
+ *
+ * 宿主 `dsh-llm-pi-ai` 的 `modelInfo()` 这样取值：
+ *
+ *     const configuredMaxTokens = profile.configuredMaxTokens.get(model)
+ *     ...configuredMaxTokens === void 0 ? {} : { defaultMaxTokens: configuredMaxTokens }
+ *
+ * **命中才返回**。此前往里塞 `new Map()`，于是 `defaultMaxTokens` 对本插件的
+ * 每个模型恒为 `undefined`，三个下游一起落空：billion-context 的输出上限（两个
+ * 上报通道都读这个字段）、DSH 实际下发的 `max_tokens`、压缩预留。
+ *
+ * 三个实现要点，都是报告人实测点出来的：
+ *
+ * 1. **键是 pi model id**（`toPiModel().id`，也就是 `info.key`），不是
+ *    `displayName`。宿主 `get(model)` 收到的是前者；用显示名做键会得到一张
+ *    「看着有内容、但永远命中不了」的表，与空表等价。
+ * 2. **用数组身份判失效**：目录被 `catalog.set(deriveCatalog(...))` **整体替换**，
+ *    而 `set()` 只在非空时替换，所以数组身份是可靠信号。不这样做的话，用户点
+ *    「从 Qoder 刷新」之后宿主读到的仍是装配时那一份 —— 也就是这个 issue 的
+ *    另一半。
+ * 3. **懒填 + 缓存**：命中一次之后走原生 `Map.get`，不再每次重算整张表。
+ *
+ * `maxOutputTokens` 不是正数的模型**不写进表**：`defaultMaxTokens: 0` 会被
+ * 下游当成「上限就是 0」，而缺席（`undefined`）才是诚实的「不知道」。
+ *
+ * 继承 `Map` 而不是返回普通对象：宿主的类型是 `Map<string, number>`，且它自己
+ * 也可能会 `set()`（我们缓存到 `super.set` 之后两者互不干扰）。
+ */
+function liveMaxTokens(catalog: QoderCatalog, baseUrl: () => string, providerId: string): Map<string, number> {
+  /** 上次算表时看到的那份目录（**数组身份**，见上面第 2 点）。 */
+  let seen: readonly unknown[] | undefined
+  /** 那次算出来的表。 */
+  let fresh = new Map<string, number>()
+  /** 目录换了几代。缓存要跟着它一起失效。 */
+  let generation = 0
+  /** 缓存属于哪一代；`-1` 表示还没建立。 */
+  let cachedGeneration = -1
+
+  const table = (): Map<string, number> => {
+    const models = catalog.current()
+    if (models !== seen) {
+      seen = models
+      generation += 1
+      fresh = new Map()
+      for (const info of models) {
+        const pi = toPiModel(info, baseUrl(), providerId)
+        if (typeof pi.maxTokens === 'number' && pi.maxTokens > 0) fresh.set(pi.id, pi.maxTokens)
+      }
+    }
+    return fresh
+  }
+
+  // 命中值缓存到原生 Map，但**目录换代就必须整个丢掉**。
+  //
+  // 第一版直接把命中值 `super.set()` 之后就返回，目录换掉时旧键仍然命中那份陈旧
+  // 缓存 —— 用户点「从 Qoder 刷新」看到旧上限。`tests/adapter.spec.ts` 的
+  // 「目录刷新后新值生效」当场抓到了它。
+  return new (class extends Map<string, number> {
+    override get(key: string): number | undefined {
+      const current = table()
+      if (generation !== cachedGeneration) {
+        super.clear()
+        cachedGeneration = generation
+      }
+      const own = super.get(key)
+      if (own !== undefined) return own
+      const value = current.get(key)
+      if (value !== undefined) super.set(key, value)
+      return value
+    }
+  })()
+}
+
 export interface QoderAdapter {
   adapter: PiAiAdapter
   invalidate: () => void
@@ -569,7 +643,9 @@ export function createQoderAdapter(options: QoderAdapterOptions): QoderAdapter {
       options.retryPolicy,
       options.retryPolicyPath ?? 'dsh-connect-qoder retryPolicy',
     ),
-    configuredMaxTokens: new Map(),
+    // issue #35：宿主读这个表来定 `defaultMaxTokens`（见 `liveMaxTokens`）。
+    // 空 Map = 所有模型都拿不到输出上限，三个下游一起落空。
+    configuredMaxTokens: liveMaxTokens(catalog, () => `${shim.baseUrl}/v1`, providerId),
     modelErrors: new Map(),
     ...REQUEST_IMAGE_BUDGETS,
     piProvider: provider,

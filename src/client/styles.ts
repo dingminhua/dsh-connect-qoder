@@ -357,7 +357,7 @@ export const QODER_CARD_CSS = `
    堆叠样式（组件测试把「启用账号池」定位为它里面的第一个复选框），另加一层
    品牌色描边与浅底，让它读作「这一页其余部分由我定义」而不是又一张设置卡。
    开关原先在**页面底部**，比它控制的一切低 400px。 */
-.dsm-qoder-pool-modebar{padding:12px 14px;gap:8px;border-color:rgba(86,134,254,.36);background:linear-gradient(180deg,rgba(86,134,254,.10),rgba(86,134,254,.02)),var(--dsw-alias-bg-layer-2,#24262c)}
+.dsm-qoder-pool-modebar{padding:12px 14px;gap:8px;border:1px solid rgba(86,134,254,.36);border-radius:12px;overflow:hidden;background:linear-gradient(180deg,rgba(86,134,254,.10),rgba(86,134,254,.02)),var(--dsw-alias-bg-layer-2,#24262c)}
 .dsm-qoder-pool-modebar-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .dsm-qoder-pool-modebar-label{font-size:13px;font-weight:600;color:var(--dsw-alias-label-primary,#e6e6e6)}
 /* 模式用文字说出来：开关的位置是一个 20px 的形状要解码，这枚芯片直接说
@@ -387,23 +387,26 @@ export const QODER_CARD_CSS = `
      （.dsm-qoder-pool-table-checkin .dsm-qoder-pool-row，两个类）在层叠上
      压过了媒体查询里的宽屏那条（一个类）——**宽屏形态从来没有渲染过**，
      窗口多宽都是两行紧凑排法。变量只在一处声明，行与表头不可能再分叉。 */
-  /* 尾部两列用**固定 px**，不用 fr / auto：表头第 5 格没有标签可写，是个空
-     span——若它是 auto 轨道，表头里这条轨道塌成 0px，四条 fr 轨道于是各多分到
-     一点，标签就整体右移约 30px（实测表头「账号」w=275 而数据格 w=246，越往右
-     错得越多）。固定宽度让表头与数据行落下**同一条**轨道上，与格子里有没有内容
-     无关。 */
+  /* 尾部两条轨道都是**固定 px**，不用 fr / auto：轨道的宽度必须与格子里有没有
+     内容无关，否则表头与数据行会各自算出不同的轨道宽度、越往右错得越多
+     （实测过表头「账号」w=275 而数据格 w=246）。
+     两份定义各写一次，是因为「有签到列」与否轨道数不同。 */
   /* 签到列给 118px：这一格的文案是「23:59:59 后可再签到」这种**最长**形态，
-     实测 116px。给 96px 时它会溢出自己的轨道、直接压到右边那颗「测试」按钮上
-     ——数字每秒在变，溢出量也跟着变，看着像按钮在抖。 */
-  --dsm-qoder-pool-cols:minmax(0,1.45fr) minmax(0,.95fr) minmax(0,1.35fr) 118px 96px;
+     实测 116px。给 96px 时它会溢出自己的轨道，而数字每秒在变，溢出量也跟着变
+     ——看着像这一格在抖。
+   *
+   * 末尾固定 96px 给**操作列**（测试 / 删除）：它在宽屏是独立一格，在窄形态里
+   * 则是第二行的右端 —— 同一组按钮，两种排法。曾经删掉过这一条（按钮那时住在
+   * 账号格的名字行里），结果宽屏那一列空着；现在按钮回到行级，轨道重新有主。 */
+  --dsm-qoder-pool-cols:minmax(0,1.75fr) minmax(0,.95fr) minmax(0,1.35fr) 118px 96px;
   /* 表格不再自己描边：它现在是成员卡片里的一段，卡片已经有那圈边框了。
      自己再描一圈会得到「框中框」——两圈相距 1px，看着像渲染出错。 */
   border:0;border-radius:0;overflow:hidden;
   border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);
   background:var(--dsw-alias-bg-layer-2,#24262c);
 }
-/* 国际版暂不通签到，把空出的那条轨道让给操作列（4 条轨道）。 */
-.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin){--dsm-qoder-pool-cols:minmax(0,1.6fr) minmax(0,.9fr) minmax(0,1.4fr) 96px}
+/* 国际版暂不通签到：少一条签到轨道，操作列（末尾固定 96px）仍在。 */
+.dsm-qoder-pool-table:not(.dsm-qoder-pool-table-checkin){--dsm-qoder-pool-cols:minmax(0,1.9fr) minmax(0,.9fr) minmax(0,1.4fr) 96px}
 /* 行布局：**窄是默认，宽由容器查询升级**。
  *
  * 断点测的必须是**这张表**的宽度，不是视口。这张卡同时画在三处，宽度与窗口毫无
@@ -413,32 +416,60 @@ export const QODER_CARD_CSS = `
  * 的积分列里只有两位数。实测（1440 视口 / 578px 表格）：
  *   账号 x=1159 w=402 │ 积分 x=1573 w=134 │ 状态 x=1159 w=402 │ 签到 x=1573 w=36
  *
- * 窄形态用 flex + wrap，并且按**三行**排（与 dsh-connect-trae 的窄形态同构）：
+ * 窄形态用 flex + wrap，按**两行**排（用户第三次实拍后定的形态）：
  *
- *   第一行：账号（最需要辨认的一端，占满）
- *   第二行：积分 · 状态 · 签到（三个事实，放得下就一直线，放不下在它们之间折）
- *   第三行：操作按钮（最需要动手的一端，自己一行）
+ *   第一行：账号（辨认的一端）… 积分（**推到这一行最右**）
+ *   第二行：状态 · 签到 … 操作按钮（**推到这一行最右**）
  *
- * 前两版都试错了，记在这里免得再走一遍：
- *   - 全部 flex-wrap 挤成一行时会变成「888  50 积分 5 天内过期  可用(1.5s)
- *     测得 · 1 分钟前  已签到  [测试] [删除]」——积分、状态、按钮三种东西读起来
- *     是同一类事实，而其中两个是可点的；
- *   - 固定 grid 两行时账号名短也撑满整行，横向空出一大片。
+ * 为什么是两行而不是三行：原来第二行整行只有「积分 + 到期两句」，而到期那两句
+ * 已被移除（界面上不再提供到期时刻），于是那一行只剩下一个数字——让一整行只为
+ * 一个数字存在，是把每行的高度白付一次。数字短、右对齐无害，所以它上提进第一行
+ * 的右端；状态与签到顺势上移成第二行，操作按钮落在同一行的右端。
  *
- * 操作按钮 flex-basis:100% 独占一行是这个形态的关键：删除是不可逆动作，它不该
- * 与「已签到」这种只读事实并排成一句话。
+ * 两行各自「左端是内容、右端是补充」：第一行左端是**你是谁**、右端是**多少分**；
+ * 第二行左端是**能不能用**、右端是**能对它做什么**。
+ *
+ * 走错的路记在这里免得再走一遍：
+ *   - 全部 flex-wrap 挤成一行（三行时代的进一步压缩）会变成「888  可用(1.5s)
+ *     测得 · 1 分钟前  已签到  [测试] [删除]」——只读事实与可点按钮挤成一句话；
+ *   - 固定 grid 两行时账号名短也撑满整行，横向空出一大片；
+ *   - 三行时操作按钮 flex-basis:100% 独占一行：每个账号白付一整行高度。
  */
 .dsm-qoder-pool-row{
   display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;padding:10px 14px;
   border-top:1px solid var(--dsw-alias-border-l1,#2c2d31);font-size:13px;color:var(--dsw-alias-label-secondary,#c6c9d0);
 }
 .dsm-qoder-pool-account{display:flex;align-items:center;gap:8px;min-width:0;flex:1 1 100%}
-.dsm-qoder-pool-credits{display:flex;flex-direction:row;flex-wrap:wrap;align-items:baseline;gap:2px 8px;min-width:0;flex:0 1 auto;font-variant-numeric:tabular-nums}
+/* 积分：**贴在第一行（账号格）最右端**。
+ *
+ * 它现在住在 .dsm-qoder-pool-account 里，是该格内的最后一个 flex 项，靠
+ * margin-left:auto 推到这一格的右端 —— 而账号格本身 flex:1 1 100% 独占第一行，
+ * 所以这就是**第一行的右端**。
+ *
+ * 为什么不放在行级：行级的序号在状态与签到之后，放那里它只会落在第二行。
+ *
+ * flex:none + white-space:nowrap：数字是这一行的右边界，它一折行，第一行就
+ * 变成两行，整个「两行」形态就塌了。 */
+.dsm-qoder-pool-credits{display:flex;flex-direction:row;align-items:baseline;gap:2px 8px;min-width:0;flex:none;margin-left:auto;white-space:nowrap;font-variant-numeric:tabular-nums}
 /* 状态这一格允许自己折行：主行（结果 · 原因）与出处行本来就是一句话。 */
 .dsm-qoder-pool-probe{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 8px;font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;flex:1 1 auto;overflow-wrap:anywhere}
-/* 签到贴到第二行的右端：它是那一行里最后一个只读事实。 */
-.dsm-qoder-pool-checkin{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap;flex:none;margin-left:auto}
-.dsm-qoder-pool-row-actions{display:flex;gap:6px;align-items:center;flex:1 1 100%;justify-content:flex-start;padding-top:2px}
+/* 签到跟在状态后面，**不再自己抢右端**：第二行的右端留给操作按钮（见下）。
+ * 之前它靠 margin-left:auto 占右端，那时按钮在第三行；现在两者同一行，右端只能
+ * 有一个主人，否则两个 auto 会把这一行撕成三截。 */
+.dsm-qoder-pool-checkin{font-size:12px;line-height:17px;color:var(--dsw-alias-label-tertiary,#999);white-space:nowrap;flex:none;margin-left:0}
+/* 行内操作（测试 / 删除）坐**第二行的右端**（1.20.0 定稿）。
+ *
+ * 走过的三条路，按顺序记下来，因为每一条都对应一次用户实拍：
+ *   1. flex:1 1 100% 独占第三行、左对齐 —— 每个账号白付一整行高度；
+ *   2. 挪进名字那一行、margin-left:auto 推右 —— 省了一行，但名字行因此被
+ *      名次、「当前使用」、↑↓、按钮挤满；
+ *   3. **现在**：回到行级，与状态、签到同处第二行，由 margin-left:auto 推到
+ *      这一行的右端。第一行留给「你是谁 + 多少分」，第二行是「能不能用 + 能对它
+ *      做什么」。
+ *
+ * flex:none 承重：状态文本可以折行，按钮不行 —— 被压窄的按钮点不准。
+ */
+.dsm-qoder-pool-row-actions{display:flex;gap:6px;align-items:center;flex:none;margin-left:auto}
 /* 窄形态不画表头：它的标签描述的是宽屏那套轨道，折行之后每一个标签都对不上
    自己的值——实测「签到」标签停在 x=1476，它的值在 1573，差 97px。一堆对不上的
    表头比没有表头更糟（dsh-connect-trae 在 700px 以下是同一条判断）。 */
@@ -453,20 +484,32 @@ export const QODER_CARD_CSS = `
      （100% 占满、margin-left:auto 推右）必须在这里让位，否则操作按钮会带着
      flex-basis:100% 挤到第二行，五行变六行。 */
   .dsm-qoder-pool-account,.dsm-qoder-pool-credits,.dsm-qoder-pool-probe,
-  .dsm-qoder-pool-checkin,.dsm-qoder-pool-row-actions{flex:none;margin-left:0;padding-top:0}
+  .dsm-qoder-pool-checkin{flex:none;margin-left:0;padding-top:0}
   .dsm-qoder-pool-credits{flex-direction:column;align-items:flex-start;gap:1px}
   .dsm-qoder-pool-probe{flex-direction:column;align-items:flex-start;gap:4px}
   .dsm-qoder-pool-checkin{margin-left:0}
-  .dsm-qoder-pool-row-actions{justify-self:end}
+  /* 操作按钮在宽屏是**自己的最后一格**，靠 justify-self 贴右端；窄形态那条
+     margin-left:auto 在这个单行网格里必须让位（否则它会把按钮从格子里顶出去）。 */
+  .dsm-qoder-pool-row-actions{justify-self:end;margin-left:0}
+  .dsm-qoder-pool-account-name{flex:1 1 auto}
   /* 表头回到宽屏那套轨道上——它现在与行读的是**同一个变量**，不会再错位。 */
   .dsm-qoder-pool-row-head{display:grid;grid-template-columns:var(--dsm-qoder-pool-cols);align-items:center;gap:12px}
+  /* 操作列表头是个空 span；display:block 让它占住自己的轨道（否则某些外壳会
+     把它塌成 0 宽，四条 fr 轨道于是各多分到一点，标签整体右移）。 */
   .dsm-qoder-pool-row-head > span:last-child{display:block}
 }
 .dsm-qoder-pool-row-current{background:rgba(86,134,254,.07)}
 /* 左侧 3px 竖条：正在计费的那一行必须一眼可见。只靠 7% 的背景色，在暗色主题
    下几乎看不出区别（workbuddy 同规，两条规则共用同一个类名）。 */
 .dsm-qoder-pool-row-current{box-shadow:inset 3px 0 0 var(--dsw-alias-brand-primary,#5686fe)}
-.dsm-qoder-pool-account-name{display:flex;flex-direction:column;gap:2px;min-width:0}
+/* 名字块占满账号格里**除积分以外**的剩余宽度（flex:1 1 auto）。
+ *
+ * 这个 1 现在是**积分右对齐的前提**：积分在同一个格子里靠 margin-left:auto 推右，
+ * 只有名字块把剩余空间吃掉，auto 才有「剩余」可推。名字块若是 0 1 auto（有多宽算
+ * 多宽），积分就会紧贴名字后面，右对齐又回到半途 —— 上一版正是这样差了 113px。
+ *
+ * min-width:0 保留：长账号名要能省略，不能把块撑破。 */
+.dsm-qoder-pool-account-name{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1 1 auto}
 /* 第一行：名字 + 名次 + 「当前使用」+ 上下移，全部**同一行**。
    这一列原来是 5 行竖排（名次 / 箭头 / 徽章 / 测试于 / 上一行结果），把整行
    撑到 90px 以上，而同一行的另外四列各自都只有一行 —— 高度全浪费在这里。
@@ -475,24 +518,19 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-account-name b{font-weight:600;font-size:13px;color:var(--dsw-alias-label-primary,#e6e6e6);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .dsm-qoder-pool-account-name span{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
 .dsm-qoder-pool-account-name .dsm-qoder-pool-current-tag{margin:0;padding:1px 6px;border-radius:999px;background:rgba(86,134,254,.16);color:var(--dsw-alias-brand-primary,#5686fe);font-size:11px;font-weight:600;line-height:16px;white-space:nowrap;flex:none}
-/* 上下移贴着名字那一行的右端：它是这一行唯一一组成对控件，贴着名字会让人
-   以为它只作用于名字（它改的是名次，而名次就画在名字旁边）。 */
-.dsm-qoder-pool-account-line .dsm-qoder-pool-move{margin-left:auto}
-/* 宽屏这一格只有约 240px，装不下「名字 + 自动排序 + 当前使用 + ↑↓」一整行，
-   于是它会折成两行——这时 ↑↓ 若仍是 margin-left:auto，会被推到**所在那一行的
-   最右端**，与它旁边那几个标签隔开一大截，读起来像个掉队的控件。改成紧贴标签：
-   折行时它跟着标签走，不折行时它就在标签右边，两种情形读起来都是同一句话。
-   （这条必须放在基础规则**之后**：容器查询不增加特异性，靠层叠顺序才赢。） */
-@container (min-width:700px){
-  .dsm-qoder-pool-account-line .dsm-qoder-pool-move{margin-left:0}
-}
+/* 上下移**紧贴「当前使用」**，不推到这一行的右端。
+ *
+ * 它读起来是「名字 · 第 1 位 · 当前使用 · ↑↓」这一句话：↑↓ 改的是**名次**，
+ * 而名次就画在名字旁边。曾经用 margin-left:auto 把它推到行尾（当时的理由是
+ * 「它改的是名次，贴着名字会让人以为它只作用于名字」），用户实拍指出那一段空白
+ * 让控件看起来像掉队的第四个徽章 —— 现在第一行的右端由**积分**占据，这一行不再
+ * 需要谁来撑满。
+ *
+ * 这条对宽屏同样成立，所以不再需要容器查询里的那条覆盖（原先宽屏要把它改回 0）。
+ */
+.dsm-qoder-pool-account-line .dsm-qoder-pool-move{margin-left:0}
 .dsm-qoder-pool-excluded{color:var(--dsw-alias-state-warn-primary,#f59e0b)}
 .dsm-qoder-pool-credits b{color:var(--dsw-alias-label-primary,#e6e6e6);font-weight:600}
-.dsm-qoder-pool-soon{font-size:11px;line-height:16px;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
-.dsm-qoder-pool-soon-plain{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999)}
-/* 套餐到期（issue #31 建议 1）：与「积分何时作废」是两件事，所以不用警告色 ——
-   套餐到期是账号事实，不是「有分要浪费了」那种需要立刻行动的信号。 */
-.dsm-qoder-pool-plan{font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,#999);opacity:.85}
 .dsm-qoder-pool-probe-main{color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-probe-prov{display:flex;align-items:center;gap:5px;font-size:11px;line-height:15px;color:var(--dsw-alias-label-tertiary,#999);min-width:0;flex-wrap:wrap}
 .dsm-qoder-pool-prov-tag{padding:1px 6px;border-radius:999px;background:var(--dsw-alias-bg-layer-3,#2a2c33);color:var(--dsw-alias-label-tertiary,#999);font-size:10px;font-weight:600;line-height:15px;white-space:nowrap}
@@ -538,7 +576,18 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-card-head{display:flex;align-items:center;gap:8px}
 .dsm-qoder-pool-card-title{margin:0;font-size:13px;font-weight:600;color:var(--dsw-alias-label-secondary,#c6c9d0)}
 .dsm-qoder-pool-dirty{font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-state-warn-primary,#f59e0b)}
-.dsm-qoder-pool-settings{display:flex;flex-direction:column;gap:1px;border:1px solid var(--dsw-alias-border-l2,#3a3d45);border-radius:12px;overflow:hidden;background:var(--dsw-alias-bg-layer-2,#24262c)}
+/* 设置区**不带框**（1.20.0，用户实拍「下面的功能设置也不要外围的框」）。
+ *
+ * 它曾经是一张带边框 + 圆角 + 底色的卡片。边框在这里没有承托任何东西：里面只有
+ * 两行设置，而每一行自己都有标题；外框反而让它读起来像页面里的第二张卡片
+ * （页面上已经有成员卡片与账号工具虚线框两张）。
+ *
+ * container-type:inline-size 不是装饰：下面那条窄列容器查询（设置行改成上下
+ * 两段）要有这条线的祖先声明才可能生效。
+ *
+ * ⚠️ **模式条复用同一个类名**（.dsm-qoder-pool-modebar），所以它现在把边框、
+ * 圆角、overflow 全部**写在自己那条规则里**，不再依赖共享类提供。 */
+.dsm-qoder-pool-settings{container-type:inline-size;display:flex;flex-direction:column;gap:1px}
 /* Add-PAT + export/import, above the 「更多设置」 heading. */
 /*
  * 账号工具（添加 PAT / 导出 / 导入）：三颗按钮共用一行。
@@ -567,7 +616,15 @@ export const QODER_CARD_CSS = `
  */
 .dsm-qoder-pool-tools .dsm-qoder-bar-actions{margin-left:0}
 .dsm-qoder-pool-tools .dsm-qoder-transfer-dialog{order:2;flex:1 1 100%;margin:0}
-.dsm-qoder-pool-set{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 14px;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31)}
+/* 两行设置：**左右不内缩**，与账号工具虚线框、保存行落在同一条竖线上。
+ *
+ * 那 14px 左右内边距原本是外层卡片的内边距（卡片在 1.20.0 已被去掉，见
+ * .dsm-qoder-pool-settings 那条）。卡片没了之后它没有任何东西可承托，只会让这两行
+ * 比周围的块窄一截 —— 实测 564px 列里，账号工具与保存行从 x=24 起，这两行从
+ * x=38 起，说明文字因此只有 292px、折成四行（用户实拍「宽度也要调整啊」）。
+ *
+ * 纵向 12px 保留：两行之间要透气，那是行距，不是内缩。 */
+.dsm-qoder-pool-set{display:flex;align-items:flex-start;justify-content:space-between;gap:16px;padding:12px 0;border-top:1px solid var(--dsw-alias-border-l1,#2c2d31)}
 .dsm-qoder-pool-set:first-child{border-top:0}
 .dsm-qoder-pool-set-copy{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
 .dsm-qoder-pool-set-copy b{font-size:13px;font-weight:500;color:var(--dsw-alias-label-primary,#e6e6e6)}
@@ -630,6 +687,27 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-confirm-text{font-size:11px;line-height:15px;color:var(--dsw-alias-state-error-primary,#ef4444);text-align:right}
 .dsm-qoder-pool .dsm-btn-danger{border-color:var(--dsw-alias-state-error-primary,#ef4444);color:#fff;background:var(--dsw-alias-state-error-primary,#ef4444)}
 .dsm-qoder-pool .dsm-btn-danger:hover:not(:disabled){opacity:.9}
+/* 设置面板那种窄列（564px）里，两行设置改成**上下两段**：说明文字独占整宽，
+   下拉框落到它下面一行并占满整宽。
+ *
+ * 并排时说明文字只剩约 320px —— 那句「全池共用这一个模型…」要折四行，而下拉框
+ * 右侧还有一片用不掉的空白。上下排之后文字拿到约 516px，行数减半。
+ * 判据与 workbuddy 的 @container max-width:620px 同一条。
+ *
+ * 用**容器查询**不用媒体查询：这张卡画在输入框、整页版、设置面板三处，视口宽度
+ * 与这张表的宽度毫无关系（设置面板里视口是 1400px 而表格只有 564px）。
+ */
+@container (max-width:620px){
+  .dsm-qoder-pool-set{flex-direction:column;align-items:stretch;gap:8px}
+  .dsm-qoder-pool-set-ctl{flex:1 1 auto;justify-content:flex-start}
+  /* width:100% 会输给 max-width：下拉框基础规则里有 max-width:260px，下面那条
+     @media 又把它压到 180px —— 两者都会盖住 width:100%，所以这里必须把
+     max-width 一起放开，否则下拉框在窄列里仍只占 180px。 */
+  .dsm-qoder-pool-select{max-width:none;width:100%}
+}
+/* 手机上把下拉框收窄：这一条量的是**视口**，而它服务的正是插件市场那个宽页面
+   （视口就是约束）。设置面板里的窄列由上面那条容器查询负责 —— 在面板里视口是
+   1400px，这条永远不成立，所以两者不会打架。 */
 @media (max-width:760px){.dsm-qoder-pool-select{max-width:180px}}
 /* Pool switch, namespaced under .dsm-qoder-pool so it cannot collide with host styles. */
 .dsm-qoder-pool .sw{position:relative;display:inline-block;width:38px;height:22px;flex:none;cursor:pointer}
@@ -757,23 +835,28 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-page-title{margin:0;font-size:20px;font-weight:600;line-height:1.4}
 .dsm-qoder-page-desc{margin:0;font-size:13px;line-height:1.5;color:var(--dsw-alias-label-tertiary,#999)}
 /*
- * 整页里的正文自带外壳：.dsm-plugin-card-body 在设置页里靠外层 <li> 提供
- * 边框与内边距，这里没有那个 <li>，所以由这条规则补上同一套外观——整页与
- * 设置页看到的是同一个盒子，而不是一个没有边界的裸列表。
- */
-/*
  * 设置页（settings.section）形态：标题 → 总述 → 三条用途 → 正文。
  *
- * 这里不套 .dsm-plugin-card 那套列表外壳（折叠 header、边框）：设置页本身就是
- * 独立界面；正文自带的那层 .dsm-plugin-card-body 靠下面这条补上盒子外观，
- * 与侧边栏整页看到的是同一个盒子。
+ * 这里不套 .dsm-plugin-card 那套列表外壳（折叠 header、边框）。
+ *
+ * **正文那层盒子在设置页里要拆掉，这是与侧边栏整页不同的一处。** 设置面板自己
+ * 已经有 24px 的列内边距与一层底色，再在里面套一张「1px 边框 + 底色 + 12px 圆角 +
+ * 20px 内边距」的卡片，页面就变成「一张浮在页面里的卡」，左边还多出一圈 20px 的
+ * 真空 —— 用户实拍 workbuddy 的设置页做对照，那边内容直接铺在列里。规则与
+ * workbuddy 的 .dsm-workbuddy-settings .dsm-workbuddy-page-body .dsm-workbuddy-usage
+ * 同一条（padding:0 / border:0 / border-radius:0），但这里**不给设置页自己补底色**：
+ * 本插件的面板列本来就是实底，补一层只会在实底上再叠一层同色，而壁纸场景由宿主
+ * 自带的列底色负责（workbuddy 补那条是因为它的列在壁纸主题下半透明）。
  */
 .dsm-qoder-section{display:flex;flex-direction:column;gap:14px;min-width:0}
 .dsm-qoder-section-heading{margin:0;font-size:16px;font-weight:600;line-height:24px;color:var(--dsw-alias-label-primary,#e6e6e6)}
 .dsm-qoder-section-intro{margin:0;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary,#b8b8b8)}
-.dsm-qoder-section-values{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:13px;line-height:20px;color:var(--dsw-alias-label-secondary,#b8b8b8)}
-.dsm-qoder-section-values li::marker{color:var(--dsw-alias-label-tertiary,#999)}
-.dsm-qoder-section-body .dsm-plugin-card-body{margin:0;padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
+.dsm-qoder-section-body .dsm-plugin-card-body{margin:0;padding:0;border:0;border-radius:0;background:none}
+/*
+ * 整页里的正文自带外壳：.dsm-plugin-card-body 在列表卡片里靠外层 <li> 提供
+ * 边框与内边距，整页没有那个 <li>，所以由这条规则补上同一套外观——整页看到的
+ * 是一个有边界的盒子，而不是一片裸内容。设置页**不**走这条（见上）。
+ */
 .dsm-qoder-page-body .dsm-plugin-card-body{margin:0;padding:20px 20px 8px;border:1px solid var(--dsw-alias-border-l2,#36373b);background:var(--dsw-alias-bg-layer-3,#202126);border-radius:12px}
 /*
  * 可选侧边栏开关那一行。类名与积分开关**刻意不同**（.dsm-qoder-pref-check

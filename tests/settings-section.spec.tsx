@@ -21,6 +21,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { QoderCard } from '../src/client/QoderCard.tsx'
+import { QODER_CARD_CSS } from '../src/client/styles.ts'
 import { zh } from '../src/client/locales.ts'
 import type { QoderSettingsKey } from '../src/client/locales.ts'
 
@@ -106,21 +107,29 @@ describe('QoderCard 的设置页形态（surface: section）', () => {
     }
   })
 
-  it('页头是标题 + 总述 + 三条各自独立的核心用途', async () => {
+  it('页头是标题 + 那句供应商说明；总述与三条用途都不再渲染', async () => {
+    // 用户实拍：红框圈住「总述 + 三条用途」，蓝框圈住 tab 栏下面那句
+    // 「每个 tab 是一个独立供应商（qoder / qoder-global）…」，要求**用蓝框那句
+    // 替代红框那段，蓝框那处不要了**。
+    //
+    // 理由（写在这里，免得以后有人把它们加回去）：两段话讲的是同一件事 —— 两个
+    // 供应商各自独立、都在生效。放在一起等于同一句话说两遍，而设置页要往下滚才
+    // 看得到真正可操作的东西。
     const { container, unmount } = await mountSection('section')
     try {
       expect(container.querySelector('.dsm-qoder-section-heading')?.textContent)
         .toBe(zh['section.title'])
+      // 页头现在是那句供应商说明。
       expect(container.querySelector('.dsm-qoder-section-intro')?.textContent)
-        .toBe(zh['section.intro'])
-      const items = Array.from(container.querySelectorAll('.dsm-qoder-section-values > li'))
-      // 三条**独立条目**，不是一段连排文字（2.1.20 的第一个坑）。
-      expect(items).toHaveLength(3)
-      expect(items.map(item => item.textContent)).toEqual([
-        zh['section.value1'],
-        zh['section.value2'],
-        zh['section.value3'],
-      ])
+        .toBe(zh['row.tabHint'])
+      // 三条用途整块消失（不是藏起来、不是换个类名）。
+      expect(container.querySelector('.dsm-qoder-section-values')).toBeNull()
+
+      // 而蓝框那一处**不再出现**：正文里的 hint 行必须没有这句。
+      const body = container.querySelector('.dsm-qoder-usage-hint')
+      expect(body, 'tab 栏下面还留着那句说明').toBeNull()
+      expect(container.textContent?.split(zh['row.tabHint']).length, '那句说明出现了不止一次')
+        .toBe(2)  // 出现一次 → split 得 2 段
     } finally {
       await unmount()
     }
@@ -135,6 +144,31 @@ describe('QoderCard 的设置页形态（surface: section）', () => {
     } finally {
       await unmountSection()
     }
+  })
+
+  /**
+   * 设置页里不能有**第二层盒子**。
+   *
+   * 用户实拍 workbuddy 的设置页做对照：那边内容直接铺在面板那一列里，而这一页
+   * 在列里又套了一张带 1px 边框 + 底色 + 12px 圆角 + 20px 内边距的卡片盒 ——
+   * 于是「页面」看起来是一张浮在页面里的卡，左边还多出一圈 20px 的真空。
+   *
+   * jsdom 不做布局，所以这里断言的是**样式声明**（与 `pool-architecture.spec.tsx`
+   * 里那些容器查询断言同一种做法）：设置页作用域下的 `.dsm-plugin-card-body`
+   * 必须把盒子拆掉。侧边栏整页那一形态**保留**盒子（那里确实没有外壳），所以两件事
+   * 各断言各的，不合并。
+   */
+  it('设置页把正文那层卡片的边框与底色拆掉（内容直接铺在面板列里）', () => {
+    const flat = /\.dsm-qoder-section-body \.dsm-plugin-card-body\{([^}]*)\}/.exec(QODER_CARD_CSS)?.[1] ?? ''
+    expect(flat, '设置页作用域下没有 .dsm-plugin-card-body 的规则').not.toBe('')
+    expect(flat, '还留着边框').toMatch(/border:0\b/)
+    expect(flat, '还留着圆角').toMatch(/border-radius:0\b/)
+    expect(flat, '还留着内边距（会在列里缩进一圈）').toMatch(/(?:^|;)padding:0(?:;|$)/)
+    expect(flat, '还留着卡片底色').toMatch(/background:(?:none|transparent)/)
+    // 横向内边距也必须归零：设置面板自己已经有 24px，这里再加就是双重缩进。
+    expect(flat, '还有横向内边距').toMatch(/(?:^|;)padding:0(?:;|$)/)
+    // 侧边栏整页那一形态**保留**盒子：那里没有设置面板的外壳，去掉就成了一片裸内容。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-page-body \.dsm-plugin-card-body\{[^}]*border:1px solid/)
   })
 
   it('正文默认展开：三条用途下面直接就是账号表，不需要再点一次展开', async () => {

@@ -30,7 +30,7 @@ import { failoverNoticeText, queuedFailoverNoticeText, upstreamDownFailoverNotic
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind, QoderCampaignFeed } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters, mapContextTier, mapContextTiers, migrateContextBudgets } from './catalog.ts'
+import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters, withoutAbstractModels, mapContextTier, mapContextTiers, migrateContextBudgets } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
 import { readPromotion, type QoderPromotion } from './promo.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
@@ -672,8 +672,21 @@ function stampRuntimeCatalog(
   region: QoderRegion,
   models: QoderModelInfo[],
 ): QoderModelInfo[] {
+  // **国际版那几个抽象命名的条目在这里再去掉一次。**
+  //
+  // 上游 `configuredModels` 已经过滤过（它管的是「这次配什么」），这一处管的是
+  // 「装进运行时目录的东西」。两者不是重复：`stampRuntimeCatalog` 是
+  // `catalog.set()`（运行时目录）与 `cardCatalog` 的**唯一共同入口**，而
+  // `configuredModels` 只覆盖 `applySelection` 那条路。`refreshRegionCatalog`
+  // （点「刷新模型」走的路径）直接调 `stampRuntimeCatalog`，不经过
+  // `configuredModels` —— 停掉这一处之后那条路径仍会把抽象条目装回去。
+  //
+  // 放在这里的好处是三处同时生效：模型选择器（运行时目录）、卡片
+  // （`cardCatalog`）与池视图（读卡片那份），不会出现「卡片里没了、选择器里
+  // 还在」的半截状态。
+  const visible = withoutAbstractModels(models, region)
   const images = new Set(imageModelKeysOf(config, region))
-  const withImages = withImageSelection(models, images, imageSelectionSavedOf(config, region))
+  const withImages = withImageSelection(visible, images, imageSelectionSavedOf(config, region))
   return stampOffSelection(config, region, withImages)
 }
 
@@ -749,10 +762,14 @@ function configuredModels(
       .filter((m): m is QoderModelInfo => m !== undefined)
     // 旧存档里的 `auto` 路由器在读点去掉（写点已由 `fetchModels` 拦下）。
     // 刻意不迁移存档本身：存档保持上次刷新写下的原样，加载时不悄悄改写用户数据。
-    const models = withoutRouters(parsed)
+    //
+    // 国际版那几个抽象命名的条目（Fast / Ultimate / Efficient / Sonus / Cantus）
+    // 同样在读点去掉：要求是「国际版不要显示」，而这几个 id 可能已经在别人的存档里。
+    const models = withoutAbstractModels(withoutRouters(parsed), region)
     if (models.length > 0) return models
   }
-  return live.length > 0 ? live : QODER_FALLBACK_MODELS.map(fallbackModelInfo)
+  const fallback = withoutAbstractModels(QODER_FALLBACK_MODELS.map(fallbackModelInfo), region)
+  return live.length > 0 ? withoutAbstractModels(live, region) : fallback
 }
 
 /**

@@ -75,6 +75,92 @@ describe('模型 compat：必须关掉 developer 角色', () => {
   })
 })
 
+describe('configuredMaxTokens：宿主据此给 defaultMaxTokens（issue #35）', () => {
+  // issue #35 的现场实测：宿主 `dsh-llm-pi-ai` 的 `modelInfo()` 是
+  //
+  //     const configuredMaxTokens = profile.configuredMaxTokens.get(model)
+  //     ...configuredMaxTokens === void 0 ? {} : { defaultMaxTokens: configuredMaxTokens }
+  //
+  // **命中才返回**。本插件此前往里塞的是 `new Map()`，于是 `defaultMaxTokens`
+  // 对所有 qoder 模型恒为 `undefined` —— 即使 `toPiModel()` 早就把
+  // `maxTokens: info.maxOutputTokens` 算出来（只是那一份是给 pi-ai 请求体用的，
+  // 宿主读的是这个 Map）。
+  //
+  // 三个下游都因此落空：billion-context 的输出上限（`x-bili-plugin-max-output`
+  // 与 `/__bili/plugin/runtime-info` 两个通道都靠 `info.defaultMaxTokens`）、
+  // DSH 实际下发的 `max_tokens`、压缩预留。
+  const profileOf = (models: QoderModelInfo[]) => {
+    const adapter = createQoderAdapter({
+      shim: { baseUrl: 'http://127.0.0.1:1', secret: 's', token: () => 's' },
+      catalog: new QoderCatalog(models),
+      piAiGeneration: 'modern',
+    } as never)
+    const profiles = (adapter.adapter as unknown as {
+      config: { profiles: () => Map<string, { configuredMaxTokens: Map<string, number> }> },
+    }).config.profiles()
+    return [...profiles.values()][0]!.configuredMaxTokens
+  }
+
+  it('每个模型的 key → maxOutputTokens 都在表里（宿主按键是 pi id，即 info.key）', () => {
+    const table = profileOf([
+      { ...MODEL, key: 'qfmodel', maxOutputTokens: 32_768 },
+      { ...MODEL, key: 'qmodel', maxOutputTokens: 65_536 },
+    ])
+    expect(table.get('qfmodel')).toBe(32_768)
+    expect(table.get('qmodel')).toBe(65_536)
+  })
+
+  it('不是用自己的 displayName 当键（宿主 get() 收到的是 pi id）', () => {
+    // 报告人专门点名这一条：`get(model)` 的参数是 pi model id，不是显示名。
+    // 用显示名做键的话表看着有内容，但宿主永远命中不了 —— 与空表等价。
+    const table = profileOf([{ ...MODEL, key: 'qfmodel', displayName: 'Qwen3.8-Flash', maxOutputTokens: 32_768 }])
+    expect(table.get('qfmodel')).toBe(32_768)
+    expect(table.get('Qwen3.8-Flash')).toBeUndefined()
+  })
+
+  it('maxOutputTokens 不是正数的模型不写进表（别报 0 当上限）', () => {
+    // 宿主侧 `defaultMaxTokens: 0` 会被下游当成「上限是 0」而不是「没声明」。
+    // 缺席（undefined）才是诚实的「不知道」。
+    const table = profileOf([
+      { ...MODEL, key: 'zero', maxOutputTokens: 0 },
+      { ...MODEL, key: 'ok', maxOutputTokens: 1024 },
+    ])
+    expect(table.has('zero')).toBe(false)
+    expect(table.get('ok')).toBe(1024)
+  })
+
+  it('目录刷新后新值生效，且不要求重建 profile', () => {
+    // 目录是**整体替换**的（`catalog.set(deriveCatalog(...))`），而 profile 只在
+    // 装配时建一次。若把表在构造时一次性填死，用户点「从 Qoder 刷新」换掉目录
+    // 之后，宿主读到的仍是旧值 —— 报告人点出的正是这个时机问题。
+    const catalog = new QoderCatalog([{ ...MODEL, key: 'qfmodel', maxOutputTokens: 32_768 }])
+    const adapter = createQoderAdapter({
+      shim: { baseUrl: 'http://127.0.0.1:1', secret: 's', token: () => 's' },
+      catalog,
+      piAiGeneration: 'modern',
+    } as never)
+    const table = [...(adapter.adapter as unknown as {
+      config: { profiles: () => Map<string, { configuredMaxTokens: Map<string, number> }> },
+    }).config.profiles().values()][0]!.configuredMaxTokens
+
+    expect(table.get('qfmodel')).toBe(32_768)
+    // 上游把同一个模型的上限改小（真实会发生的：上游换档）。
+    catalog.set([{ ...MODEL, key: 'qfmodel', maxOutputTokens: 8_192 }])
+    expect(table.get('qfmodel'), '目录换了而表没跟上').toBe(8_192)
+    // 新出现的模型也要能查。
+    catalog.set([
+      { ...MODEL, key: 'qfmodel', maxOutputTokens: 8_192 },
+      { ...MODEL, key: 'brandnew', maxOutputTokens: 4_096 },
+    ])
+    expect(table.get('brandnew')).toBe(4_096)
+  })
+
+  it('未知模型返回 undefined，不抛也不编一个数', () => {
+    const table = profileOf([{ ...MODEL, key: 'qfmodel', maxOutputTokens: 32_768 }])
+    expect(table.get('who-knows')).toBeUndefined()
+  })
+})
+
 describe('qoderModelInput', () => {
   it('offers images only for models that advertise them', () => {
     expect(qoderModelInput(MODEL)).toEqual(['text', 'image'])

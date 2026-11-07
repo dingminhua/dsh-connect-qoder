@@ -38,6 +38,26 @@ import type { Translate } from './locales.ts'
 export const QODER_MODEL_LABEL_SLOT = 'conversation.input.model.label'
 
 /**
+ * 本插件在这个 single 槽上的注册优先级。
+ *
+ * **必须小于 -100**，那是 workbuddy 的 `MODEL_LABEL_PRIORITY`。宿主的 single 槽
+ * 只渲染一条注册，按 priority **升序取首条**（小者先）。所以「排在哪」就是
+ * 「能不能被看见」。
+ *
+ * 为什么非要排在它前面：workbuddy 是**终点型**组件 —— 它的文件头明确写着
+ * `does not read the slot ledger, does not look for another plugin's
+ * registration, and does not render another plugin's component`，它不会把座位
+ * 交还给别人。此前这里是 -1（注释误以为对方用的是默认的 0），于是 workbuddy
+ * 稳稳抢在前面，**qoder 的促销胶囊在模型选择器里一次都没显示过**（用户实拍：
+ * 卡片里有「错峰 4 折」，选择器里没有）。
+ *
+ * 取 **-101** 而不是一个大得多的负数：只争一格，把身后的位置留给将来任何正常
+ * 的插件。这条优先级只影响「这一行由谁画」，不会动到别人的 provider 行 ——
+ * 本组件会把非 qoder 的行委托回去（见 `createQoderModelLabel`）。
+ */
+export const QODER_MODEL_LABEL_PRIORITY = -101
+
+/**
  * 账本里一条注册的最小形状。
  *
  * `locale` 就是**被委托组件自己声明的命名空间**——委托时必须按它绑一个 `t`
@@ -231,7 +251,8 @@ function QoderModelLabelPromoChip(props: {
  *
  * - 宿主只渲染座位上的第一条注册。workbuddy 的标签（倍率后缀/忙图标）与 1017
  *   参考实现都注册在同一槽的默认优先级；qoder 想给自己的模型加徽标就必须抢在前
- *   面（priority 升序、小者渲染 ⇒ 取 -1），同时**把外来 provider 原样交还**，
+ *   面（priority 升序、小者渲染 ⇒ 取 -101，必须小于 workbuddy 的 -100，见
+ *   {@link QODER_MODEL_LABEL_PRIORITY}），同时**把外来 provider 原样交还**，
  *   否则别人的标签在我们到场的那一刻集体消失（#12 报告本地实测踩过）。
  * - 交还靠原始账本 `entries()`：`entriesOfSlot()` 对 single 槽去重后只剩第一条
  *   （自己），拿不到别人。

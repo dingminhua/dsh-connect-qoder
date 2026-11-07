@@ -143,10 +143,10 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       expect(first.querySelector('.dsm-qoder-pool-member')).toBeNull()
       expect(first.querySelector('.dsm-qoder-pool-not-member')).toBeNull()
 
-      // 积分列：总数 + 临期高亮（expiringSoon > 0 用 soon 而不是 soon-plain）。
+      // 积分列只剩数字：临期高亮那一句已按用户要求移除（行里不再出现到期时刻，
+      // 见下面那条专门的用例）。
       const credits = first.querySelector('.dsm-qoder-pool-credits')
-      expect(credits?.textContent).toContain('1200')
-      expect(credits?.querySelector('.dsm-qoder-pool-soon')?.textContent).toContain('row.poolCreditSoon')
+      expect(credits?.textContent).toBe('1200')
 
       // 被排除的写排除原因。**测过的账号不再单独写一行「测试于 HH:MM」**：
       // 状态列里已经有「测得 · 1 分钟前」，同一件事在一行里说两遍，代价是每个
@@ -159,18 +159,57 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
     }
   })
 
-  it('issue #31：积分到期与套餐到期是两句话，各自带各自的时刻', async () => {
+  it('行里只留积分数字，到期时刻两句都不再渲染', async () => {
+    // 用户第三次实拍：这一行原来是「三行」——名字行 / 积分·到期行 / 状态行，而
+    // 到期那两句（「最早一批签到积分约…到期」「套餐…到期」）把第二行独占，行高
+    // 因此多出一整行。要求是「第二行的信息不要了」。
+    //
+    // 所以 now：数字留在第一行最右，到期两句**彻底不渲染**（连悬停提示也不留，
+    // 这是明确选的：界面上再也看不到到期时刻）。
     const fixture = poolFixture()
     const accounts = fixture['accounts'] as Record<string, unknown>[]
-    accounts[0] = { ...accounts[0], planExpiresAtMs: Date.now() + 14 * 86_400_000 }
+    accounts[0] = {
+      ...accounts[0],
+      planExpiresAtMs: Date.now() + 14 * 86_400_000,
+      nearestExpiryMs: Date.now() + 86_400_000,
+      expiringSoon: 300,
+    }
     const { container, unmount } = await mountPool({ pool: fixture })
     try {
       const first = container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)')[0]!
-      // 两件事分别渲染：积分临期用 soon（警告色），套餐到期是另一格。
-      expect(first.querySelector('.dsm-qoder-pool-soon')?.textContent).toContain('row.poolCreditSoon')
-      expect(first.querySelector('.dsm-qoder-pool-plan')?.textContent).toContain('row.poolPlanExpires')
-      // 套餐到期不得被当成「积分临期」的措辞再出现一次。
-      expect(first.querySelector('.dsm-qoder-pool-plan')?.textContent).not.toContain('row.poolCreditSoon')
+      // 数字还在。
+      expect(first.querySelector('.dsm-qoder-pool-credits')?.textContent).toContain('1200')
+      // 到期那两句一个都不该出现 —— 不是「换个位置」，是完全不渲染。
+      expect(first.textContent).not.toContain('row.poolCreditSoon')
+      expect(first.textContent).not.toContain('row.poolCreditNearest')
+      expect(first.textContent).not.toContain('row.poolPlanExpires')
+      // 连元素都不存在（防止有人把文案藏进 title）。
+      expect(first.querySelector('.dsm-qoder-pool-soon')).toBeNull()
+      expect(first.querySelector('.dsm-qoder-pool-soon-plain')).toBeNull()
+      expect(first.querySelector('.dsm-qoder-pool-plan')).toBeNull()
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('一行只排两行：积分在第一行右端，操作按钮在第二行右端', async () => {
+    // 布局契约写在 CSS 里，jsdom 量不出像素，所以这里断言的是**容器归属**：
+    //  · 积分与名字同在第一个「视觉行」（账号格）里 → 由 CSS 推到该行右端；
+    //  · 操作按钮在行的第二行 → 也是行级子项，由 CSS 推到右端。
+    //
+    // 归属对了，「两行」与「右对齐」才是 CSS 能兑现的；归属错了，无论 CSS
+    // 怎么写都排不出来。
+    const { container, unmount } = await mountPool()
+    try {
+      const first = container.querySelectorAll('.dsm-qoder-pool-row:not(.dsm-qoder-pool-row-head)')[0]!
+      // 积分住在**账号格内**（第一行的容器里），靠 margin-left:auto 推到该格右端；
+      // 放行级的话它的序号在状态之后，只会落在第二行。
+      const credits = first.querySelector('.dsm-qoder-pool-account > .dsm-qoder-pool-credits')
+      const actions = first.querySelector(':scope > .dsm-qoder-pool-row-actions')
+      expect(credits, '积分不在账号格（第一行）里').not.toBeNull()
+      expect(actions, '操作按钮不是行的直接子项').not.toBeNull()
+      // 按钮不能再嵌在账号格的名字行里 —— 那样它会跟名字抢同一行。
+      expect(first.querySelector('.dsm-qoder-pool-account-line .dsm-qoder-pool-row-actions')).toBeNull()
     } finally {
       await unmount()
     }
@@ -183,9 +222,8 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       // 整池只有一张成员表。
       expect(container.querySelector('.dsm-qoder-pool-settings-wrap')).not.toBeNull()
       expect(container.querySelectorAll('.dsm-qoder-pool-table')).toHaveLength(1)
-      // 「更多设置」是小标题（h4），不是第二个页面标题——面板只有一个主标题。
-      expect(container.querySelector('.dsm-qoder-pool-settings-wrap .dsm-qoder-pool-card-title')?.textContent)
-        .toBe('row.poolSettingsTitle')
+      // 「更多设置」标题与那句说明已删除（1.20.0，用户实拍）：设置区只剩那两行设置。
+      expect(container.querySelector('.dsm-qoder-pool-settings-wrap .dsm-qoder-pool-card-title')).toBeNull()
 
       // 目标模型来源一句话出现在目标设置里。
       // 排除模式条：它复用了同一个带框类（见下方「保存行」那条的说明）。
@@ -242,16 +280,16 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       const box = container.querySelector('.dsm-qoder-pool-tools')
       expect(box).not.toBeNull()
       expect(box!.querySelector('.test-tool')?.textContent).toBe('TOOL')
-      // 位置：「更多设置」标题**之上**（94c339f）。工具立即生效，而标题之下
-      // 的一切都要按保存——立即生效的控件不能住在承诺「点保存才生效」的区块里。
+      // 位置：账号工具虚线框**在设置区之上**（94c339f 的判据只剩位置这一半——
+      // 「更多设置」标题与那句说明在 1.20.0 已删除，所以现在没有标题可作参照）。
+      // 判据不变：框里是立即生效的动作，框外是要保存的偏好。
+      // 用 class 属性起点定位，避免撞上 styles.ts 里同名片段被一起序列化的情形。
       const html = container.innerHTML
-      const titleAt = html.indexOf('row.poolSettingsTitle')
-      const toolsAt = html.indexOf('dsm-qoder-pool-tools')
-      const hintAt = html.indexOf('row.poolSettingsHint')
-      expect(titleAt).toBeGreaterThan(-1)
+      const toolsAt = html.indexOf('class="dsm-qoder-pool-tools"')
+      const settingsAt = html.indexOf('class="dsm-qoder-pool-set"')
       expect(toolsAt).toBeGreaterThan(-1)
-      expect(toolsAt).toBeLessThan(titleAt)
-      expect(hintAt).toBeGreaterThan(titleAt)
+      expect(settingsAt).toBeGreaterThan(-1)
+      expect(toolsAt).toBeLessThan(settingsAt)
     } finally {
       await unmount()
     }
@@ -274,7 +312,9 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       try {
         expect(container.querySelector('.dsm-qoder-pool-table')?.className)
           .toContain('dsm-qoder-pool-table-checkin')
-        // 5 列：账号 / 积分 / 目标模型 / 签到 / 操作
+        // 5 格：账号 / 积分 / 状态 / 签到 / 操作（最后一格是空表头，只有按钮）。
+        // 中间一版曾把操作列删掉（按钮那时住在名字行里），现在按钮回到行级、
+        // 宽屏仍是独立一格，所以空表头也要回来。
         expect(container.querySelectorAll('.dsm-qoder-pool-row-head > span')).toHaveLength(5)
         expect(container.textContent).toContain('row.poolColumnCheckin')
         // 「一键签到」按钮（primary）在批量动作里排最前。
@@ -330,11 +370,9 @@ describe('AccountPool render（workbuddy 单表同构）', () => {
       // 设置区仍是「标题 → 账号工具虚线框（若有）→ 说明行 → 设置卡片」。
       const wrap = container.querySelector('.dsm-qoder-pool-settings-wrap')
       expect(wrap).not.toBeNull()
-      // 设置区不再有页面级标题行：它被降级为一个 h4 小标题（card-head）。
+      // 设置区既没有页面级标题行，也没有 h4 小标题（1.20.0 起整块删除）。
       expect(wrap!.querySelector('.dsm-qoder-pool-head')).toBeNull()
-      const head = wrap!.querySelector('.dsm-qoder-pool-card-head')
-      expect(head).not.toBeNull()
-      expect(head!.querySelector('.dsm-qoder-pool-card-title')).not.toBeNull()
+      expect(wrap!.querySelector('.dsm-qoder-pool-card-head')).toBeNull()
       // 芯片仍靠 CSS 的 margin-left:auto 靠右，而不是靠 space-between 容器。
       expect(container.querySelector('.dsm-qoder-pool-head-right')).toBeNull()
     } finally {

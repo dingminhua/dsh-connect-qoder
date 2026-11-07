@@ -142,17 +142,99 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     }
   })
 
-  it('脏标记在模式条里，不在设置卡片标题上——它警告的就是开关这一处', async () => {
+  it('脏标记在模式条里，不在设置区里——它警告的就是开关这一处', async () => {
     const { container, unmount } = await mountPool()
     try {
       const box = container.querySelector('.dsm-qoder-pool-modebar input[type="checkbox"]') as HTMLInputElement
       await act(async () => { box.click() })
       expect(container.querySelector('.dsm-qoder-pool-modebar .dsm-qoder-pool-dirty')).not.toBeNull()
-      const cardHead = container.querySelector('.dsm-qoder-pool-card-head')
-      expect(cardHead!.querySelector('.dsm-qoder-pool-dirty')).toBeNull()
+      // 设置区没有标题行也没有自己的脏标记（1.20.0 起「更多设置」整块删除）。
+      const wrap = container.querySelector('.dsm-qoder-pool-settings-wrap')
+      expect(wrap!.querySelector('.dsm-qoder-pool-dirty')).toBeNull()
     } finally {
       await unmount()
     }
+  })
+
+  it('「更多设置」标题与那句说明都不再渲染，设置区也没有外围的框', async () => {
+    // 用户实拍：红框圈住「更多设置 + 下面那句偏好说明」，要求「圈出来的不要」；
+    // 并追加一句「下面的功能设置也不要外围的框」——即那两条设置外面的圆角边框。
+    //
+    // 为什么能删：标题下面的每一行自己就写着是做什么的（「测试用模型（全池统一）」、
+    // 「测试请求体积」都是行内标题），上面再加一个「更多设置」只是给它们命名两次；
+    // 而那句说明解释的是「点保存才生效」，保存行本身就在下面那一条里。
+    const { container, unmount } = await mountPool()
+    try {
+      // 标题与说明整块不存在。
+      expect(container.querySelector('.dsm-qoder-pool-card-head')).toBeNull()
+      expect(container.querySelector('.dsm-qoder-pool-card-title')).toBeNull()
+      expect(container.textContent).not.toContain('row.poolSettingsTitle')
+      expect(container.textContent).not.toContain('row.poolSettingsHint')
+
+      // 设置区仍然是两行，只是不再有边框/底色/圆角（CSS 断言放在下面那条）。
+      const settings = container.querySelector('.dsm-qoder-pool-settings:not(.dsm-qoder-pool-modebar)')
+      expect(settings, '设置区整个没了——只该去掉标题与框').not.toBeNull()
+      expect(settings!.querySelector('.dsm-qoder-pool-set')).not.toBeNull()
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('设置区的两行不再左右内缩：宽度与账号工具、保存行对齐', () => {
+    // 用户实拍「宽度也要调整啊」。去掉外框之后，`.dsm-qoder-pool-set` 那 14px 的
+    // 左右内边距就**没有承托物**了：它原本是卡片的内边距，卡片没了，它就只是让两行
+    // 比周围的块窄一截。
+    //
+    // 实测（564px 列，去内边距之前）：
+    //   账号工具虚线框 / 保存行  x=24
+    //   两行设置                x=38  ← 多出 14px
+    // 两行设置的说明文字因此只有 292px，折成四行。
+    const rule = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-set\{([^}]*)\}/)?.[1] ?? ''
+    expect(rule, '没有 .dsm-qoder-pool-set 规则').not.toBe('')
+    // 纵向留白保留（两行之间要透气），横向归零（与上下各块对齐）。
+    expect(rule, '两行设置还在左右内缩').toMatch(/(?:^|;)padding:12px 0(?:;|$)/)
+  })
+
+  it('设置区的两行分栏有上限：说明文字不被下拉框挤成一条', () => {
+    // 下拉框原来只受 `max-width` 约束，于是它按内容撑开、把说明文字挤窄。给它一个
+    // 明确的宽度上限，说明文字才拿得到剩下的宽度。
+    const ctl = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-set-ctl\{([^}]*)\}/)?.[1] ?? ''
+    expect(ctl, '没有 .dsm-qoder-pool-set-ctl 规则').not.toBe('')
+    // 控件列不参与伸展：它窄，文字才宽。
+    expect(ctl, '控件列会抢走说明文字的宽度').toContain('flex:none')
+    // 下拉框本身也要有个上限，否则长模型名会把文字挤到只能容下几个字。
+    const select = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-select\{([^}]*)\}/)?.[1] ?? ''
+    expect(select, '下拉框没有宽度上限').toMatch(/max-width:\s*\d+px/)
+  })
+
+  it('窄列里设置行改成上下两段：说明文字独占整宽，不跟下拉框抢', () => {
+    // 设置面板的内容列只有 564px。两行设置若坚持「左文字 + 右下拉」并排，说明文字
+    // 只剩约 320px，那句「全池共用这一个模型…」要折四行；而下拉框右侧还有一片用不掉
+    // 的空白。改成上下两段之后文字独占整宽（约 516px），行数减半。
+    //
+    // 判据与 workbuddy 同一条（它那边是 @container max-width:620px）。这里用容器查询
+    // 而不是媒体查询：这张卡在输入框、整页版、设置面板三处渲染，视口宽度与这张表的
+    // 宽度毫无关系。
+    const at = QODER_CARD_CSS.indexOf('@container (max-width:')
+    expect(at, '没有窄列形态的容器查询').toBeGreaterThan(-1)
+    const narrow = QODER_CARD_CSS.slice(at)
+    expect(narrow, '窄列里设置行还是并排').toMatch(
+      /\.dsm-qoder-pool-set\{[^}]*flex-direction:column/,
+    )
+    expect(narrow, '窄列里下拉框没有占满整宽').toMatch(
+      /\.dsm-qoder-pool-select\{[^}]*width:100%/,
+    )
+  })
+
+  it('设置区不再自带边框：`.dsm-qoder-pool-settings` 去壳', () => {
+    // 「下面的功能设置也不要外围的框」。模式条复用了同一个类名，但它自己另有一条
+    // 带框规则（.dsm-qoder-pool-modebar），所以这里去掉边框不会把模式条也一起去掉。
+    const rule = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-settings\{([^}]*)\}/)?.[1] ?? ''
+    expect(rule, '没有 .dsm-qoder-pool-settings 规则').not.toBe('')
+    expect(rule, '设置区还留着边框').not.toMatch(/(?:^|;)border:/)
+    expect(rule, '设置区还留着圆角').not.toContain('border-radius')
+    // 模式条那一层仍然有框（它是整页的模式选择器，与设置区不是一回事）。
+    expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-modebar\{[^}]*border:1px solid/)
   })
 
   it('「启用账号池」不在设置卡片里了——它上移为页面级模式，不该出现两次', async () => {
@@ -289,6 +371,53 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     expect(QODER_CARD_CSS).toMatch(/\.dsm-qoder-pool-save-bar\{[^}]*bottom:0/)
   })
 
+  it('上下移紧贴「当前使用」，不被推到第一行最右端', () => {
+    // 用户第四次实拍：↑↓ 被 margin-left:auto 推到了整行最右，离「当前使用」隔着
+    // 一大段空白，箭头指着要求「这个要紧贴」。
+    //
+    // 它读起来是「名字 · 第 1 位 · 当前使用 · ↑↓」这一句话，是**名次**的控件 ——
+    // 隔开之后它像掉队的第四个徽章。右侧的空白由积分占据（积分才是第一行的右端
+    // 元素），所以这里不需要 auto 去撑。
+    const lineRule = QODER_CARD_CSS.match(
+      /\n\.dsm-qoder-pool-account-line \.dsm-qoder-pool-move\{([^}]*)\}/,
+    )?.[1] ?? ''
+    expect(lineRule, '没有 .dsm-qoder-pool-account-line .dsm-qoder-pool-move 规则').not.toBe('')
+    expect(lineRule, '↑↓ 还被推到整行最右端').not.toContain('margin-left:auto')
+  })
+
+  it('窄形态两行：积分在第一行右端，操作按钮在第二行右端', () => {
+    // 用户第三次实拍确定的形态（三行 → 两行）：
+    //
+    //   第一行：账号 … 积分（推到最右）
+    //   第二行：状态 · 签到 … 操作按钮（推到最右）
+    //
+    // 走过的三条路都失败过一次，所以断言同时钉住「现在是什么」和「不该回到什么」。
+    const credits = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-credits\{([^}]*)\}/)?.[1] ?? ''
+    expect(credits, '没有 .dsm-qoder-pool-credits 规则').not.toBe('')
+    // 积分靠 auto 外边距贴第一行右端。
+    expect(credits, '积分没有贴到第一行右端').toContain('margin-left:auto')
+    // 且不许折行：数字是这一行的右边界，一折行两行形态就塌了。
+    expect(credits, '积分可折行，第一行会被撑成两行').toContain('white-space:nowrap')
+    expect(credits, '积分会被压缩').toContain('flex:none')
+
+    const checkin = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-checkin\{([^}]*)\}/)?.[1] ?? ''
+    // 右端只有一个主人：签到不再靠 auto 抢（那时按钮在第三行）。
+    expect(checkin, '签到还在抢右端，会和按钮把第二行撕成三截').not.toContain('margin-left:auto')
+
+    const actions = QODER_CARD_CSS.match(/\n\.dsm-qoder-pool-row-actions\{([^}]*)\}/)?.[1] ?? ''
+    expect(actions, '没有 .dsm-qoder-pool-row-actions 规则').not.toBe('')
+    expect(actions, '按钮没有贴到第二行右端').toContain('margin-left:auto')
+    expect(actions, '按钮不该被压缩').toContain('flex:none')
+    // 独占整行（三行时代）必须不再出现。
+    expect(QODER_CARD_CSS, '还留着 flex:1 1 100% 的整行覆盖')
+      .not.toMatch(/\.dsm-qoder-pool-row-actions\{[^}]*flex:1 1 100%/)
+
+    // 宽屏是单行网格，按钮在**自己的最后一格**（justify-self:end），窄形态那条
+    // auto 外边距必须在容器查询里让位，否则按钮会被顶出格子。
+    const wide = QODER_CARD_CSS.slice(QODER_CARD_CSS.indexOf('@container (min-width:700px)'))
+    expect(wide).toMatch(/\.dsm-qoder-pool-row-actions\{justify-self:end;margin-left:0\}/)
+  })
+
   it('账号行的断点测**表格**宽度，不测视口——视口断点在设置页里恒成立', () => {
     // 这条钉的是一个真出过的缺陷，前后两版都错在同一个地方：拿视口当依据。
     //
@@ -325,23 +454,33 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
     expect(QODER_CARD_CSS).not.toMatch(/\.dsm-qoder-pool-row\{[^}]*grid-template-columns:minmax/)
   })
 
-  it('表头与数据行读同一个列变量——末尾的 auto 轨道会让它们错位', () => {
-    // 尾部两列用固定 px 而不是 fr/auto，理由具体：表头第 5 格没有标签可写，是个
-    // 空 span。它若是 auto 轨道，表头里这条轨道就塌成 0px，四条 fr 轨道于是各多
-    // 分到一点，标签整体右移——实测表头「账号」w=275 而数据格 w=246，越往右错得
-    // 越多（4 条间隙 12px 之后，最后一列差了 30px）。
+  it('表头与数据行读同一个列变量——末尾那条轨道是固定 px', () => {
+    // 尾部轨道用固定 px 而不是 fr/auto，理由具体：轨道宽度必须与格子里有没有内容
+    // 无关，否则表头与数据行各自算出的宽度会差出一截——实测过表头「账号」w=275
+    // 而数据格 w=246，越往右错得越多。
+    //
+    // ⚠️ **没有第 5 条轨道了**（1.20.0）：行内操作（测试 / 删除）从网格的最后一格
+    // 挪进了账号格的名字行，独立的那一列随之取消。留一条空轨道等于在每一行右边
+    // 留 96px 空白——workbuddy 那一版就还留着一条 150px 的空轨（实测 tracks
+    // 300/188/244/169/150，而 cells 只有四格），这里不再照抄那个遗留。
     const cols = QODER_CARD_CSS.match(/--dsm-qoder-pool-cols:([^;}]+)/)?.[1] ?? ''
     expect(cols).toBeTruthy()
-    // 尾部两条轨道都是固定 px，一个 fr/auto 都不许有。
+    // 末尾两条轨道（签到 118px、操作 96px）都是固定 px；整份定义里没有 fr/auto
+    // 被误写成固定值之外的形态（前三列仍是 fr）。
     expect(cols.trim()).toMatch(/\d+px \d+px$/)
     expect(cols).not.toContain('auto')
     // 签到列容得下它最长的那句话（「23:59:59 后可再签到」，实测 116px）：
-    // 给窄了它会溢出自己的轨道，直接压到右边那颗「测试」按钮上，而数字每秒在变，
-    // 溢出量也跟着变——看着像按钮在抖。
-    const checkinTrack = Number(cols.trim().split(/\s+/).at(-2)!.replace('px', ''))
+    // 给窄了它会溢出自己的轨道，而数字每秒在变，溢出量也跟着变——看着像这一格在抖。
+    const tracks = cols.trim().split(/\s+/)
+    const checkinTrack = Number(tracks.at(-2)!.replace('px', ''))
     expect(checkinTrack).toBeGreaterThanOrEqual(118)
-    // 不支持签到的区域少一列，但尾部同样固定。
-    expect(QODER_CARD_CSS).toMatch(/--dsm-qoder-pool-cols:[^;}]*\d+px\}/)
+    // 操作列：两颗小按钮（测试 / 删除）横排。
+    const actionsTrack = Number(tracks.at(-1)!.replace('px', ''))
+    expect(actionsTrack).toBeGreaterThanOrEqual(90)
+    // 不支持签到的区域少一条签到轨道，但**操作列仍在**（末尾固定 96px）。
+    expect(QODER_CARD_CSS).toMatch(
+      /\.dsm-qoder-pool-table:not\(\.dsm-qoder-pool-table-checkin\)\{--dsm-qoder-pool-cols:minmax\(0,1\.9fr\) minmax\(0,\.9fr\) minmax\(0,1\.4fr\) 96px\}/,
+    )
   })
 
   it('活动区的样式在**卡片**样式表里（它由卡片渲染，不由 composer 渲染）', () => {

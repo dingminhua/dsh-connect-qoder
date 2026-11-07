@@ -849,19 +849,55 @@ describe('积分读数席位控件', () => {
     }))
   }
 
-  it('积分那两行在卡片正文里、账号池之上（用户实拍要求）', async () => {
+  it('积分那几个开关搬进「能力」栏：不在账号栏里，也不在账号池内部', async () => {
+    // 1.20.0：这些开关回答的是「这个插件能替你做哪些显示上的事」，与「谁在服务、
+    // 还剩多少」（账号栏）不是同一个问题；它们此前压在账号池顶上，把那张表又推
+    // 下去一段。现在有自己的一栏。
     stubUsage(region => withPosition('stats'))
     const { container, unmount } = await mountCard()
     try {
       const prefs = container.querySelector('.dsm-qoder-prefs')
       expect(prefs).not.toBeNull()
-      const pool = container.querySelector('.dsm-qoder-pool')
-      expect(pool).not.toBeNull()
-      // 在账号池之前，且不落在账号池内部（不在它的设置区里，否则会重复渲染）。
-      expect(prefs!.compareDocumentPosition(pool!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
-      expect(pool!.contains(prefs!)).toBe(false)
-      // 同一个容器里只出现一次。
+
+      // 落在「能力」那一栏里，而不是账号栏。
+      const panel = container.querySelector('#dsm-qoder-panel-capabilities')
+      expect(panel, '没有 #dsm-qoder-panel-capabilities').not.toBeNull()
+      expect(panel!.contains(prefs!), '开关没在能力栏里').toBe(true)
+      expect(container.querySelector('#dsm-qoder-panel-accounts')!.contains(prefs!),
+        '开关还留在账号栏里').toBe(false)
+
+      // 仍然只有一份（搬动不能变成复制）。
       expect(container.querySelectorAll('.dsm-qoder-prefs')).toHaveLength(1)
+      // 也不落在账号池内部（那是「重复渲染」的老坑）。
+      const pool = container.querySelector('.dsm-qoder-pool')
+      if (pool !== null) expect(pool.contains(prefs!)).toBe(false)
+    } finally {
+      await unmount()
+    }
+  })
+
+  it('「能力」排在诊断之前：账号 / 模型 / 能力 / 诊断，点了才显示', async () => {
+    stubUsage(region => withPosition('stats'))
+    const { container, unmount } = await mountCard()
+    try {
+      const tabs = Array.from(container.querySelectorAll('.dsm-qoder-panels [role="tab"]'))
+      // 顺序：能力在诊断**之前**（用户要求）。诊断是「贴进 issue 的那份事实」，
+      // 是这一页最不常用的部分，压到最后。
+      expect(tabs.map(tab => tab.id)).toEqual([
+        'dsm-qoder-tab-accounts',
+        'dsm-qoder-tab-models',
+        'dsm-qoder-tab-capabilities',
+        'dsm-qoder-tab-diag',
+      ])
+      // 默认不显示：能力栏不是落地点。
+      const panel = container.querySelector<HTMLElement>('#dsm-qoder-panel-capabilities')!
+      expect(panel.hidden).toBe(true)
+      // 点第三个 tab 才翻到它，且账号栏随之隐藏。
+      await act(async () => {
+        (container.querySelector('#dsm-qoder-tab-capabilities') as HTMLButtonElement).click()
+      })
+      expect(panel.hidden).toBe(false)
+      expect(container.querySelector<HTMLElement>('#dsm-qoder-panel-accounts')!.hidden).toBe(true)
     } finally {
       await unmount()
     }

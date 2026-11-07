@@ -521,6 +521,46 @@ export function withoutRouters(models: readonly QoderModelInfo[]): QoderModelInf
 }
 
 /**
+ * 上游只发给**国际版**的那几条「抽象命名」模型 id。
+ *
+ * 用户的要求原话是「国际版不要显示这些抽象选项」——指的是目录里这几行：
+ * `Fast` / `Ultimate` / `Efficient` / `Sonus` / `Cantus`。它们与 `Qwen3.8-Max`
+ * 那种「看名字就知道是谁家的哪个型号」的条目不同：只有一个抽象形容词，看不出
+ * 背后是哪一家的模型，勾了也不知道自己勾的是什么。国内版的上游不下发它们，
+ * 所以这个过滤在国内版上通常是空操作。
+ *
+ * **用显式表，不用名字启发式**（与 `ROUTER_MODEL_IDS` 同一条判据）：「首字母
+ * 大写的单词都丢」迟早会误伤一个真的叫这个名字的模型。要往这里加 id，先拿到
+ * 与这一次同等强度的证据（上游确实只为国际版下发、且名字是抽象词）。
+ *
+ * 过滤发生在**读点**（`modelsOf` / 卡片目录），不动 `lastCatalog` 存档：
+ * 存档保持「上次刷新写下的原样」，而这一行在新代码跑起来的那一刻就消失。
+ */
+export const ABSTRACT_MODEL_IDS: ReadonlySet<string> = new Set([
+  'fast',
+  'ultimate',
+  'efficient',
+  'smodel',
+  'cmodel',
+])
+
+/**
+ * 去掉国际版那几个抽象命名的条目。
+ *
+ * @param models - 一个区域的目录。
+ * @param region - 目录所属区域；**只有 `global` 过滤**。默认 `global` 是因为
+ *   这条过滤的存在理由就是国际版——忘了传区域的调用点应当拿到「按用户要求过滤
+ *   后」的结果，而不是原样放行。
+ */
+export function withoutAbstractModels(
+  models: readonly QoderModelInfo[],
+  region: 'cn' | 'global' = 'global',
+): QoderModelInfo[] {
+  if (region !== 'global') return [...models]
+  return models.filter(model => !ABSTRACT_MODEL_IDS.has(model.key.trim().toLowerCase()))
+}
+
+/**
  * 初始勾选集合：目录中的默认模型 + 免费模型；其余不勾。
  *
  * `auto` 在这里**必须**再排除一次，尽管它已经不在目录里：曾经的默认项就是它

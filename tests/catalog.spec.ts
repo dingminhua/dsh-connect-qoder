@@ -6,6 +6,7 @@ import {
   initialEnabledKeys,
   deriveCatalog,
   withoutRouters,
+  withoutAbstractModels,
   QoderCatalog,
   QODER_FALLBACK_MODELS,
   pickDefaultContextWindow,
@@ -240,6 +241,35 @@ describe('selection derivation', () => {
       fallbackModelInfo(QODER_FALLBACK_MODELS[1]!),
     ]
     expect(withoutRouters(models).map(m => m.key)).toEqual([models[1]!.key])
+  })
+
+  it('国际版那几个抽象命名的条目不出现在可勾选目录里', () => {
+    // 用户：「国际版不要显示这些抽象选项」，指的是上游只给国际版下发的
+    // `Fast` / `Ultimate` / `Efficient` / `Sonus` / `Cantus` —— 它们只有一个抽象
+    // 名字，看不出背后是哪个模型，勾了也不知道自己勾了什么。
+    //
+    // 判据用**显式表**（与 `auto` 路由器同一条做法）：名字启发式（「首字母大写的
+    // 单词都丢」）会误伤真模型。
+    const models = [
+      fallbackModelInfo(QODER_FALLBACK_MODELS[0]!),
+      ...['fast', 'ultimate', 'efficient', 'smodel', 'cmodel'].map(key => ({
+        ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key.toUpperCase(),
+      })),
+    ]
+    const kept = withoutAbstractModels(models).map(m => m.key)
+    expect(kept, '抽象命名的条目没被过滤掉').toEqual([models[0]!.key])
+  })
+
+  it('抽象条目只在**国际版**过滤；国内版目录原样保留', () => {
+    // 要求是「国际版不要显示」。这两个 id 在 CN 目录里本来就不存在（上游不下发），
+    // 但过滤条件仍然按区域写清楚，而不是依赖「反正 CN 没有」——那是上游的事实，
+    // 不是本插件能保证的。
+    const ids = ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']
+    const models = ids.map(key => ({
+      ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key,
+    }))
+    expect(withoutAbstractModels(models, 'global')).toEqual([])
+    expect(withoutAbstractModels(models, 'cn').map(m => m.key), '国内版被误伤').toEqual(ids)
   })
 
   it('withoutRouters leaves real models alone and never mutates its input', () => {
