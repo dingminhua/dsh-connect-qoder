@@ -1035,7 +1035,7 @@ export async function buildWebUsage(
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
     ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
     ...deps.sidebarPanelEnabled?.() === true ? { sidebarPanelEnabled: true } : {},
-      ...deps.pollMinutes?.() !== undefined ? { pollMinutes: deps.pollMinutes() } : {},
+    ...deps.pollMinutes?.() !== undefined ? { pollMinutes: deps.pollMinutes() } : {},
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
     accounts: accounts.map(webAccountOf(deps, region)),
