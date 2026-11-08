@@ -3,6 +3,7 @@ import { Context, Service } from '@deepseek-ai/cordis'
 import LlmRuntime from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import * as Qoder from '../src/index.ts'
+import { QODER_POLL_MINUTES_DEFAULT } from '../src/status-paths.ts'
 import { qoderAccountId } from '../src/credentials.ts'
 import { cooldownOf } from '../src/probe.ts'
 import { exclusionOf } from '../src/account-pool.ts'
@@ -2184,6 +2185,56 @@ describe('侧边栏面板的 Host 接线（真实路由，不只是 deps）', ()
       context = undefined
     }
   })
+describe('Config.pollMinutes —— 打上游的自动刷新间隔', () => {
+  it('缺省解析出来是 5（composer 读数在这个设置存在之前就是 300s）', () => {
+    const resolved = Qoder.Config({ regions: {} } as never) as unknown as { pollMinutes: unknown }
+    expect(Qoder.unwrapVolatile(resolved.pollMinutes as never)).toBe(5)
+  })
+
+  it('文档投影带这个字段，且两个区域同值（GLOBAL）', async () => {
+    const { usage } = await mountRoutes({ regions: { cn: { pat: '' } }, pollMinutes: 10 })
+    try {
+      expect((await usage('cn'))['pollMinutes']).toBe(10)
+      expect((await usage('global'))['pollMinutes']).toBe(10)
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+
+  it('没写过时文档带默认 5（投影是解析后的值，不是「写过没有」）', async () => {
+    // 与 sidebarPanel 不同：那个字段缺席必须读成「没要」（占全局座位的同意），
+    // 所以投影只在 true 时出现。这个字段缺席读成**默认 5**，投影恒带它 ——
+    // 客户端不需要区分「没写过」与「写了 5」，两者在屏幕上同形。
+    const { usage } = await mountRoutes({ regions: { cn: { pat: '' } } })
+    try {
+      expect((await usage('cn'))['pollMinutes']).toBe(5)
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+
+  it('/__save 接受这个顶层字段，写完之后文档跟着变', async () => {
+    const { usage, save } = await mountRoutes({ regions: { cn: { pat: '' } }, pollMinutes: 30 })
+    try {
+      const answer = await save({ field: 'pollMinutes', value: 1 })
+      expect(answer.status).toBe(200)
+      expect((await usage('cn'))['pollMinutes']).toBe(1)
+    } finally {
+      await context?.fiber.dispose()
+      context = undefined
+    }
+  })
+
+  it('schema 挡住第六个值：写 7 直接拒绝解析（不是悄悄回落）', () => {
+    // 第一道闸是 schema：配置解析就失败，宿主会报配置错而不是静默用 7。
+    // 第二道是 `pollMinutesOf`：手改 JSON 绕过 schema 的那条路（宿主把原始值
+    // 递进来时），读出来仍是默认 5 —— 那一道钉在 tests/poll-interval.spec.tsx。
+    expect(() => Qoder.Config({ regions: {}, pollMinutes: 7 } as never)).toThrow()
+  })
+})
+
 })
 
 describe('Config.sidebarPanel —— 可选侧边栏面板的默认值', () => {

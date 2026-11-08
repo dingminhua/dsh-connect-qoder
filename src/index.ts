@@ -52,7 +52,9 @@ import {
   QODER_SETTINGS_NS,
   QODER_GITHUB_URL,
   QODER_REGIONS,
+  QODER_POLL_MINUTES_FIELD,
   QODER_SIDEBAR_PANEL_FIELD,
+  pollMinutesOf,
   sidebarPanelEnabledOf,
   unwrapVolatileDeep,
   type QoderWebProbeResult,
@@ -106,7 +108,7 @@ export const inject = ['llm', 'settings']
 /**
  * 积分读（`sash/api/v2/me/usage`）的超时上限。
  *
- * 这个读现在发生在**每次** `/usage` 路由请求上（卡片 60s 轮询 + composer 300s +
+ * 这个读现在发生在**每次** `/usage` 路由请求上（卡片与 composer 的自动刷新轮询（`pollMinutes`，默认 5 分钟）+
  * 面板打开），所以它不能再无界：上游挂住会把整张卡片与 composer 读数一起挂住。
  */
 const USAGE_FETCH_TIMEOUT_MS = 8_000
@@ -383,6 +385,24 @@ export interface Config {
 
 export const Config: z<Config> = z.object({
   regions: asVolatile(z.dict(regionConfig).default({}).description('Per-region Qoder settings, keyed cn | global')),
+  /**
+   * 打上游的自动刷新间隔（分钟），全局一档。
+   *
+   * 卡片与输入框积分读数共用这一个节奏：它们问的是同一个 `/usage` 路由，宿主侧
+   * 本来就把几乎同时到达的读合流成一次上游请求（见下方 usage 读合流），所以两个
+   * 表面各配一个间隔只会制造「错开的两次读」，不会省任何请求。
+   *
+   * 默认 **5**：composer 读数在这个设置存在之前就是 300s，升级不动任何人的屏幕；
+   * 卡片此前是 60s，改成 5 分钟是**有意的降频**——卡片上的数字是积分余额，变化
+   * 频率以分钟计，60s 一轮换来的只是「早四分钟看到一次几乎不变的数」，代价是每
+   * 分钟一次上游往返（两个区域各一）。想要更及时的读数，选 1 分钟即可。
+   *
+   * 五档枚举而不是自由数字：这是**对上游的请求频率**，手改配置写进一个 0 或负数
+   * 会变成每秒打点。`pollMinutesOf` 对任何不在五档里的值退回默认。
+   */
+  pollMinutes: z.union([
+    z.const(1), z.const(5), z.const(10), z.const(30), z.const(60),
+  ]).default(5).description('How often the card and the composer credit readout re-read upstream usage, in minutes. One global rhythm: both surfaces ask the same route and the Host coalesces near-simultaneous reads into one upstream call.'),
   // Volatile 的理由与 workbuddy 同名项相同：卡片上的开关写它，而一次完整插件
   // 重载会 dispose 两个 provider 栈、掉光在飞的请求 —— 为「多一行导航」付这个
   // 价格完全不成比例。volatile 之后写入只走 `loader/volatile-update`，
@@ -1569,7 +1589,7 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
    * 在飞的积分刷新（区域 → promise）。
    *
    * `/usage` 现在每次请求都要现场刷一次积分，而这个路由的调用方不止一个：卡片
-   * 60s 轮询、composer 300s 轮询、面板打开、手动刷新。它们可能几乎同时打到同一
+   * 卡片轮询、composer 轮询（同一条 `pollMinutes` 节奏）、面板打开、手动刷新。它们可能几乎同时打到同一
    * 区域 —— 没有合流的话，一次面板打开会连带触发好几条上游读。
    *
    * **所有**积分读都必须经过这里，包括那些 fire-and-forget 的后台补读（签到后
@@ -1595,8 +1615,8 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     if (!serving) return
     const prior = usageCache[region]
     try {
-      // 超时兜底：这个读现在发生在**每次** /usage 请求上（卡片 60s 轮询 +
-      // composer 300s），上游挂住不能把路由一起挂住。
+      // 超时兜底：这个读现在发生在**每次** /usage 请求上（卡片与 composer 的
+      // 自动刷新轮询都打到这里），上游挂住不能把路由一起挂住。
       //
       // 为什么是整体 race 而不是只传 signal：`fetchUsage` 先 `ensureSession()`、
       // 再带着 signal 打 sash —— signal 只管得住后半段。会话过期时前半段要去做
@@ -1996,7 +2016,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 没有兄弟槽，所以直接 set 到它自己那条路径上 —— 这正是 workbuddy
       // `__save` 对 `UPSTREAM_SWITCH_FIELDS` 的处理（每个都是完整独立的值，
       // `set` 在它自己的 path 上不可能覆盖旁边任何东西）。
-      if (field === QODER_SIDEBAR_PANEL_FIELD) {
+      if (field === QODER_SIDEBAR_PANEL_FIELD || field === QODER_POLL_MINUTES_FIELD) {
+        // 顶层标量：没有兄弟槽，直接 set 到它自己那条路径上 —— 这正是 workbuddy
+        // `__save` 对 `UPSTREAM_SWITCH_FIELDS` 的处理（每个都是完整独立的值，
+        // `set` 在它自己的 path 上不可能覆盖旁边任何东西）。
         const row = pluginRow()
         if (row === undefined) throw new Error('settings namespace not yet available')
         await settingsService!.mutate(row.ns, [{ op: 'set', path: [field], value }], undefined)
@@ -2139,6 +2162,8 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       // 不是 `!== false`：这一行占的是所有 bundle 共用的侧边栏座位，缺席必须
       // 读成「没要」。字段是 volatile，所以读取时先解包。
       sidebarPanelEnabled: () => sidebarPanelEnabledOf(config),
+      // GLOBAL：与 sidebarPanel 同层，两个区域共用一条节奏（见 schema 注释）。
+      pollMinutes: () => pollMinutesOf(config),
       lastQuotaExhaustion: region => quotaExhaustionByRegion[region],
       regionUsable: (region, usable) => {
         if (!usable) log(`region ${region} is signed out`)

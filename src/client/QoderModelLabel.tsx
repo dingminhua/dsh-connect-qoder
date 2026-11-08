@@ -179,7 +179,7 @@ function subscribeMinute(fn: () => void): () => void {
  *
  * 为什么不是 `full`：full 文档在路由侧会触发一次**上游重读**
  * （`freshUsageEntryOf`）—— 选择器每开一次都把「读别人的模型列表」变成一次
- * 真实的积分/配额请求，而这份数据的权威刷新者是卡片自己的 60 秒轮询。fast
+ * 真实的积分/配额请求，而这份数据的权威刷新者是卡片自己的自动刷新轮询（`pollMinutes`）。fast
  * 文档回答的是**本地已有状态**，`models[]` 连同每行的 `promotion` / `isFree`
  * 都在里面（issue #12 实机核对）。这个组件只是那份缓存的第二个读者。
  *

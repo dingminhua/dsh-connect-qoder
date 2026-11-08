@@ -6,7 +6,7 @@
  * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
  *   — 卡片的整体结构（折叠外壳 `<li class="dsm-plugin-card">` + header/icon/title/
  *     description/chevron、国内/国际 tab 栏 + 供应商开关、账号下拉、积分区、模型表、
- *     探针行、60 秒轮询与 AbortController 清理、模块加载时注入一次 `<style>`、
+ *     探针行、可配的自动刷新轮询（`pollMinutes`，默认 5 分钟）与 AbortController 清理、模块加载时注入一次 `<style>`、
  *     纯 CSS caret）、以及 `dsm-*` 类名体系与 `--dsw-alias-*` 主题变量用法，
  *     均沿用自该项目；其又逐字承接 dingminhua/dsh-connect-trae（MIT）与
  *     dingminhua/dsh-subagent-default-model（MIT）。
@@ -38,6 +38,8 @@ import {
   QODER_PROBE_PATH,
   QODER_REGIONS,
   QODER_UPSTREAM_DOMAIN,
+  pollMinutesOf,
+  QODER_POLL_MINUTES_OPTIONS,
   sidebarPanelEnabledOf,
   QODER_USAGE_PATH,
   toPersistedCatalogEntry,
@@ -47,6 +49,7 @@ import {
 import type {
   QoderPersistedModel,
   QoderCreditPosition,
+  QoderPollMinutes,
   QoderWebModel,
   QoderWebProbeOutcome,
   QoderWebProbeResult,
@@ -62,6 +65,7 @@ import {
   writeRegionCreditsShown,
   writeRegionEnabled,
   writeRegionModels,
+  writePollMinutes,
   writeSidebarPanelEnabled,
 } from './account-selection.ts'
 import { setSidebarPanelWanted } from './panel-switch.ts'
@@ -124,7 +128,6 @@ export type QoderCardProps =
   Partial<QoderCardInjected>
   & { view?: string, surface?: 'card' | 'page' | 'section', backToConversation?: () => void }
 
-const POLL_INTERVAL_MS = 60_000
 
 /**
  * Inject or refresh the shared card CSS for the current client bundle.
@@ -246,6 +249,8 @@ export function QoderCard(props: QoderCardProps): ReactElement {
    */
   const [sidebarPanelOn, setSidebarPanelOn] = useState<boolean | undefined>(undefined)
   const [sidebarPanelBusy, setSidebarPanelBusy] = useState(false)
+  const [pollMinutesBusy, setPollMinutesBusy] = useState(false)
+  const [pollMinutesError, setPollMinutesError] = useState<string | undefined>(undefined)
   /** 该开关自己的失败提示：它住在「账号」栏，而通用那条长在「模型」栏的保存行上。 */
   const [sidebarPanelError, setSidebarPanelError] = useState<string | undefined>(undefined)
   /**
@@ -277,6 +282,28 @@ export function QoderCard(props: QoderCardProps): ReactElement {
 
   const scope = props.settingsScope
 
+  /**
+   * 打上游的自动刷新节奏（分钟），**活读**：设置镜像一变（`revision`）就重读，
+   * 轮询 effect 以它为依赖重建定时器 —— 改完下拉框，下一次心跳就是新间隔，
+   * 不必重开卡片。
+   *
+   * 三级回退与 `sidebarPanelSwitchedOn` 同规：宿主文档里的投影是权威（它来自
+   * 服务端那份配置），镜像次之，都没有就是默认 5。
+   */
+  const pollMinutes = pollMinutesLive()
+  function pollMinutesLive(): QoderPollMinutes {
+    // 顺序是**镜像优先**：`writePollMinutes` 写完会立刻把宿主存下的真值镜像进
+    // scope，所以下拉框改完的这一帧就能读到自己刚写的值；反过来先读宿主文档的话，
+    // 文档要等下一次刷新才带新值，界面会把刚改的选择弹回旧值。
+    // 镜像缺席（老宿主 / 单测）才退到文档投影，再退到默认 5。
+    // 读 `usages[activeRegion]` 而不是下面的 `usage` 别名：那个别名定义在本函数
+    // **之后**，`const` 在 TDZ 里，渲染到这一行时读它会直接 ReferenceError。
+    const fromScope = pollMinutesOf(scope?.getSnapshot().value)
+    if (scope !== undefined) return fromScope
+    const fromHost = (usages[activeRegion] as { pollMinutes?: unknown } | undefined)?.pollMinutes
+    return typeof fromHost === 'number' ? pollMinutesOf({ pollMinutes: fromHost }) : fromScope
+  }
+
   // Re-render when the mirror changes so a concurrent write (composer panel,
   // Add PAT) shows up without a remount.
   useEffect(() => scope?.subscribe(() => setRevision(v => v + 1)), [scope])
@@ -285,7 +312,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     // **每区域一个 AbortController**，不是一个共享的。
     //
     // 此前 `controllers.current?.abort()` 取消的是「上一次发起的那个请求」，而那个
-    // 请求可能属于**另一个区域**：60 秒轮询里 `for (const region of QODER_REGIONS)
+    // 请求可能属于**另一个区域**：轮询里 `for (const region of QODER_REGIONS)
     // void refresh(region)` 背靠背连发两次，cn 的请求刚建好就被 global 那次
     // 取消掉（反之亦然）。结果是**同一时刻只有一个区域的 usage 能落地**，另一个
     // 永远停在 `undefined` —— 切到那个 tab 就是一片空白，连账号池带「添加 PAT」
@@ -369,7 +396,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
   useEffect(() => {
     mounted.current = true
     // **两个区域都要读，不是只读 `cn`。** 此前只 `refresh('cn')`，另一个区域要
-    // 等到 60 秒轮询才第一次有数据 —— 于是「切到国际版」看到的是一片空白
+    // 等到下一次轮询才第一次有数据 —— 于是「切到国际版」看到的是一片空白
     // （连账号池带「添加 PAT」一起没有），要等一分钟才自己长出来
     // （用户实拍：「国际版还是缺少账号池这些功能」）。
     // 两个 tab 的状态圆点也依赖这个：没读过的区域只能画成「未知」。
@@ -382,12 +409,12 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     if (typeof window !== 'undefined') {
       const timer = window.setInterval(() => {
         for (const region of QODER_REGIONS) void refresh(region)
-      }, POLL_INTERVAL_MS)
+      }, pollMinutes * 60_000)
       return () => { mounted.current = false; window.clearInterval(timer); abortAllRegions() }
     }
     return () => { mounted.current = false; abortAllRegions() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [pollMinutes])
 
   // 切 tab 时若那个区域**还没读过**，立刻补读一次。否则首次打开设置页、国际版
   // 又恰好排在轮询窗口之后，用户要盯着空白等一分钟才看到内容。
@@ -903,7 +930,7 @@ export function QoderCard(props: QoderCardProps): ReactElement {
         </span>
         <span className={`dsm-plugin-card-chevron${open ? ' dsm-plugin-card-chevron-open' : ''}`} aria-hidden="true" />
       </button>
-      {/* 收起时不渲染正文（而不是 `hidden`）：正文里的 60 秒轮询与首屏读由组件
+      {/* 收起时不渲染正文（而不是 `hidden`）：正文里的自动刷新轮询与首屏读由组件
           自己的 effect 负责，卸载即停，与改动前逐字一致。 */}
       {open ? cardBody : null}
     </li>
@@ -954,6 +981,27 @@ export function QoderCard(props: QoderCardProps): ReactElement {
     setSiblingBusy(true)
     void writeRegionCreditPosition(scope, activeRegion, position, slotWith(scope, activeRegion, { creditPosition: position })).finally(() => {
       if (mounted.current) setSiblingBusy(false)
+    })
+  }
+
+  /**
+   * 改全局的自动刷新间隔。顶层标量，与 `changeCreditPosition` 的区域写入不同形：
+   * 它没有区域轴，走 {@link writePollMinutes}（宿主端点优先、镜像次之）。
+   *
+   * 失败就地说话：这一行在能力栏里随时可点，而模型栏的保存行此刻可能根本没显示。
+   */
+  function changePollMinutes(minutes: QoderPollMinutes): void {
+    if (scope === undefined) return
+    setPollMinutesBusy(true)
+    setPollMinutesError(undefined)
+    void writePollMinutes(scope, minutes).catch((error: unknown) => {
+      if (mounted.current) {
+        setPollMinutesError(t('row.pollMinutesFailed', {
+          message: error instanceof Error ? error.message : String(error),
+        }))
+      }
+    }).finally(() => {
+      if (mounted.current) setPollMinutesBusy(false)
     })
   }
 
@@ -1463,6 +1511,39 @@ export function QoderCard(props: QoderCardProps): ReactElement {
               <span className="dsm-qoder-pref-hint">{t('row.creditPositionHint')}</span>
             </span>
           </label>
+          {/* 自动刷新间隔：全局一档，两个区域、两个表面（卡片 + 输入框读数）共用。
+              放在能力栏而不是诊断栏：它是「这个插件多久替你问一次上游」的**决定**，
+              不是「它实际读到了什么」的事实。默认 5 分钟；想要更及时的读数选 1 分钟，
+              想少打上游选 30 / 60。
+              不受 `regionOn` 约束（与侧边栏开关同理）：节奏是全局的，某个区域签出
+              时它仍然管着另一个区域的读。 */}
+          <label className="dsm-qoder-pref dsm-qoder-poll-minutes-pref" title={t('row.pollMinutesHint')}>
+            <span className="dsm-qoder-pref-copy">
+              <span className="dsm-qoder-pref-lead">
+                <span className="dsm-qoder-pref-label">{t('row.pollMinutesLabel')}</span>
+                <select
+                  className="dsm-qoder-poll-minutes"
+                  value={String(pollMinutes)}
+                  disabled={!canWrite(scope) || siblingBusy || poolBusy || pollMinutesBusy}
+                  aria-label={t('row.pollMinutesAria')}
+                  onChange={(event) => {
+                    const minutes = Number(event.target.value) as QoderPollMinutes
+                    if (QODER_POLL_MINUTES_OPTIONS.includes(minutes)) changePollMinutes(minutes)
+                  }}
+                >
+                  {QODER_POLL_MINUTES_OPTIONS.map(minutes => (
+                    <option key={minutes} value={String(minutes)}>
+                      {t('row.pollMinutesOption', { minutes: String(minutes) })}
+                    </option>
+                  ))}
+                </select>
+              </span>
+              <span className="dsm-qoder-pref-hint">{t('row.pollMinutesHint')}</span>
+            </span>
+          </label>
+          {pollMinutesError === undefined
+            ? null
+            : <p className="dsm-qoder-hint dsm-qoder-poll-minutes-error" role="alert">{pollMinutesError}</p>}
           {/* 可选侧边栏面板（对齐 workbuddy PR #188）。
               为什么单独一行、且**不受区域开关约束**：这一行占的是整个插件共用的
               `sidebar.panellist` 座位，与「国内版 / 国际版」无关——某个区域签出

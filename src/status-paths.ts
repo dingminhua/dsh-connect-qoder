@@ -1219,6 +1219,8 @@ export type QoderWebUsage =
     showCampaigns?: boolean
     /** WHERE this region's readout sits; absent means `composer`. */
     creditPosition?: QoderCreditPosition
+    /** See the signed-in variant: the global upstream-refresh interval, in minutes. */
+    pollMinutes?: QoderPollMinutes
     /**
      * Whether the OPTIONAL DSH sidebar panel is switched on.
      *
@@ -1262,6 +1264,15 @@ export type QoderWebUsage =
     showCampaigns?: boolean
     /** See the signed-out variant: WHERE this region's readout sits. */
     creditPosition?: QoderCreditPosition
+    /**
+     * The global upstream-refresh interval, in minutes (one of five choices).
+     *
+     * GLOBAL like `sidebarPanelEnabled`: one rhythm for every region's reads,
+     * which share one coalescing queue on the Host side. Absent reads as the
+     * default 5 —— the composer readout shipped exactly this value before the
+     * setting existed, so nobody's screen changes character on upgrade.
+     */
+    pollMinutes?: QoderPollMinutes
     /**
      * Whether the OPTIONAL DSH sidebar panel is switched on.
      *
@@ -1499,6 +1510,42 @@ export function nextRegionEnabled(
 export type QoderCreditPosition = 'composer' | 'stats'
 
 /**
+ * 打上游的自动刷新间隔（分钟）。**全局**，不分区域：它管的是「多久问一次上游」，
+ * 与「问哪个上游」是两个问题；两个区域共用同一条节奏，也共用同一条合流去重
+ * （`src/index.ts` 的 usage 读合流），分开配只会让两个区域的读在时间上错开、
+ * 把合流变成两次。
+ *
+ * 五个档而不是自由数字：间隔是**对上游的请求频率**，一个写错的 0 或负数会变成
+ * 每秒一次的打点。枚举把「写错」这件事在配置层挡掉。
+ */
+export type QoderPollMinutes = 1 | 5 | 10 | 30 | 60
+
+/** 界面上给的全部档位，升序。默认值不在这里 —— 见 {@link pollMinutesOf}。 */
+export const QODER_POLL_MINUTES_OPTIONS: readonly QoderPollMinutes[] = [1, 5, 10, 30, 60]
+
+/** 没写过 / 读不懂时的间隔：5 分钟。 */
+export const QODER_POLL_MINUTES_DEFAULT: QoderPollMinutes = 5
+
+/**
+ * 读全局的刷新间隔。
+ *
+ * 与 `sidebarPanelEnabledOf` 同规：先 `unwrapVolatileDeep`（cosmokit 的活引用
+ * 不解包时 `===` 恒假），再**白名单**校验 —— 配置是用户可编辑的 JSON，任何不在
+ * 五档里的值（手改的 `0`、`"5"`、`2.5`）都退回默认，而不是把 `setInterval` 交给
+ * 一个没校验过的数。
+ */
+export function pollMinutesOf(value: unknown): QoderPollMinutes {
+  const unwrapped = unwrapVolatileDeep(value)
+  const field = typeof unwrapped === 'object' && unwrapped !== null && !Array.isArray(unwrapped)
+    ? (unwrapped as Record<string, unknown>)['pollMinutes']
+    : undefined
+  const minutes = unwrapVolatileDeep(field)
+  return QODER_POLL_MINUTES_OPTIONS.includes(minutes as QoderPollMinutes)
+    ? minutes as QoderPollMinutes
+    : QODER_POLL_MINUTES_DEFAULT
+}
+
+/**
  * Which seat one region's readout uses, defaulting to the composer tool row.
  *
  * 默认 `composer` 是刻意的：它是该设置存在之前**唯一**的席位，所以升级不会
@@ -1557,6 +1604,9 @@ export function regionCampaignsShownOf(value: unknown, region: QoderWebRegion): 
  * 没有答案的状态。
  */
 export const QODER_SIDEBAR_PANEL_FIELD = 'sidebarPanel' as const
+
+/** The top-level settings field carrying the global upstream-refresh interval. */
+export const QODER_POLL_MINUTES_FIELD = 'pollMinutes' as const
 
 /**
  * 侧边栏那一行与它打开的整页共用的 id。

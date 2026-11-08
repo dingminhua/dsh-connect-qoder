@@ -22,11 +22,13 @@ import {
   nextRegionModels,
   nextRegionPool,
   QODER_SAVE_PATH,
+  QODER_POLL_MINUTES_FIELD,
   QODER_SIDEBAR_PANEL_FIELD,
+  pollMinutesOf,
   sidebarPanelEnabledOf,
   unwrapVolatileDeep,
 } from '../status-paths.ts'
-import type { QoderCreditPosition, QoderWebRegion } from '../status-paths.ts'
+import type { QoderCreditPosition, QoderPollMinutes, QoderWebRegion } from '../status-paths.ts'
 
 /**
  * The slice of the bound settings scope this module writes through.
@@ -130,6 +132,42 @@ async function saveTopLevelViaHostEndpoint(field: string, value: unknown): Promi
   // **真值**，而不是拿自己那份可能已经过期的镜像再推导一遍。
   const answer = await response.json().catch(() => undefined) as { value?: Record<string, unknown> } | undefined
   return answer?.value
+}
+
+/**
+ * 写侧：全局的自动刷新间隔（分钟）。
+ *
+ * 与 {@link writeSidebarPanelEnabled} 逐字同形的顶层标量写入：宿主保存端点优先
+ * （权威合并、自己报告拒绝），settings 作用域次之。落地校验读的是**解包后**的值
+ * 与目标相等 —— 这个字段是枚举，写进去一个不在五档里的值等于没写。
+ *
+ * @throws {QoderSettingsWriteError} 两个写者都没能持久化时。
+ */
+export async function writePollMinutes(
+  scope: QoderAccountScope,
+  minutes: QoderPollMinutes,
+): Promise<void> {
+  const field = QODER_POLL_MINUTES_FIELD
+  let hostError: unknown
+  try {
+    const authoritative = await saveTopLevelViaHostEndpoint(field, minutes)
+    if (authoritative !== undefined) {
+      try { await scope.set(field, authoritative[field]) } catch { /* 可选 */ }
+    }
+    return
+  } catch (error) {
+    hostError = error
+  }
+  let delivered = false
+  try {
+    delivered = (await scope.set(field, minutes)) !== false
+  } catch {
+    delivered = false
+  }
+  if (delivered && pollMinutesOf(scope.getSnapshot().value) === minutes) return
+  throw hostError instanceof Error
+    ? hostError
+    : new QoderSettingsWriteError(field, 'neither the Host save endpoint nor the settings scope persisted the value')
 }
 
 /**

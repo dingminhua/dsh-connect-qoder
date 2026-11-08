@@ -46,6 +46,7 @@ import {
   transferActionOf,
   type QoderWebRegion,
   type QoderCreditPosition,
+  type QoderPollMinutes,
   type QoderWebQuotaExhaustion,
   type QoderWebUsage,
   type QoderWebAccount,
@@ -256,6 +257,8 @@ export interface QoderWebRouteDeps {
    * consent.
    */
   sidebarPanelEnabled?(): boolean
+  /** Global upstream-refresh interval in minutes; absent means the default 5. */
+  pollMinutes?(): QoderPollMinutes
   /**
    * The last upstream-asserted quota exhaustion on this region's chat path,
    * or undefined when upstream never said so (see `QoderWebQuotaExhaustion`).
@@ -952,6 +955,7 @@ export async function buildWebUsage(
       // GLOBAL（不带区域参数）：侧边栏只有一行、一个整页。`=== true` 见
       // `QoderWebRouteDeps.sidebarPanelEnabled` —— 缺席不是同意。
       ...deps.sidebarPanelEnabled?.() === true ? { sidebarPanelEnabled: true } : {},
+      ...deps.pollMinutes?.() !== undefined ? { pollMinutes: deps.pollMinutes() } : {},
       message: selectionLost
         ? '所选账号已不存在，请重新选择或填写 PAT'
         : '请填写 Qoder PAT（或设置环境变量）',
@@ -1031,6 +1035,7 @@ export async function buildWebUsage(
     creditPosition: deps.creditPosition?.(region) ?? 'composer',
     ...lastQuotaExhaustion === undefined ? {} : { lastQuotaExhaustion },
     ...deps.sidebarPanelEnabled?.() === true ? { sidebarPanelEnabled: true } : {},
+      ...deps.pollMinutes?.() !== undefined ? { pollMinutes: deps.pollMinutes() } : {},
     source: serving.source,
     selectionExplicit: selectedId !== undefined && selectedId !== '',
     accounts: accounts.map(webAccountOf(deps, region)),

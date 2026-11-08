@@ -732,7 +732,9 @@ describe('cn / global 两个 tab 的渲染对等', () => {
     // 挂载那一次现在两个区域都能落地（挂载读已经修好），**共享 AbortController
     // 的缺陷要到轮询才显形**：`for (const region of QODER_REGIONS) void
     // refresh(region)` 背靠背连发两次，只有共享一个 controller 时，先发的那次
-    // 才会被后发的那次取消掉。用假定时器直接推进 60 秒。
+    // 才会被后发的那次取消掉。用假定时器直接推进一个轮询周期。
+    //
+    // 没给 settingsScope ⇒ 读不到配置 ⇒ 默认 5 分钟（1.21.0 起；此前是写死的 60s）。
     const seq: Array<{ region: string, signal: AbortSignal | undefined }> = []
     vi.useFakeTimers({ shouldAdvanceTime: true })
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -751,8 +753,8 @@ describe('cn / global 两个 tab 的渲染对等', () => {
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)) })
       const beforePoll = seq.length
       expect(beforePoll).toBeGreaterThan(0)
-      // 推进到下一次 60 秒轮询：两个区域各发一次。
-      await act(async () => { vi.advanceTimersByTime(60_000) })
+      // 推进到下一次轮询（默认 5 分钟）：两个区域各发一次。
+      await act(async () => { vi.advanceTimersByTime(300_000) })
       await act(async () => { await new Promise(resolve => setTimeout(resolve, 400)) })
       const poll = seq.slice(beforePoll)
       // 轮询确实同时刷新了两个区域。

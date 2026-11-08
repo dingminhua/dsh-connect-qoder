@@ -5,7 +5,7 @@
  * 参考：dingminhua/dsh-connect-workbuddy（MIT，Copyright (c) 2026 LaoDing）
  *   — `ComposerCredits.tsx`：读数形态（`<区域> · <余额>`）、点击弹出锚定面板、
  *     面板内是**账号表格**（点行即切换账号）、刷新按钮放在面板里而不是读数上、
- *     每账号读数**只在面板打开时抓**、5 分钟定时器、失败保留上次数值。
+ *     每账号读数**只在面板打开时抓**、可配的自动刷新定时器（`pollMinutes`，默认 5 分钟）、失败保留上次数值。
  * 改动：按 Qoder 适配——provider 路由是 `qoder` / `qoder-global`，读数标注为
  *   「QD CN」/「QD AI」；`QODER_ACCOUNT_CREDITS_PATH` 直接返回 `QoderWebAccountCredit[]`
  *   数组（而非 `{accounts}` 包裹）；账号选择写在 `regions.<region>.accountId`，
@@ -33,6 +33,7 @@ import { exclusionText } from './exclusion-text.ts'
 import { accountStateTone, accountStateColor } from './account-state.ts'
 import { QODER_COMPOSER_CSS } from './styles.ts'
 import { installPluginStyle } from './style-injector.ts'
+import { pollMinutesOf } from '../status-paths.ts'
 import type { QoderWebAccountCredit, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
 import type { QoderSettingsKey, Translate } from './locales.ts'
 
@@ -52,7 +53,11 @@ import type { QoderSettingsKey, Translate } from './locales.ts'
  */
 installPluginStyle('dsh-connect-qoder/composer-credits.css', QODER_COMPOSER_CSS)
 
-/** Automatic refresh period. Five minutes, matching a credit balance's actual rate of change. */
+/**
+ * Automatic refresh period when the settings mirror cannot be read: five
+ * minutes, matching a credit balance's actual rate of change —— and the value
+ * this readout shipped before the interval became a setting.
+ */
 export const COMPOSER_CREDITS_REFRESH_INTERVAL_MS = 300_000
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -208,8 +213,18 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     }
   }, [activeRegion])
 
+  /**
+   * 本会话的刷新节奏（毫秒），活读设置镜像。
+   *
+   * 与卡片同一条规则、同一个字段：一个全局节奏管住所有打上游的自动读。镜像读不到
+   * （老宿主、单测）时退回 {@link COMPOSER_CREDITS_REFRESH_INTERVAL_MS} —— 那正是
+   * 这个读数在这个设置存在之前的间隔，所以「读不到」与「没改过」在屏幕上同形。
+   */
+  const pollIntervalMs = pollMinutesOf(settingsScope?.getSnapshot().value) * 60_000
+
   // Fetch usage on mount and when the region changes; a timer starts only after
-  // the first fetch settles.
+  // the first fetch settles. `pollIntervalMs` is a dependency: changing the
+  // setting rebuilds the timer instead of waiting for a remount.
   useEffect(() => {
     if (owned === undefined) return undefined
     let cancelled = false
@@ -217,14 +232,14 @@ export function ComposerCredits(props: ComposerCreditsProps) {
     const controller = new AbortController()
     void fetchUsage(controller.signal).finally(() => {
       if (cancelled) return
-      timer = window.setInterval(() => { void fetchUsage(controller.signal) }, COMPOSER_CREDITS_REFRESH_INTERVAL_MS)
+      timer = window.setInterval(() => { void fetchUsage(controller.signal) }, pollIntervalMs)
     })
     return () => {
       cancelled = true
       if (timer !== undefined) window.clearInterval(timer)
       controller.abort()
     }
-  }, [owned, fetchUsage])
+  }, [owned, fetchUsage, pollIntervalMs])
 
   // Per-account figures are read on OPEN, not on the 5-minute cycle.
   useEffect(() => {
