@@ -53,8 +53,17 @@ import { QODER_USAGE_PATH, withQoderRegionFastDetail } from '../status-paths.ts'
 import type { QoderWebModel, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
 import type { Translate } from './locales.ts'
 
-/** The slot key（宿主 model-selection 声明的 single 槽，ownerProps 见 `QoderModelLabelProps`）. */
+/** The slot key（宿主 model-selection 声明的槽，ownerProps 见 `QoderModelLabelProps`）. */
 export const QODER_MODEL_LABEL_SLOT = 'conversation.input.model.label'
+
+/**
+ * 本插件拥有的每一个 provider id。
+ *
+ * 导出是因为 keyed 宿主上「一条注册 = 一个 provider」：注册侧需要的清单必须与
+ * 组件判定「这行是不是我的」用的是同一份，否则两处字面量迟早漂移。由
+ * `QODER_COMPOSER_PROVIDERS` 推导而不是另写一遍——那正是本仓库已经维护的那张表。
+ */
+export const QODER_MODEL_LABEL_PROVIDERS: readonly string[] = Object.keys(QODER_COMPOSER_PROVIDERS)
 
 /**
  * 本插件在这个 single 槽上的注册优先级。
@@ -73,6 +82,12 @@ export const QODER_MODEL_LABEL_SLOT = 'conversation.input.model.label'
  * 取 **-101** 而不是一个大得多的负数：只争一格，把身后的位置留给将来任何正常
  * 的插件。这条优先级只影响「这一行由谁画」，不会动到别人的 provider 行 ——
  * 本组件会把非 qoder 的行委托回去（见 `createQoderModelLabel`）。
+ *
+ * keyed 宿主上这条数值的含义变了、数值不必变。宿主把槽声明成 `keyed` 后，每条
+ * 注册按 provider id 各占一格，priority 不再决定「谁可见」，只剩「同一格内谁先」
+ * （两个插件抢同一个 provider id：同值抛错、低者渲染）。于是与 workbuddy 的
+ * `-105`、trae 的 `-102` 之间不再有压制关系——**停战不是靠再往下压，是靠换
+ * 槽的基数**。`-101` 因此保留为「本插件自己那两格的排序」，既不下探也不改回。
  */
 export const QODER_MODEL_LABEL_PRIORITY = -101
 

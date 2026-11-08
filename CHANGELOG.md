@@ -2,6 +2,49 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.22.0 (2026-11-08)
+
+> 版本号是 **minor**：注册的**条数**随宿主的声明变化（`single` 一条、`keyed` 每个
+> provider 一条）。不改配置键、不动路由、不改用户可见的文案。
+
+- **模型标签槽改成「按宿主的声明注册」，为 `keyed` 做好准备。**
+
+  `conversation.input.model.label` 的 kind 写在宿主包里（`ui-model-selection`）。
+  在它改口之前是 `single`：只有一格，三家连接器只能按 `-101` / `-102` / `-105`
+  互相压价（qoder 实测 `-101`，输给 workbuddy 的 `-105`）。目标形态是 `keyed`：
+  每个 `options.key` 自成一格，宿主按 `provider.id` 派发 `{ entryKey }`，没人贡献的
+  provider 落回宿主自己的 fallback。
+
+  新增 `src/client/model-label-seat.ts`：运行时读 `ctx.slots.spec(key)?.kind`，
+  `keyed` 就为 `qoder` / `qoder-global` 各注册一格，其余情况（含读不到）保持历史上
+  的单条。**一个构建同时服务两条宿主线**，宿主改口那天不需要重新发版。
+
+- **为什么不能只改宿主。** 两个方向都会**静默**失败，而这里的注册包在
+  try/catch 里，于是都只剩一行 `console.error`：
+
+  | 情况 | 结果 |
+  | --- | --- |
+  | keyed 的两条打到 `single` 宿主 | 第二条抛 `already has a registration`，第一条已落地 → 半注册 |
+  | 无 key 的一条打到 `keyed` 宿主 | 抛 `keyed slot … requires options.key` → 标签消失 |
+
+  `keyed` **强制要求 `key`**，这是上游提案里没写的第一道陷阱：**此前已发布**的本族每个
+  版本都注册一条无 key 的条目，只改宿主声明会让它们一起失效（本版之后的新构建会跟着
+  声明走，所以受影响的是「已经装在用户机器上」的那些版本）。第二道陷阱见下一条。
+
+  **改声明不够：宿主还必须传 `entryKey`。** 复核实机产物
+  （`ui-model-selection@0.2.2-rc.1`）发现，渲染该槽只有一个调用点，第三个参数只有
+  `fallback`、**没有 `entryKey`**；而 keyed 分支是
+  `find(e => e.options.key === opts?.entryKey)`——`undefined` 匹配不到任何条目，于是
+  **每一行**都落到 fallback。本插件的注册会成功、回调也跑、无异常无日志，只是组件再也
+  不被调用。上游的最小改动是**两处**：声明 + 调用点补 `{ entryKey: provider.id }`。
+
+- `QODER_MODEL_LABEL_PRIORITY = -101` 不改。keyed 下它不再决定可见性，只剩
+  「同一格内谁先」；三家之间不再有压制关系——停战靠的是换槽的基数，不是再压一次价。
+
+- 委托分支（issue #23）原样保留。keyed 下运行时走不到（每条注册只在自己 provider
+  的行上被调用），但一个构建要同时服务两种宿主，而 `single` 宿主上它决定了别家的行
+  画什么。
+
 ## 1.21.0 (2026-11-08)
 
 > 版本号是 **minor**：多了一条对用户可见的能力（选择器里的胶囊现在**始终**出现，

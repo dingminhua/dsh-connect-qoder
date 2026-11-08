@@ -25,7 +25,8 @@ import type { ReactElement } from 'react'
 import { QoderCard } from './QoderCard.tsx'
 import type { QoderCardInjected } from './QoderCard.tsx'
 import { ComposerCreditsGate } from './ComposerCreditsGate.tsx'
-import { createQoderModelLabel, QODER_MODEL_LABEL_PRIORITY, QODER_MODEL_LABEL_SLOT } from './QoderModelLabel.tsx'
+import { createQoderModelLabel, QODER_MODEL_LABEL_PRIORITY, QODER_MODEL_LABEL_PROVIDERS, QODER_MODEL_LABEL_SLOT } from './QoderModelLabel.tsx'
+import { declaredSlotKind, modelLabelSeats, registerModelLabelSeats } from './model-label-seat.ts'
 import type { QoderModelLabelSlots } from './QoderModelLabel.tsx'
 import { qoderLocales } from './locales.ts'
 import type { QoderSettingsKey } from './locales.ts'
@@ -276,6 +277,11 @@ export function apply(ctx: QoderClientContext): void {
      * 旧注册永远不被重新求值（issue #55：空 Plugins 页且无报错）。
      */
     const registerModelLabel = (): (() => void) | undefined => {
+      /** 失败路径：eager 与 deferred 两种调用共用一处（所以声明在 try 之外）。 */
+      const refuse = (error: unknown): undefined => {
+        console.error('[dsh-connect-qoder] model label slot failed to register (host provider unaffected):', error)
+        return undefined
+      }
       try {
         const label = createQoderModelLabel({
           entries: key => (ctx.slots as unknown as QoderModelLabelSlots).entries(key),
@@ -284,28 +290,63 @@ export function apply(ctx: QoderClientContext): void {
           // 别家的组件，就得用同一个入口替它绑——绝不能转发我们自己的 t。
           bindLocale: ns => ctx.locale.bind(ns),
         })
-        return ctx.slots.inject(QODER_MODEL_LABEL_SLOT as never, () => (ctx.slots as unknown as {
-          register(options: { name: string; priority: number; locale: string }, component: unknown): () => void
-        }).register({
-          name: QODER_MODEL_LABEL_SLOT,
-          // **必须小于 workbuddy 的 -100。**
+        return ctx.slots.inject(QODER_MODEL_LABEL_SLOT as never, () => {
+          const registry = ctx.slots as unknown as {
+            register(
+              options: { name: string; priority: number; locale: string; key?: string },
+              component: unknown,
+            ): () => void
+          }
+          // 注册几条、要不要 key，取决于**宿主把槽声明成什么**（见
+          // `./model-label-seat.ts`）。一个构建同时服务 single 与 keyed 两条线：
+          // 在 single 宿主上仍是历史那一条（赢家替所有行画，委托分支照旧），
+          // 在 keyed 宿主上每个 provider 一格，本插件只画自己那两行。
+          const seats = modelLabelSeats({
+            name: QODER_MODEL_LABEL_SLOT,
+            kind: declaredSlotKind(ctx.slots, QODER_MODEL_LABEL_SLOT),
+            providerIds: QODER_MODEL_LABEL_PROVIDERS,
+            // **必须小于 workbuddy 的 -100。**
+            //
+            // single 槽只渲染一条注册，按 priority **升序取首条**（小者先）。这里
+            // 原先是 -1，注释说「workbuddy 占着默认优先级 0」——那条判断是错的：
+            // workbuddy 用的是 -100，比 -1 小，所以它抢到了座位。
+            //
+            // 而 workbuddy 是**终点型**组件（它的文件头写明不读槽位账本、不渲染
+            // 别家的组件，所以永远不会把这一行交还给我们）。结果就是：卡片里
+            // 有「错峰 4 折」胶囊，模型选择器里却没有 —— 用户实拍的正是这个。
+            //
+            // 取 -101 而不是一个更大的负数（比如 -1000）：只争一格，不把将来
+            // 任何正常的插件挤到身后。
+            //
+            // keyed 宿主上这条优先级不再是「军备竞赛的名次」：每个 provider 一格，
+            // 三家不再互相压制；它只剩「同一格内谁先」这一个含义。数值因此不必
+            // 继续下探，也不必改回。
+            priority: QODER_MODEL_LABEL_PRIORITY,
+          })
+          // `locale` 是**每条**注册都要带的：它把宿主合成的 `t` 座位绑到本插件的
+          // 命名空间上，缺了它组件里的 `t` 会是 undefined（委托分支还会替对方绑
+          // 对方的命名空间，见 `createQoderModelLabel`）。
+          // 原子注册：2 格里任何一格被拒，已落地的那格必须**回滚**。写成
+          // `.map()` 的话，成功的那些 disposer 会随着抛出的数组一起消失，账本上
+          // 留下一条谁也释放不掉的条目——比直接失败更糟（见
+          // `registerModelLabelSeats`）。一格也好、两格也好，对外只交一个 disposer。
           //
-          // single 槽只渲染一条注册，按 priority **升序取首条**（小者先）。这里
-          // 原先是 -1，注释说「workbuddy 占着默认优先级 0」——那条判断是错的：
-          // workbuddy 用的是 -100，比 -1 小，所以它抢到了座位。
-          //
-          // 而 workbuddy 是**终点型**组件（它的文件头写明不读槽位账本、不渲染
-          // 别家的组件，所以永远不会把这一行交还给我们）。结果就是：卡片里
-          // 有「错峰 4 折」胶囊，模型选择器里却没有 —— 用户实拍的正是这个。
-          //
-          // 取 -101 而不是一个更大的负数（比如 -1000）：只争一格，不把将来
-          // 任何正常的插件挤到身后。
-          priority: QODER_MODEL_LABEL_PRIORITY,
-          locale: namespace,
-        }, label))
+          // catch 必须写在回调**内部**：`inject()` 在槽尚未声明时只是登记回调，
+          // 稍后才执行，而 später 抛出的错误会被渲染器的 `changed()` 处理器从
+          // `queueMicrotask` 里重新抛出，调用处的 try/catch 根本够不着——用户看到
+          // 的是首帧之后的渲染器错误横幅。放在这里才会变成一行 console.error
+          // （trae 为这条付过 issue #74 的代价；现在有 2 格，被拒的机会翻倍）。
+          try {
+            return registerModelLabelSeats(seats, seat => registry.register({ ...seat, locale: namespace }, label))
+          } catch (error: unknown) {
+            refuse(error)
+            // 回调的契约是返回 disposer，不能是 undefined。
+            return () => {}
+          }
+        })
       } catch (error: unknown) {
-        console.error('[dsh-connect-qoder] model label slot failed to register (host provider unaffected):', error)
-        return undefined
+        // 只有 `inject()` 自己抛（宿主根本没声明这个槽）才会走到这里。
+        return refuse(error)
       }
     }
 
