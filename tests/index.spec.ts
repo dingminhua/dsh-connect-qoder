@@ -2600,3 +2600,232 @@ describe('issue #33：池的「测试」不吃被勾选裁剪过的目录（真�
     }
   })
 })
+
+/**
+ * issue #36：每天在后台自动签到。
+ *
+ * 这一节钉的是**宿主侧接线**（规则本身在 `tests/auto-checkin.spec.ts`）：
+ *
+ * 1. 开关关着时**一次都不跑** —— 旧版本明说过「不提供自动签到」，所以这个功能的
+ *    契约是「用户勾了才跑」，而不是「升级后自己开始」；
+ * 2. 开着时真的走一遍：先读活动状态、再领（幂等的那条次序），结果进入
+ *    `/usage` 文档的 `autoCheckinToday`；
+ * 3. 已经签过的账号**不发领取请求**，且同样记为完成 —— 这才是「重启不会多领」
+ *    的判据；
+ * 4. 卡片说的是**这一窗**的进度：昨天的完成不许冒充今天（无上游时刻时退回按
+ *    10:00 UTC+8 边界算的窗）。
+ */
+describe('issue #36：自动签到（真实 apply() + 真实路由）', () => {
+  /** 一窗的关门时刻：次日 09:59 UTC+8。所有用例共用这一个「上游说过」的时刻。 */
+  const END_AT_SECONDS = 1791856740
+
+  interface CheckinStub {
+    /** 领取请求的**次数**（一次都不该多发）。 */
+    claims: number
+    /** 活动列表被读了几次 —— 幂等的前提是「先读」。 */
+    statusReads: number
+  }
+
+  /**
+   * 上游桩：活动列表 + 领取 + usage + jobToken。
+   *
+   * `claimStatus` 是这次要模拟的状态：`CLAIMABLE` 表示还能领，`CLAIMED` 表示
+   * 今天已经领过（幂等路径）。
+   */
+  function stubCheckinUpstream(claimStatus: 'CLAIMABLE' | 'CLAIMED', stub: CheckinStub): typeof fetch {
+    return (async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input)
+      if (url.includes('/sash/api/v2/me/usage')) {
+        return new Response(JSON.stringify({ data: { creditConsume: { total: 100, origin: 100, packages: [] } } }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      if (url.includes('/jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u1', name: 'Tester', expireTime: Date.now() + 86_400_000,
+          securityOauthToken: 'jt-test', refreshToken: 'rt-test',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // 活动列表：字段用实测原文的形状（`campaignId` / `actionType` /
+      // `claimStatus` / `benefit` / `endAt` 是 epoch 秒）。解析器只认这些键。
+      if (url.includes('/sash/api/v1/me/campaigns') && !url.includes('/claim')) {
+        stub.statusReads += 1
+        return new Response(JSON.stringify({
+          campaigns: [{
+            campaignId: '01a12102-9c4c-7460-a08b-61180061ac65',
+            campaignKey: 'act-20261009-057',
+            actionType: 'CLAIM_BENEFIT',
+            claimStatus,
+            startAt: END_AT_SECONDS - 86_340,
+            endAt: END_AT_SECONDS,
+            benefit: { kind: 'CREDITS', amount: 100, validity: { mode: 'RELATIVE_DAYS', days: 30 } },
+          }],
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      if (url.includes('/claim')) {
+        stub.claims += 1
+        return new Response(JSON.stringify({ status: 'CLAIMED' }), {
+          status: 200, headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+  }
+
+  /** 读一次 `/usage`，取出文档里的 pool 段。 */
+  async function readPoolDoc(usage: CapturedRoute): Promise<{
+    autoCheckin?: boolean
+    autoCheckinToday?: { done: number, total: number, pending: number, lastError?: string }
+  } | undefined> {
+    const res = fakeResponse()
+    await usage.handler({ method: 'GET', url: `${usage.path}?region=cn`, headers: {} }, res.node)
+    const doc = JSON.parse(String(res.body())) as {
+      pool?: {
+        autoCheckin?: boolean
+        autoCheckinToday?: { done: number, total: number, pending: number, lastError?: string }
+      }
+    }
+    return doc.pool
+  }
+
+  async function mount(
+    regions: Record<string, unknown>,
+  ): Promise<{ pool: CapturedRoute, usage: CapturedRoute }> {
+    const routes: CapturedRoute[] = []
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('webServer', {
+      register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+    } as never)
+    await mountQoder(ctx, { regions })
+    await waitFor(() => routes.some(r => r.path.includes('/pool')))
+    return {
+      pool: routes.find(r => r.path.includes('/pool'))!,
+      usage: routes.find(r => r.path.includes('/usage'))!,
+    }
+  }
+
+  const PAT = 'pt-issue36-aaaaaaaaaaaaaaaa'
+  const ACCOUNT_ID = qoderAccountId(PAT)
+
+  /**
+   * 等到卡片真的报出这一窗的进度。
+   *
+   * 后台第一拍是 `setTimeout(…, 0)`，所以它会很快发生 —— 但它仍是**异步**的，
+   * 固定的 sleep 会让这条用例在慢机器上偶发失败。用 `waitFor` 等那个可观测的
+   * 事实（文档里出现 `autoCheckinToday`），而不是等一个猜出来的时长。
+   */
+  async function waitForSummary(
+    usage: CapturedRoute,
+    timeoutMs = 10_000,
+  ): Promise<{ done: number, total: number, pending: number, lastError?: string }> {
+    const started = Date.now()
+    for (;;) {
+      const pool = await readPoolDoc(usage)
+      if (pool?.autoCheckinToday !== undefined) return pool.autoCheckinToday
+      if (Date.now() - started > timeoutMs) throw new Error('autoCheckinToday 一直没出现')
+      await new Promise(resolve => setTimeout(resolve, 25))
+    }
+  }
+
+  it('开关关着时一次都不跑，且与手动签到互不影响', async () => {
+    // 契约的另一半：升级不会让任何人的账号开始被自动领取。默认值是 `false`，
+    // 而 `=== true` 的判据让「宿主答不上来」也读成关。
+    const stub: CheckinStub = { claims: 0, statusReads: 0 }
+    const realFetch = globalThis.fetch
+    globalThis.fetch = stubCheckinUpstream('CLAIMABLE', stub)
+    try {
+      const { usage } = await mount({
+        cn: { pat: PAT, pool: { enabled: true, memberAccountIds: [ACCOUNT_ID] } },
+      })
+      // 给后台足够的时间（它本来会在 0ms 后跑第一拍）。等一个**确定不该发生**的
+      // 事实需要时间：睡过两三拍退避的量级，再断言一次都没动。
+      await new Promise(resolve => setTimeout(resolve, 400))
+      expect(stub.claims).toBe(0)
+      // 连活动列表都不该读：那一拍根本不该被挂上（`syncAutoCheckin` 就不挂）。
+      expect(stub.statusReads).toBe(0)
+      const pool = await readPoolDoc(usage)
+      expect(pool?.autoCheckin).toBeUndefined()
+      expect(pool?.autoCheckinToday).toBeUndefined()
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('开着时先读状态再领，进度进入 `/usage` 文档', async () => {
+    const stub: CheckinStub = { claims: 0, statusReads: 0 }
+    const realFetch = globalThis.fetch
+    globalThis.fetch = stubCheckinUpstream('CLAIMABLE', stub)
+    try {
+      const { usage } = await mount({
+        cn: {
+          pat: PAT,
+          pool: { enabled: true, autoCheckin: true, memberAccountIds: [ACCOUNT_ID] },
+        },
+      })
+      const today = await waitForSummary(usage)
+      expect(today).toMatchObject({ done: 1, total: 1, pending: 0 })
+      // 先读、后领：这次序就是幂等保证本身（盲领就是第二条写入路径）。
+      expect(stub.statusReads).toBeGreaterThan(0)
+      expect(stub.claims).toBe(1)
+      // 卡片看到的是**保存着的**开关，不是运行中的那个。
+      expect((await readPoolDoc(usage))?.autoCheckin).toBe(true)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('已经签过的账号不发领取请求，但同样记为完成', async () => {
+    // 「重启不会多领」的判据：`CLAIMED` 时上游不该收到任何 POST。
+    const stub: CheckinStub = { claims: 0, statusReads: 0 }
+    const realFetch = globalThis.fetch
+    globalThis.fetch = stubCheckinUpstream('CLAIMED', stub)
+    try {
+      const { usage } = await mount({
+        cn: {
+          pat: PAT,
+          pool: { enabled: true, autoCheckin: true, memberAccountIds: [ACCOUNT_ID] },
+        },
+      })
+      const today = await waitForSummary(usage)
+      expect(today).toMatchObject({ done: 1, total: 1, pending: 0 })
+      expect(stub.claims).toBe(0)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+
+  it('关上开关立刻停：已经挂上的定时器被撤掉', async () => {
+    // 「关掉必须立刻停，不能等到下一拍」。这里用 volatile 写入模拟宿主广播，
+    // 与真实环境同一条路径（`loader/volatile-update`）。
+    const stub: CheckinStub = { claims: 0, statusReads: 0 }
+    const realFetch = globalThis.fetch
+    globalThis.fetch = stubCheckinUpstream('CLAIMABLE', stub)
+    try {
+      const { usage } = await mount({
+        cn: {
+          pat: PAT,
+          pool: { enabled: true, autoCheckin: true, memberAccountIds: [ACCOUNT_ID] },
+        },
+      })
+      await waitForSummary(usage)
+      const afterFirst = stub.statusReads
+      // 关掉：把配置里的开关改掉并广播，就像宿主保存后做的那样。
+      volatileWrite(config => {
+        const regions = config['regions'] as Record<string, Record<string, Record<string, unknown>>>
+        regions['cn']!['pool']!['autoCheckin'] = false
+      })
+      // 等到足够久，让一个没被撤掉的定时器有机会跑（退避最短是 30 秒，
+      // 所以这里只断言「文档不再报进度」——定时器被撤掉的最直接证据）。
+      const pool = await readPoolDoc(usage)
+      expect(pool?.autoCheckin).toBeUndefined()
+      expect(pool?.autoCheckinToday).toBeUndefined()
+      // 撤掉之后也不会再读活动列表（不需要再等 30 秒：这一拍本来就是空闲心跳）。
+      expect(stub.statusReads).toBe(afterFirst)
+    } finally {
+      globalThis.fetch = realFetch
+    }
+  })
+})

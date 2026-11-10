@@ -97,4 +97,18 @@ describe('issue #31 / #32：两份 README 都要解释这两处语义', () => {
       expect(doc, `${name} 缺落盘文件名`).toContain('.qoder-pool.')
     }
   })
+
+  it('自动签到的契约在两份 README 里都写清（issue #36）', () => {
+    // 这一条最要紧的是「默认关」与「幂等」两个事实：前者决定升级不会让任何人的
+    // 账号开始被自动领取，后者决定它不会领两次。任何一边缺一句，那份语言的读者
+    // 就会对这两件事各有一种猜测。
+    for (const [name, doc] of [['zh', zh], ['en', en]] as const) {
+      expect(doc, `${name} 缺 autoCheckin 配置键`).toContain('autoCheckin')
+      expect(doc, `${name} 缺签到进度落盘文件名`).toContain('.qoder-auto-checkin.')
+      // 「先读状态再领」是幂等的全部依据。
+      expect(doc, `${name} 没写幂等的前提`).toMatch(/claimStatus|先读活动状态|reads the campaign status/iu)
+      // 「按窗口记账而不是日历日」是这次移植唯一的硬改动，读者要能从文档里核到。
+      expect(doc, `${name} 没写窗口边界`).toMatch(/10:00/iu)
+    }
+  })
 })

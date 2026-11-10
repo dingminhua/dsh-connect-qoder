@@ -85,6 +85,23 @@ import {
 } from './account-pool.ts'
 import { readPoolDocument, writePoolDocument, writePoolProbes } from './account-pool-store.ts'
 import { testAllAccounts, testOne, POOL_BATCH_GAP_MS, type QoderPoolRunnerDeps } from './account-pool-run.ts'
+import {
+  AUTO_CHECKIN_IDLE_MS,
+  autoCheckinRegions,
+  checkinWindowOf,
+  emptyAutoCheckinState,
+  foldAttempt,
+  idleDelayMs,
+  isDue,
+  latestRefreshAt,
+  nextDelayMs,
+  pendingTargets,
+  stateForWindow,
+  summaryForWindow,
+  type AutoCheckinState,
+  type CheckinWindow,
+} from './auto-checkin.ts'
+import { readAutoCheckinState, writeAutoCheckinState } from './auto-checkin-store.ts'
 import { resolveCredentialRecovery, createAccountUsabilityProbe, type QoderProbeStore } from './credential-recovery.ts'
 import { writeHostHeartbeat, clearHostHeartbeat } from './host-heartbeat.ts'
 import {
@@ -223,6 +240,17 @@ const poolConfig = z.object({
    * 空数组 = 完全由 `rankPool` 的积分策略决定（修复前的行为）。
    */
   orderAccountIds: z.array(z.string()).default([]),
+  /**
+   * 每天在后台自动签到（issue #36）。默认**关闭**。
+   *
+   * 关着的理由没变：领取是一次真实奖励的领取，属于用户的决定。开着时插件只做
+   * 「用户点按钮会做的事」，且先读活动状态、已签到的报 `already` 而不发领取
+   * 请求 —— 所以重启、重试、重复定时都不可能领两次。
+   *
+   * `=== true` 判断（见 `poolPreferencesOf`）：老 profile 里根本没有这个键，而
+   * 「宿主答不上来」绝不能变成「开着」—— 这个开关授权的是一次真实写入。
+   */
+  autoCheckin: z.boolean().default(false),
 })
 
 /**
@@ -349,7 +377,7 @@ const regionConfig = z.object({
    */
   thinkingEfforts: z.dict(z.string()).default({}),
   /** 账号池偏好。 */
-  pool: poolConfig.default({ enabled: false, targetModelId: '', probeInputTokens: 0, memberAccountIds: [] }),
+  pool: poolConfig.default({ enabled: false, targetModelId: '', probeInputTokens: 0, memberAccountIds: [], orderAccountIds: [], autoCheckin: false }),
   /**
    * 重试预算（issue #24）。缺省 = 宿主默认，行为与升级前一致。
    *
@@ -723,6 +751,13 @@ function poolPreferencesOf(config: { regions?: Record<string, unknown> | null },
   probeInputTokens: number
   memberAccountIds: readonly string[]
   orderAccountIds: readonly string[]
+  /**
+   * 用户是否要求插件每天自己签到（issue #36）。
+   *
+   * 形状与 schema 一致：这里恒给布尔，而**判据是 `=== true`** —— 老 profile 里
+   * 根本没有这个键，缺席必须读成「关」，因为这个开关授权的是一次真实领取。
+   */
+  autoCheckin: boolean
 } {
   const state = regionStateOf(config, region)
   const raw = (state.pool ?? {}) as Record<string, unknown>
@@ -732,6 +767,7 @@ function poolPreferencesOf(config: { regions?: Record<string, unknown> | null },
     probeInputTokens: typeof raw.probeInputTokens === 'number' ? raw.probeInputTokens : 0,
     memberAccountIds: Array.isArray(raw.memberAccountIds) ? (raw.memberAccountIds as string[]) : [],
     orderAccountIds: Array.isArray(raw.orderAccountIds) ? (raw.orderAccountIds as string[]) : [],
+    autoCheckin: raw.autoCheckin === true,
   }
 }
 
@@ -1492,15 +1528,49 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
     return writePoolDocument(region, patches)
   }
 
-  async function runCheckinBatch(region: QoderRegion): Promise<QoderWebPoolCheckinRow[]> {
+  /**
+   * 一个区域里「真的能签」的成员：名单 ∩ 能解析出凭据。
+   *
+   * 为什么要单独一个函数：后台签到需要**先知道分母**（这一窗一共几个账号），
+   * 再决定签哪些；而 `runCheckinBatch` 原来是在循环中途才解析凭据的，于是它
+   * 既拿不到分母、也无法只签「还欠着的那些」。两件事共用这一份枚举，判据就
+   * 不可能分叉（`memberAccountIds` 里的幽灵 id —— 用户删了 PAT —— 在这里就被
+   * 丢掉了，正如测试批次里那样）。
+   */
+  async function checkinTargetsOf(region: QoderRegion): Promise<Array<{ accountId: string, accountName: string }>> {
+    const store = stacks[region].store
+    const prefs = poolPreferencesOf(config, region)
+    const targets: Array<{ accountId: string, accountName: string }> = []
+    for (const accountId of prefs.memberAccountIds) {
+      const credit = await store.credentialFor(accountId, sourcesOf(region))
+      if (credit === undefined) continue
+      targets.push({ accountId, accountName: credit.accountName })
+    }
+    return targets
+  }
+
+  /**
+   * 对一个区域的成员逐个签到。
+   *
+   * `only` 是**后台签到**用的收窄目标：它只签「这一窗还欠着的那些」。手动按钮
+   * 不传，仍然走整张名单 —— 用户点「签到勾选的账号」时期望的是「全部都看一眼」，
+   * 包括确认那些已经领过的（结果逐行写明「已领」）。后台则相反：它每一拍都可能
+   * 重跑，把已经完成的账号再打一遍纯属浪费请求。
+   */
+  async function runCheckinBatch(
+    region: QoderRegion,
+    only?: readonly { accountId: string, accountName: string }[],
+  ): Promise<QoderWebPoolCheckinRow[]> {
     const store = stacks[region].store
     const prefs = poolPreferencesOf(config, region)
     const client = stacks[region].upstream
     const rows: QoderWebPoolCheckinRow[] = []
     beginPoolBatch(region, 'checkin')
     try {
+      const scope: readonly { accountId: string, accountName?: string }[] = only ?? prefs.memberAccountIds.map(accountId => ({ accountId }))
       let first = true
-      for (const accountId of prefs.memberAccountIds) {
+      for (const target of scope) {
+        const accountId = target.accountId
         const credit = await store.credentialFor(accountId, sourcesOf(region))
         if (credit === undefined) continue
         if (!first) await new Promise(resolve => setTimeout(resolve, POOL_BATCH_GAP_MS))
@@ -1818,6 +1888,155 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
   applySelection(config)
 
   // -------------------------------------------------------------------------
+  // 自动签到（issue #36）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 每天在后台替用户领一次签到。
+   *
+   * 每个区域一个定时器，**只在用户勾了开关时才挂上**。规则住在
+   * `src/auto-checkin.ts`（纯函数），记忆住在 `src/auto-checkin-store.ts`；这一块
+   * 只持有那两份模块刻意不持有的两样东西：真时钟与真批次调用。
+   *
+   * ## 为什么是「重新挂一次的一次性定时器」而不是 `setInterval`
+   *
+   * 间隔不是常数：失败按逐级放宽的退避走、做完的一窗挂空闲心跳、翻页时全部重置。
+   * `setInterval` 只能表达固定周期，所以每一拍自己算出下一次延迟、在自己的
+   * `finally` 里重新挂上。反过来做 —— 一个 30 分钟的 `setInterval` 加「到点了吗」
+   * 判断 —— 会把 30 秒 / 60 秒的头几次重试睡过去，一次瞬时抖动看起来就像 30 分钟
+   * 的中断。
+   *
+   * ## 为什么定时器永不停死
+   *
+   * 即使这一窗做完了，它也按 {@link AUTO_CHECKIN_IDLE_MS} 重新挂一次。一个在第一天
+   * 成功后停死的定时器**发现不了下一次翻页**，于是这个功能会安静地只工作一天 ——
+   * 正是这套设计要避免的失效形态。空闲的那一拍不花任何请求：`isDue` 在
+   * 「没有待办」时先于任何 I/O 给出答案。
+   *
+   * ## 为什么与手动按钮并存是安全的
+   *
+   * `claimDailyCredits` 先拉活动列表看 `claimStatus`，已是 `CLAIMED` 就报
+   * already 而**不发**领取请求。批次也是串行的，所以最坏情况是每账号多一次
+   * 读请求。
+   */
+  const autoCheckinTimers: Partial<Record<QoderRegion, ReturnType<typeof setTimeout>>> = {}
+  /** 落盘状态的内存镜像，免去每拍都读文件。 */
+  const autoCheckinState: Partial<Record<QoderRegion, AutoCheckinState>> = {}
+  /** 防重入：上一拍还没跑完时，下一拍直接返回。 */
+  const autoCheckinRunning: Partial<Record<QoderRegion, boolean>> = {}
+
+  /** 用户是否要求这个区域自己签到。 */
+  function autoCheckinEnabled(region: QoderRegion): boolean {
+    if (!autoCheckinRegions().includes(region)) return false
+    return poolPreferencesOf(config, region).autoCheckin === true
+  }
+
+  /**
+   * 当前这一窗，以及它的开门时刻。
+   *
+   * 开门时刻来自**上游说过的那一个**（成员快照里的 `refreshAtMs`，其次落过盘的
+   * `windows`）—— 与卡片倒计时同一个来源。都没有时才退回按固定边界算的日键，
+   * 绝不在这里编一个「次日 10:00」。
+   */
+  function checkinWindowNow(region: QoderRegion, nowMs: number): CheckinWindow {
+    const fromSnapshot = Object.values(checkinSnapshots[region] ?? {}).map(entry => entry.refreshAtMs)
+    const fromDisk = Object.values(persistedWindows[region] ?? {})
+    const refreshAtMs = latestRefreshAt(fromSnapshot, nowMs) ?? latestRefreshAt(fromDisk, nowMs)
+    return checkinWindowOf(nowMs, refreshAtMs)
+  }
+
+  /**
+   * 一拍：决定、执行、折算、落盘、重新挂上。
+   *
+   * 刻意**永不抛**：一个后台功能若因为一次磁盘错误把 `apply`（或之后的某一拍）
+   * 带走，比没有这个功能更糟。
+   */
+  async function autoCheckinTick(region: QoderRegion): Promise<void> {
+    if (autoCheckinRunning[region] === true) return
+    autoCheckinRunning[region] = true
+    try {
+      // 每一拍都重读开关，而不是在 `apply` 时读一次：关掉必须在下一拍就停，
+      // 而配置对象是活的。
+      if (!autoCheckinEnabled(region)) return
+      const nowMs = Date.now()
+      const window = checkinWindowNow(region, nowMs)
+      const stored = autoCheckinState[region] ?? await readAutoCheckinState(region)
+      // 换窗即整份重置 —— 这是「翻页了，重新看一眼」的唯一入口。
+      const state = stateForWindow(stored, window)
+      autoCheckinState[region] = state
+      const targets = pendingTargets(await checkinTargetsOf(region), state)
+      if (!isDue(state, targets.length, nowMs)) {
+        // 此刻不欠任何事。重新挂上，**不发**任何请求 —— 就是这一支让空闲的一天
+        // 零成本。
+        scheduleAutoCheckin(region, targets.length === 0 ? idleDelayMs(window, nowMs) : AUTO_CHECKIN_IDLE_MS)
+        return
+      }
+      const rows = await runCheckinBatch(region, targets)
+      // 分母 = 这一拍的面 + 这一窗已经落定的那些：即使中途改过成员资格，这才是
+      // 「N / M」诚实的那个 M。
+      const folded = foldAttempt(state, rows, nowMs, targets.length + state.doneAccountIds.length)
+      autoCheckinState[region] = folded
+      await writeAutoCheckinState(region, folded)
+      // 折完之后重新算一遍窗口：这一拍很可能刚刚拿到上游的 `endAt`，而那个时刻
+      // 比开拍前按边界算出来的准得多 —— 用它决定下一次醒来是什么时候。
+      const after = checkinWindowNow(region, Date.now())
+      const pending = pendingTargets(await checkinTargetsOf(region), folded).length
+      const delay = nextDelayMs(folded, pending) ?? idleDelayMs(after, Date.now())
+      scheduleAutoCheckin(region, delay)
+    } catch (error: unknown) {
+      // 这里抛出来的是**我们自己的**问题（读文件、枚举池子），不是上游的。记一笔，
+      // 然后按慢时钟重新挂上，别让一拍坏掉就把这个功能停到明天。
+      log(`auto check-in tick failed (${region}): ${String((error as Error)?.message ?? error)}`)
+      scheduleAutoCheckin(region, AUTO_CHECKIN_IDLE_MS)
+    } finally {
+      autoCheckinRunning[region] = false
+    }
+  }
+
+  /** 挂上下一拍，替换掉还挂着的那一个。 */
+  function scheduleAutoCheckin(region: QoderRegion, delayMs: number): void {
+    const existing = autoCheckinTimers[region]
+    if (existing !== undefined) clearTimeout(existing)
+    const timer = setTimeout(() => { void autoCheckinTick(region) }, delayMs)
+    // 一个待跑的签到不该把宿主进程留住：这是便利功能，正在退出的宿主没理由为它
+    // 等 30 分钟。（测试的假定时器没有 `unref`。）
+    timer.unref?.()
+    autoCheckinTimers[region] = timer
+  }
+
+  /**
+   * 按存着的开关，给每个区域挂上或撤掉定时器。
+   *
+   * `apply` 时调一次，之后每次配置写入再调一次，于是拨动开关不必重启。
+   * 撤掉是**清定时器**而不是等它自己发现：关掉必须立刻停，不能等到下一拍。
+   */
+  function syncAutoCheckin(): void {
+    for (const region of autoCheckinRegions()) {
+      if (autoCheckinEnabled(region)) {
+        if (autoCheckinTimers[region] === undefined) scheduleAutoCheckin(region, 0)
+        continue
+      }
+      const timer = autoCheckinTimers[region]
+      if (timer !== undefined) {
+        clearTimeout(timer)
+        delete autoCheckinTimers[region]
+      }
+    }
+  }
+
+  /** 撤掉所有定时器；卸载时调用。 */
+  function stopAutoCheckin(): void {
+    for (const region of autoCheckinRegions()) {
+      const timer = autoCheckinTimers[region]
+      if (timer !== undefined) clearTimeout(timer)
+      delete autoCheckinTimers[region]
+    }
+  }
+
+  syncAutoCheckin()
+  ctx.effect(() => () => { stopAutoCheckin() })
+
+  // -------------------------------------------------------------------------
   // web-status deps
   // -------------------------------------------------------------------------
 
@@ -1943,6 +2162,26 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
       checkin: region => poolFor(region).checkin!(region),
       checkinState: region => checkinState[region],
       checkinSnapshot: region => checkinSnapshots[region],
+      /**
+       * 后台签到这一窗的进度（issue #36）。
+       *
+       * 答的是运行器**内存里**那份状态 —— 与 tick 更新的是同一个对象，所以卡片
+       * 不必猜「上一拍处理过哪些账号」。开关关着、或今天还没跑过，都回
+       * `undefined`：卡片把它渲染成「没有状态行」，而不是「0 / N」。
+       */
+      autoCheckinToday: region => {
+        if (!autoCheckinEnabled(region)) return undefined
+        const state = autoCheckinState[region]
+        if (state === undefined) return undefined
+        // 分母是随状态一起记下的，所以这一支在卡片的轮询里不需要枚举凭据库
+        // （见 `AutoCheckinState.scopeSize`）。
+        //
+        // 但要**按窗**检查：一个做完的窗在下一拍之前（最多 `AUTO_CHECKIN_IDLE_MS`）
+        // 不会被重写，于是新窗刚开的头半小时里，内存中的状态描述的仍是上一窗。
+        // 把它当成今天汇报，就是卡片在 10:05 写着「今日：N 个全部已签」而下表每行
+        // 都是「未签到」—— 见 `summaryForWindow` 的注释。
+        return summaryForWindow(state, checkinWindowNow(region, Date.now()))
+      },
       applyProbes: async (region, probes) => poolFor(region).applyProbes(region, probes),
       updateMembership: (region, memberAccountIds, enabled) => poolFor(region).updateMembership(region, memberAccountIds, enabled),
     }
@@ -2207,7 +2446,12 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
 
   // 0.1.7 在每次设置写入后发 `loader/volatile-update`；借此收敛目录/注册/用量。
   ;(ctx as unknown as { on(name: string, listener: () => void): unknown })
-    .on('loader/volatile-update', () => applySelection(config))
+    .on('loader/volatile-update', () => {
+      applySelection(config)
+      // 自动签到的开关也住在同一个 volatile 槽里，所以拨动它（以及改动成员名单）
+      // 在这里就生效，不必重启。
+      syncAutoCheckin()
+    })
 
   // 析构：关闭 shims + 清心跳（副作用一次执行）。
   let disposed = false

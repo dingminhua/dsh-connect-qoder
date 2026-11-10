@@ -327,6 +327,15 @@ export const en = {
   'row.poolEnabledHint': 'On: the pool picks the account for every request and moves to the next one when it fails. Off: the account you select serves every request, and a failure is reported as it is.',
   'row.poolModeAuto': 'picking automatically',
   'row.poolModeManual': 'you pick',
+  'row.poolAutoCheckin': 'Check in automatically each day',
+  // 与「启用账号池」那句 hint 同长度（一行）。它要回答的三件事：做什么、为什么
+  // 不会多领、不做会怎样；剩下的细节（退避阶梯、窗口边界）在 README 里，
+  // 不铺在卡片上——这一页已经被删过好几段「读起来像开发注释」的说明了。
+  'row.poolAutoCheckinHint': 'On: claims the daily check-in for pool members once a day, in the background — it reads the campaign first, so an account already claimed today is never re-claimed. Off: only the button claims. A missed window is a missed reward.',
+  'row.poolAutoCheckinToday': 'Today: {done} of {total} checked in',
+  'row.poolAutoCheckinDone': 'Today: all {total} checked in',
+  'row.poolAutoCheckinPending': '{count} still to retry',
+  'row.poolAutoCheckinFailed': 'Last attempt failed: {message}',
   'row.poolManualAccountLabel': 'Which account to use',
   'row.poolManualAccountNone': 'No account in effect',
   'row.poolTargetLabel': 'Test model (whole pool)',
@@ -758,6 +767,12 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.poolEnabledHint': '开启：由账号池为每次请求挑号，失败就换下一个。关闭：你选的账号服务每一次请求，失败如实报错。',
   'row.poolModeAuto': '自动挑号',
   'row.poolModeManual': '手动选号',
+  'row.poolAutoCheckin': '每天自动签到',
+  'row.poolAutoCheckinHint': '开启：后台为池成员每天领一次签到，先读活动状态，今天已领过的不会再领。关闭：只有点按钮才签到。错过一窗就是白丢一份。',
+  'row.poolAutoCheckinToday': '今日：已签 {done} / {total}',
+  'row.poolAutoCheckinDone': '今日：{total} 个全部已签',
+  'row.poolAutoCheckinPending': '待重试 {count} 个',
+  'row.poolAutoCheckinFailed': '上次尝试失败：{message}',
   'row.poolManualAccountLabel': '使用哪个账号',
   'row.poolManualAccountNone': '当前没有生效的账号',
   'row.poolTargetLabel': '测试用模型（全池统一）',

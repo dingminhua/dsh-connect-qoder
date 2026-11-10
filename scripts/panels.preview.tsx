@@ -93,6 +93,10 @@ function usageDoc(): Record<string, unknown> {
     pool: {
       enabled: true,
       checkinSupported: true,
+      // 自动签到（issue #36）：开关打开、这一窗签完一个还剩一个重试 ——
+      // 截图要能同时看到开关、进度行与「待重试」那一段。
+      autoCheckin: true,
+      autoCheckinToday: { done: 1, total: 2, pending: 1, lastError: 'upstream said 403 for this account' },
       targetModelSource: 'free',
       memberAccountIds: ['acc-id', 'acc-2'],
       effectiveMemberAccountIds: ['acc-id', 'acc-2'],

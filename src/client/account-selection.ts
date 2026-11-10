@@ -372,14 +372,21 @@ export async function writePoolPreferences(
     memberAccountIds: readonly string[]
     /** 用户手动排定的优先级；省略或空 = 由积分策略自动排序。 */
     orderAccountIds?: readonly string[]
+    /** 用户是否要求每天自动签到（issue #36）；省略 = 关。 */
+    autoCheckin?: boolean
   },
 ): Promise<void> {
   const orderAccountIds = preferences.orderAccountIds ?? []
+  // 缺省写 `false` 而不是留空：这个键要参与下面的落地比对，而「宿主把它丢了」
+  // 与「用户没要」在屏幕上完全同形 —— 少了这一条，一次被丢弃的写会静默成功，
+  // 用户看到开关弹回原位却没有任何错误。
+  const autoCheckin = preferences.autoCheckin === true
   const slot: Record<string, unknown> = {
     enabled: preferences.enabled,
     targetModelId: preferences.targetModelId,
     memberAccountIds: preferences.memberAccountIds,
     orderAccountIds,
+    autoCheckin,
   }
   if (preferences.probeInputTokens !== undefined) {
     slot['probeInputTokens'] = preferences.probeInputTokens
@@ -404,7 +411,10 @@ export async function writePoolPreferences(
     // 只比集合会把「拖了但没生效」当成保存成功。
     const storedOrder = pool['orderAccountIds']
     if (!Array.isArray(storedOrder) || storedOrder.length !== orderAccountIds.length) return false
-    return storedOrder.every((id, index) => id === orderAccountIds[index])
+    if (!storedOrder.every((id, index) => id === orderAccountIds[index])) return false
+    // 开关同理：它是唯一授权后台**写入**用户账号的配置项，静默丢失比任何字段都
+    // 严重 —— 用户以为开着，实际一次都不会跑。
+    return (pool['autoCheckin'] === true) === autoCheckin
   })
 }
 

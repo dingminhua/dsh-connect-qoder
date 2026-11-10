@@ -1011,6 +1011,24 @@ export interface QoderWebPoolAccount {
   source: 'settings' | 'env' | 'vault'
 }
 
+/**
+ * 后台签到这一窗的进度（issue #36）。
+ *
+ * 刻意用**计数**而不是一句话：两个语种都要渲染它，放在哪里由卡片决定。
+ * `pending` 是还欠一次尝试的账号数，它才是区分「这一窗做完了」（0）与
+ * 「还在重试」的那一位 —— 盯一个后台任务的用户只关心这两态。
+ */
+export interface QoderWebAutoCheckinToday {
+  /** 这一窗已确认领取（`claimed`）或已签（`already`）的账号数。 */
+  done: number
+  /** 这一窗在范围内的账号数（成员里能解析出凭据的那些）。 */
+  total: number
+  /** 还欠一次尝试的账号数；0 表示这一窗做完了。 */
+  pending: number
+  /** 上一次尝试失败的原因（真的失败过才有）。 */
+  lastError?: string
+}
+
 /** One model as the pool's target picker needs it. */
 export interface QoderWebPoolModel {
   id: string
@@ -1042,6 +1060,25 @@ export interface QoderWebPool {
    * false —— 字段保留，卡片按它隐藏整个签到列与按钮。
    */
   checkinSupported: boolean
+  /**
+   * 用户是否要求插件每天自己签到（issue #36）。缺席读作**关**。
+   *
+   * 这是**保存着**的值，不是运行中的值：卡片的开关编辑的就是它，而草稿/保存的
+   * 一轮必须显示「存了什么」，而不是「运行器碰巧在用上一版值做什么」。
+   *
+   * 为什么默认关、而这一条在 README 里被反复说明：领取是用户账号上的一笔真实
+   * 写入（每日 Credits）。旧版本明说过「不提供自动签到」，所以这个功能的契约是
+   * 「用户勾了才跑」，而「宿主答不上来」绝不能读成「开着」。
+   */
+  autoCheckin?: boolean
+  /**
+   * 后台签到这一窗的进度（issue #36）。
+   *
+   * 开关关着、或这一窗还没跑过时**缺席** —— 绝不是一个全零对象：卡片要能分清
+   * 「什么都没跑」与「跑了、没活可干」。读的是运行器自己的记忆而不是重算：卡片
+   * 无法知道批次已经落定过哪些账号，让它去猜就是这个数字与事实分叉的开始。
+   */
+  autoCheckinToday?: QoderWebAutoCheckinToday
   /** The model a test would use right now; absent when none can be resolved. */
   targetModelId?: string
   /**

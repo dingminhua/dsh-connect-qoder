@@ -51,6 +51,7 @@ import {
   type QoderWebUsage,
   type QoderWebAccount,
   type QoderWebAccountCredit,
+  type QoderWebAutoCheckinToday,
   type QoderWebCredits,
   type QoderWebModel,
   type QoderWebPool,
@@ -120,6 +121,8 @@ export interface QoderPoolDeps {
     memberAccountIds: readonly string[]
     /** 用户手动排定的优先级；空 = 完全由积分策略决定。 */
     orderAccountIds?: readonly string[]
+    /** 用户是否要求每天在后台自动签到（issue #36）；缺席 = 关。 */
+    autoCheckin?: boolean
   }
   // **这里刻意没有 `catalog`。**（issue #33）
   //
@@ -193,6 +196,17 @@ export interface QoderPoolDeps {
    * 「已领取」，**绝不**编一个本地猜测的倒计时。
    */
   checkinSnapshot?(region: QoderRegion): Readonly<Record<string, { claimed: boolean, refreshAtMs?: number }>>
+  /**
+   * 后台签到这一窗的进度（issue #36）。
+   *
+   * 只读宿主的**内存**状态，不碰上游：卡片的轮询拿它渲染开关旁边那一行
+   * 「今日：N / M」。开关关着、或今天还没跑过时回 `undefined` —— 卡片把它渲染成
+   * 「还没有状态行」，而不是「0 / 0」（后者会为一天编一个分母）。
+   *
+   * 返回值按**窗**检查过：一个做完的窗在新窗刚开的头半小时里仍在内存中，直接汇报
+   * 会让卡片说「今日全部已签」而下表每行都是「未签到」。
+   */
+  autoCheckinToday?(region: QoderRegion): QoderWebAutoCheckinToday | undefined
   /**
    * 正在飞的批量动作（签到或测试）已经处理完的那几行，供卡片的 `action=progress`
    * 轮询逐条写活动日志。
@@ -1300,6 +1314,15 @@ async function buildPoolView(
   return {
     enabled: prefs.enabled,
     checkinSupported: pool.checkinSupported(region),
+    // 保存着的开关，不是运行中的那个：编辑器编辑的是它，而草稿/保存一轮必须
+    // 显示「存了什么」。缺席读作关（老 profile 里根本没有这个键）。
+    ...(prefs.autoCheckin !== true ? {} : { autoCheckin: true }),
+    // 只在运行器有话可说时出现。一个全零对象会让「什么都没跑」与「跑了、没活
+    // 可干」在屏幕上同形，而卡片把这两种渲染得不一样。
+    ...(() => {
+      const today = pool.autoCheckinToday?.(region)
+      return today === undefined ? {} : { autoCheckinToday: today }
+    })(),
     ...(target.modelId === undefined ? {} : { targetModelId: target.modelId }),
     ...(target.source === 'stale' && target.staleModelId !== undefined ? { staleTargetModelId: target.staleModelId } : {}),
     targetModelSource: target.source,

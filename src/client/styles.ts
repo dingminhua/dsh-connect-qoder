@@ -382,6 +382,15 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-pool-modebar-state{flex:none;padding:1px 9px;border-radius:999px;font-size:12px;line-height:18px;font-weight:500;color:var(--dsw-alias-brand-primary,#5686fe);background:rgba(86,134,254,.14);border:1px solid rgba(86,134,254,.3)}
 .dsm-qoder-pool-modebar .dsm-qoder-pool-dirty{margin-left:auto}
 .dsm-qoder-pool-modebar .dsm-qoder-pool-note{margin:0;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+/* 自动签到那一行（issue #36）。它紧跟在「启用账号池」下面，共用模式条的盒子：
+   两个开关管的是两件不同的事（谁挑号 / 插件能不能自己动手），但它们都是
+   「这一页的模式」，所以用同一个形状。上边一条淡分隔线把两行分开。 */
+.dsm-qoder-pool-auto-checkin{padding-top:8px;border-top:1px solid rgba(86,134,254,.16)}
+/* 进度那一行是**事实**不是警告：中性色写计数，只有真的失败那一段才用琥珀色。
+   不做成横幅——它挂在开关右边，与开关属于同一句话。 */
+.dsm-qoder-pool-auto-checkin-status{display:inline-flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#c6c9d0)}
+.dsm-qoder-pool-auto-checkin-pending{color:var(--dsw-alias-brand-primary,#5686fe)}
+.dsm-qoder-pool-auto-checkin-error{color:var(--dsw-alias-state-warn-primary,#f59e0b);max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 /* 「有人在服务但不在池里」：一条左竖线标它是上一行的旁注，不是警告 */
 .dsm-qoder-pool-serving-note{padding-left:10px;border-left:2px solid rgba(86,134,254,.5);color:var(--dsw-alias-label-secondary,#c6c9d0)}
 /* 批量动作条：成员卡片内部一行，所以没有上边框——分隔线会把按钮和上一行

@@ -240,8 +240,16 @@ describe('AccountPool 信息架构：模式条与就近原则', () => {
   it('「启用账号池」不在设置卡片里了——它上移为页面级模式，不该出现两次', async () => {
     const { container, unmount } = await mountPool()
     try {
-      const modeboxes = container.querySelectorAll('.dsm-qoder-pool-modebar input[type="checkbox"]')
-      expect(modeboxes).toHaveLength(1)
+      // 模式条里现在有**两个**复选框：模式（启用账号池）与自动签到（issue #36）。
+      // 原来断言「恰好一个」，而它真正想守的是「同一个开关不该出现两次」——
+      // 所以改成**点名**：第一个仍是模式开关（它决定下面每一列怎么读），自动签到
+      // 排在它之后的独立行上。按数量断的话，任何新开关都会让这条无差别变红。
+      const boxes = Array.from(
+        container.querySelectorAll('.dsm-qoder-pool-modebar input[type="checkbox"]'),
+      ) as HTMLInputElement[]
+      expect(boxes).toHaveLength(2)
+      expect(boxes[0]!.closest('.dsm-qoder-pool-modebar-row')?.querySelector('.dsm-qoder-pool-modebar-label')).not.toBeNull()
+      expect(boxes[1]!.closest('.dsm-qoder-pool-auto-checkin')).not.toBeNull()
       // 设置卡片（排除复用了同一个带框类的模式条）里不再有第二个开关行。
       const card = container.querySelector('.dsm-qoder-pool-settings:not(.dsm-qoder-pool-modebar)')
       expect(card!.querySelector('input[type="checkbox"]')).toBeNull()

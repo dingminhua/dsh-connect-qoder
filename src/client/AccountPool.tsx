@@ -114,6 +114,13 @@ export interface PoolPreferences {
    * 与 `memberAccountIds` 分开：那个是「谁在池里」，这个是「先用谁」。
    */
   orderAccountIds: readonly string[]
+  /**
+   * 每天在后台自动签到（issue #36）。缺省读作 `false`。
+   *
+   * 它是这个卡片里**唯一授权后台写入用户账号**的开关，所以缺席绝不能读成开
+   * （见 `saved` 里那句 `=== true`）。
+   */
+  autoCheckin: boolean
 }
 
 export interface AccountPoolProps {
@@ -262,6 +269,9 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
     probeInputTokens: pool?.probeInputTokens ?? 0,
     memberAccountIds: pool?.memberAccountIds ?? [],
     orderAccountIds: pool?.orderAccountIds ?? [],
+    // 缺席读作**关**：这个开关授权的是对用户账号的一次真实写入，所以「宿主答不上
+    // 来」绝不能变成「开着」。
+    autoCheckin: pool?.autoCheckin === true,
   }
 
   /**
@@ -723,6 +733,36 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
   const targetMisses = pool?.targetModelSource === 'none' || pool?.targetModelSource === 'stale'
 
   /**
+   * 自动签到今天的进度，或什么都不渲染。
+   *
+   * 读的是**保存着的**开关（`saved`），不是草稿：这一段描述的是运行器在做什么，
+   * 而一个草稿状态下「打开」的开关还没启动任何东西 —— 给它显示进度等于宣称一个
+   * 任务正在跑。
+   *
+   * 三态三句话：全做完了、做到一半、以及「还欠着重试」。最后一句是用户唯一能
+   * 知道「它还在试」而不是「它悄悄卡住了」的地方。
+   */
+  const autoCheckinStatus = (() => {
+    if (!saved.autoCheckin) return null
+    const today = pool?.autoCheckinToday
+    if (today === undefined) return null
+    const headline = today.pending === 0 && today.done === today.total
+      ? t('row.poolAutoCheckinDone', { total: String(today.total) })
+      : t('row.poolAutoCheckinToday', { done: String(today.done), total: String(today.total) })
+    return (
+      <span className="dsm-qoder-pool-auto-checkin-status">
+        <span className="dsm-qoder-pool-auto-checkin-line">{headline}</span>
+        {today.pending === 0
+          ? null
+          : <span className="dsm-qoder-pool-auto-checkin-pending">{t('row.poolAutoCheckinPending', { count: String(today.pending) })}</span>}
+        {today.lastError === undefined
+          ? null
+          : <span className="dsm-qoder-pool-auto-checkin-error" title={today.lastError}>{t('row.poolAutoCheckinFailed', { message: today.lastError })}</span>}
+      </span>
+    )
+  })()
+
+  /**
    * 运行中的模式（`saved.enabled`），**不是**草稿（`active.enabled`）。
    *
    * 开关显示的是「你正要改成什么」，旁边那枚脏标记说的是「还没保存」；所以
@@ -892,6 +932,32 @@ export function AccountPool(props: AccountPoolProps): ReactNode {
         {/* 只留一句。同一段「开启后……关闭后……」原来在批量按钮下方和设置卡片
             的开关下方各出现一次，读起来像开发注释漏到界面上，还把页面拉长了一截。 */}
         <p className="dsm-qoder-pool-note">{t('row.poolEnabledHint')}</p>
+        {/* 自动签到（issue #36）：本卡片里唯一**授权后台写入用户账号**的开关，
+            所以它单独一行、紧跟在模式条里，而不是藏进设置卡片的那堆偏好里 ——
+            它说的不是「怎么挑号」，是「插件可以自己动手吗」。
+            区域不支持签到时整行不渲染（与签到列、签到按钮同一条判据）：给一个
+            「这里没有」的开关，用户勾了也只会得到一次失败。 */}
+        {checkinOn
+          ? (
+            <div className="dsm-qoder-pool-modebar-row dsm-qoder-pool-auto-checkin">
+              <label className="sw">
+                <input
+                  type="checkbox"
+                  checked={active.autoCheckin}
+                  disabled={!canEditPool}
+                  onChange={(e) => editDraft(prev => ({ ...prev, autoCheckin: e.target.checked }))}
+                />
+                <span className="sw-track" />
+              </label>
+              <b className="dsm-qoder-pool-modebar-label">{t('row.poolAutoCheckin')}</b>
+              {/* 进度行读的是**保存着的**开关，不是草稿：它描述运行器在做什么，
+                  而一个「草稿说开」的开关还没启动任何东西。给一个没保存的开关
+                  显示进度，等于宣称一个任务在跑。 */}
+              {autoCheckinStatus}
+            </div>
+          )
+          : null}
+        {checkinOn ? <p className="dsm-qoder-pool-note">{t('row.poolAutoCheckinHint')}</p> : null}
       </div>
 
       {/* 池开着，正在计费的那个号却不在成员名单里：不加解释就是一屏自相矛盾
