@@ -262,11 +262,49 @@ describe('summarizeAutoCheckin / summaryForWindow', () => {
     expect(summarizeAutoCheckin(state).lastError).toBe('凭据被拒')
   })
 
+  it('这一窗还没跑过（scopeSize 为 0、也没有 lastAttemptAtMs）→ undefined，而不是 0/0', () => {
+    // CI 在 Windows 上抓到的真 bug（issue #36 发布时）：tick 在**开批之前**就把
+    // `emptyAutoCheckinState` 发布进了内存，于是卡片在这个窗口里读到
+    // `{ done: 0, total: 0, pending: 0 }`。而卡片的判据是
+    // `pending === 0 && done === total`，那两个 0 相等 → 它渲染成
+    // 「今日：0 个全部已签」。一个什么都没做的窗口，被报成全部做完了。
+    //
+    // 同一条谎还有第二处来源：窗口翻页时 `stateForWindow` 重置出一份空状态，
+    // 在下一拍真的跑起来之前同样会读到它。
+    //
+    // 判据是 `lastAttemptAtMs`：它只在一次尝试真的跑完之后才被写上
+    // （`foldAttempt` 里）。没有它 = 这一窗一次都没试过 = 没有可报的进度。
+    expect(summaryForWindow(emptyAutoCheckinState('w1'), { key: 'w1' })).toBeUndefined()
+    // 池里一个成员都没有时也一样：`pendingTargets` 为空 → `isDue` 永不为真 →
+    // `lastAttemptAtMs` 永远不会被写上 → 永远不报（而不是报「0 个全部已签」）。
+    expect(summaryForWindow({ ...emptyAutoCheckinState('w1'), scopeSize: 0 }, { key: 'w1' })).toBeUndefined()
+  })
+
+  it('跑过一次之后（哪怕一个都没成功）就照实报', () => {
+    // 「attempted but everything failed」必须与「nothing attempted」分开：
+    // 前者用户要知道它在重试，后者什么都不该说。
+    const attempted = {
+      ...emptyAutoCheckinState('w1'),
+      scopeSize: 2,
+      lastAttemptAtMs: 1_000,
+      failures: 1,
+      lastError: 'boom',
+    }
+    expect(summaryForWindow(attempted, { key: 'w1' })).toMatchObject({ done: 0, total: 2, pending: 2 })
+  })
+
   it('不是这一窗的状态 → undefined（卡片据此不渲染状态行）', () => {
     // 这一条是 issue #232 那类谎的 Qoder 版：一个做完的窗在下一拍之前不会被重写，
     // 于是新窗刚开的头几分钟里内存中仍是旧窗的状态。把它当今天汇报，卡片会写
     // 「今日 N 个全部已签」而下表每行都是「未签到」。
-    const state = { ...emptyAutoCheckinState('w1'), scopeSize: 2, doneAccountIds: ['a', 'b'] }
+    // 带上 `lastAttemptAtMs`：否则它会被「这一窗还没跑过」那条判据先挡住，
+    // 这条用例就测不到窗口比较本身了（两条判据各管一件事，别让它们互相遮住）。
+    const state = {
+      ...emptyAutoCheckinState('w1'),
+      scopeSize: 2,
+      doneAccountIds: ['a', 'b'],
+      lastAttemptAtMs: 1_000,
+    }
     expect(summaryForWindow(state, { key: 'w2' })).toBeUndefined()
     expect(summaryForWindow(state, { key: 'w1' })).toEqual({ done: 2, total: 2, pending: 0 })
   })

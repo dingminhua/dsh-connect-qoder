@@ -375,6 +375,22 @@ export function summaryForWindow(
   window: CheckinWindow,
 ): AutoCheckinSummary | undefined {
   if (state.window !== window.key) return undefined
+  // 这一窗**一次都没试过**时不报进度 —— 两个 0 会让卡片说「0 个全部已签」。
+  //
+  // 这条不是防御性代码，是 CI 在 Windows 上抓到的一个真 bug（1.24.0 发布时）：
+  // 运行器在**开批之前**就把一份 `scopeSize: 0` 的空状态发布进了内存，于是卡片在
+  // 那个窗口里读到的就是 `{ done: 0, total: 0, pending: 0 }`。卡片的判据是
+  // `pending === 0 && done === total`，两个 0 相等 —— 它把「什么都没做」渲染成了
+  // 「全部做完了」。同一份空状态还有第二个来源：窗口翻页时 `stateForWindow`
+  // 重置出来的那一份，在下一拍真的跑起来之前同样会被读到。
+  //
+  // 判据用 `lastAttemptAtMs`：它只在一次尝试**真的跑完之后**才被 `foldAttempt`
+  // 写上。没有它 = 这一窗一次都没试过 = 没有可报的进度。
+  //
+  // 注意不能改成「`scopeSize === 0` 就不报」：池里一个成员都没有时，确实**没有**
+  // 可报的东西；但「试过了、两个号都失败了」必须照实报（`scopeSize: 2`），否则
+  // 用户永远看不到它在重试。两种情形靠 `lastAttemptAtMs` 分开，不靠分母。
+  if (state.lastAttemptAtMs === undefined) return undefined
   return summarizeAutoCheckin(state)
 }
 

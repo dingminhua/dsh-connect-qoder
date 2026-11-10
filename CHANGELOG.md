@@ -66,9 +66,9 @@
 
 ### Tests
 
-`1471`（+71，基线 `1400` = v1.23.0 发布点），`skip 12`。新增：
+`1473`（+73，基线 `1400` = v1.23.0 发布点），`skip 12`。新增：
 
-- `tests/auto-checkin.spec.ts`（38）：窗口日键（本地零点不是边界、10:00 翻页、关门时刻
+- `tests/auto-checkin.spec.ts`（40）：窗口日键（本地零点不是边界、10:00 翻页、关门时刻
   仍属同一窗、与进程时区无关、补零）、`checkinWindowOf`（上游时刻优先 / 过去的不采用 /
   两种键必然不同）、`latestRefreshAt`（取最远、丢过去、非有限数不污染）、
   `stateForWindow`（换窗重置）、`foldAttempt`（跨尝试累加、有进展归零失败、清掉旧
@@ -96,6 +96,23 @@
 变异验证（每条都确认「改坏就变红」）：开关判据改成恒 `true` → 3 红；窗口日键改回本地
 日历日 → 3 红；去掉 `summaryForWindow` 的窗口检查 → 1 红；`writePoolPreferences` 的
 回读比对去掉开关 → 1 红；池槽里不再写 `autoCheckin` → 2 红。
+
+### 发布当天 CI 抓到的一个真 bug（Windows job，ubuntu 绿）
+
+`summaryForWindow` 一开始只检查「是不是这一窗」，于是 tick 在**开批之前**把
+`emptyAutoCheckinState`（`scopeSize: 0`）发布进内存时，卡片在那一瞬间读到的是
+`{ done: 0, total: 0, pending: 0 }` —— 而卡片的判据是 `pending === 0 && done === total`，
+两个 0 相等，于是它渲染成「**今日：0 个全部已签**」。一个什么都没做的窗口被报成全部做完。
+
+窗口翻页时 `stateForWindow` 重置出来的那份空状态是同一条谎的第二个来源。
+
+修法：`lastAttemptAtMs` 缺席即视为「这一窗一次都没试过」，返回 `undefined`（卡片不渲染
+状态行）。**不能用「`scopeSize === 0` 就不报」**：池里一个成员都没有时确实没有可报的
+东西，但「试过了、两个号都失败了」必须照实报，否则用户永远看不到它在重试 —— 两种情形
+靠 `lastAttemptAtMs` 分开，不靠分母。
+
+为什么本地绿而 CI 红：Windows 的 `setTimeout` 最小分辨率约 15ms，把「开批之前那段中间
+状态」的窗口拉长到了能被观测到的长度；ubuntu 上那段窗口太短，测试总是读完批才读到。
 
 ### 已知边界
 
