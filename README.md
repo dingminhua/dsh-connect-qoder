@@ -339,7 +339,7 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 >
 > **pi-ai 单独列一行**是因为它换了主版本：0.2.1-rc.1 宿主把 pi-ai 从 0.85 换到 1.x，而两代的上下文契约不同（1.x 在 Models 层归一化）。声明与检测必须一致，否则就是 1.1.0 修掉的那个静默丢工具缺陷 —— 详见 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)。
 
-### 当前宿主基线：0.2.2-rc.1（2026-11-05 实测）
+### 上一轮宿主基线：0.2.2-rc.1（2026-11-05 实测）
 
 宿主升到 `0.2.2-rc.1`（`app.asar` 内 `@deepseek-ai/dsh-*` 均为 `0.2.2-rc.1`，内置 pi-ai **`1.3.0`**、cordis `4.1.0`、schemastery `3.19.0`）。这一轮**需要适配**，与 0.2.1 线的「零改动」不同：
 
@@ -354,7 +354,24 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 | 插件用到的槽位 / 事件 | `conversation.input.*`、`conversation.composer.dock`、`settings.section`、`plugins.*.config` 契约未变；`webserver/index-inject` 的 `peer` 参数与 `WebResourceRoute` 都是新增，插件不涉及 |
 | 回归 | `pnpm run typecheck`（host + client 两套）与 `pnpm test` 全绿 |
 
-> 0.2.1-rc.4 / rc.5 那一轮的逐条核查保留在 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)；本轮的实测依据、复现脚本与仍待决策项见 [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md)。
+> 0.2.1-rc.4 / rc.5 那一轮的逐条核查保留在 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)；rc.1 那一轮的实测依据、复现脚本与仍待决策项见 [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md)。
+
+### 当前宿主：0.2.2-rc.2（2026-11-12 实测）
+
+宿主升到 `0.2.2-rc.2`。**这一轮不改运行时代码** —— pi-ai（`1.3.0`）、cordis（`4.1.0`）、
+schemastery（`3.19.0`）都没换，`dsh-*` 的改动全是**新增**面：
+
+| 检查项 | 结论 |
+| --- | --- |
+| 失败分类器 | 🔴 宿主把 `classifyPiAiError` 改成「先取报文开头的状态码」（新增常量 `LEADING_HTTP_STATUS`）→ 测试夹具**必须重提取**，已改为一条命令 `pnpm run fixture:host-classifier` |
+| 分类结果 | **行为不变**：插件的净化一直把裸 401/403 改写成 `4xx` 并加 `qoder upstream <kind> (http …)` 前缀，新判据读到的是同一个结论（逐条对比见 followup 文档 §二） |
+| `dsh-llm-pi-ai` | 新增可选的请求前缀摘要（`PrefixDigests`）与 `onThinkingOmitted` 观察点；插件不构造 replay、只用于 Anthropic 的 signed thinking → 未触及 |
+| `HarnessError` / `AttachmentError` | `HarnessError` 搬进独立的 `@deepseek-ai/dsh-error`；插件从不使用错误基类，只 `import type { AttachmentStore }` |
+| 槽位 | `dsh-client-ui-slots` 新增 `hoc` 种类、`conversation.input.model.options` 等新槽；插件用到的六个槽契约未变（`settings.launcher` 的 `openSettings` 只多了可选形参，插件也不注册它） |
+| peer 范围 | **不需要新分支**：`0.2.2-rc.2` 与 `0.2.2-rc.1` 同一元组，第四支已经开闸。下一个要补的仍是 `0.2.3-rc.1` |
+| 回归 | `pnpm run check` 全绿（1472 例通过 / 12 跳过） |
+
+> 依据、逐包 diff 与「哪些面看起来要改其实不用」的清单见 [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md)。
 
 ## 安全说明
 

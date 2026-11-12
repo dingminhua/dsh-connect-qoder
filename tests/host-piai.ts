@@ -6,18 +6,26 @@
  * 一个版本的（对抗审核 §6 也指出：自称「逐字照抄」的副本无法被独立核实）。
  *
  * 现在断言的是**宿主真实代码的行为**：`tests/fixtures/host-piai-classifier.json`
- * 是从 `app.asar` 逐字提取的源码文本（提取脚本见该文件的 `source` 字段），
- * 本模块 `new Function` 执行它。宿主升级后只要那两个函数的文本变了，重新提取
- * 即可；若宿主改了判据顺序（也就是本缺陷的成因），这些用例会立刻变红。
+ * 是从 `app.asar` 逐字提取的源码文本，本模块 `new Function` 执行它。宿主升级后
+ * 重跑 `node scripts/extract-host-classifier.mjs` 即可（`--check` 只比对不写）；
+ * 若宿主改了判据顺序（也就是本缺陷的成因），这些用例会立刻变红。
+ *
+ * 提取的是**三段**，不是两个函数：0.2.2-rc.2 起 `classifyPiAiError` 先取报文
+ * 开头那个状态码（`const LEADING_HTTP_STATUS = /^[45]\d\d\b/`），漏了它
+ * `new Function` 会当场 `ReferenceError`。这也是脚本按签名截取、而不是手抄的
+ * 原因 —— 手抄已经漏过一次。
  *
  * 出处：DeepSeek Harness.app/Contents/Resources/app.asar，`classifyPiAiError`
- * 全 asar 仅一处定义（已核对）。宿主落在最后一个分支上的 code 是 `PI_AI_ERROR`。
+ * 全 asar 仅一处定义（已核对；`isQuotaExceededError` 有两份，取第一份即 pi-ai
+ * 路由用的那一份）。宿主落在最后一个分支上的 code 是 `PI_AI_ERROR`。
  */
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 interface HostFixture {
   source: { app: string, dshVersion: string, asarSha256: string, extractedAt: string }
+  /** 0.2.2-rc.2 起分类器先取报文**开头**的状态码，`classifyPiAiError` 引用这个常量。 */
+  leadingHttpStatus: string
   isQuotaExceededError: string
   classifyPiAiError: string
 }
@@ -65,6 +73,7 @@ export function verifyFixtureAgainstInstalledHost(): { ok: boolean, reason?: str
   // 「空白归一」之后做，否则换行/缩进差异会盖住真实差异。
   const collapse = (s: string): string => s.replace(/\s+/gu, ' ').trim()
   for (const [name, signature, snippet] of [
+    ['LEADING_HTTP_STATUS', 'const LEADING_HTTP_STATUS =', `const LEADING_HTTP_STATUS = ${hostFixture.leadingHttpStatus}`],
     ['isQuotaExceededError', 'function isQuotaExceededError(detail) {', hostFixture.isQuotaExceededError],
     ['classifyPiAiError', 'function classifyPiAiError(message) {', hostFixture.classifyPiAiError],
   ] as const) {
@@ -93,10 +102,16 @@ export function verifyFixtureAgainstInstalledHost(): { ok: boolean, reason?: str
  */
 export const classifyPiAiError: (message: string) => HostCode = (() => {
   const quotaCode = 'QUOTA'
+  // `leadingHttpStatus` 缺席时**不拼**那行常量：0.1.7–0.2.2-rc.1 的夹具里没有它，
+  // 那时的 `classifyPiAiError` 也真的不引用它。写成「缺席就填空」会让 `new Function`
+  // 拿到一句 `const LEADING_HTTP_STATUS = `，报的是语法错而不是「夹具该更新了」。
+  const leading = hostFixture.leadingHttpStatus === undefined
+    ? ''
+    : `const LEADING_HTTP_STATUS = ${hostFixture.leadingHttpStatus}\n`
   // eslint-disable-next-line no-new-func
   const factory = new Function(
     'QUOTA_EXCEEDED_CODE',
-    `${hostFixture.isQuotaExceededError}\n${hostFixture.classifyPiAiError}\nreturn classifyPiAiError`,
+    `${leading}${hostFixture.isQuotaExceededError}\n${hostFixture.classifyPiAiError}\nreturn classifyPiAiError`,
   ) as (code: string) => (message: string) => HostCode
   return factory(quotaCode)
 })()

@@ -2,7 +2,7 @@
   "name": "@dmh2002/dsh-connect-qoder",
   "displayName": "DSH Connect Qoder",
   "description": "把 Qoder（通义灵码国内版 / 国际版）接入 DeepSeek Harness：PAT 多账号池、每日签到、积分读数与模型管理。",
-  "version": "1.25.0",
+  "version": "1.25.1",
   "author": "dingminhua",
   "copyright": "Copyright (c) 2026 LaoDing",
   "license": "MIT",
@@ -57,7 +57,8 @@
     "THIRD_PARTY_NOTICES.md",
     "LICENSE",
     "docs/DSH-0.2.1-RC1-FOLLOWUP.md",
-    "docs/DSH-0.2.2-RC1-FOLLOWUP.md"
+    "docs/DSH-0.2.2-RC1-FOLLOWUP.md",
+    "docs/DSH-0.2.2-RC2-FOLLOWUP.md"
   ],
   "scripts": {
     "prepack": "npm run build",
@@ -68,6 +69,7 @@
     "probe:cosy": "node scripts/probe-cosy.mjs",
     "probe:vault": "node scripts/dump-vault.mjs",
     "probe:cache": "node scripts/probe-cache-usage.mjs",
+    "fixture:host-classifier": "node scripts/extract-host-classifier.mjs",
     "fixture:pi-ai-modern": "npm install --prefix tests/fixtures/pi-ai-modern --no-audit --no-fund",
     "preview:client": "vitest run --config scripts/vitest.preview.config.ts"
   },

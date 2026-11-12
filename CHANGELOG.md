@@ -2,6 +2,54 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.25.1 (2026-11-12)
+
+> **只改测试与文档，不改运行时代码。** 宿主从 `0.2.2-rc.1` 升到 `0.2.2-rc.2`。
+> pi-ai（`1.3.0`）、cordis（`4.1.0`）、schemastery（`3.19.0`）都没换，`dsh-*` 的改动
+> 全是新增面 —— 唯一被打破的是**我们自己的 golden 夹具**。
+
+### 修复
+
+- **宿主改写了「失败分类器」，夹具必须重提取（否则测试红，且红得像别的问题）。**
+  - **症状**：`tests/shim.spec.ts` 只有一条红，是自检 ——
+    `classifyPiAiError 第 38 个字符起与装机宿主不一致`。宿主 rc.2 把第一道判据从
+    「扫全串」改成「**先取报文开头的状态码**」（新增 `const LEADING_HTTP_STATUS = /^[45]\d\d\b/`），
+    理由是正文里可能转述别人的状态码（网关 500 内嵌上游 401），只有开头的那个
+    才算本跳自己的。
+  - **为什么不影响用户**：插件的净化一直把裸 401/403 改写成 `4xx`，并给非 auth 档加
+    `qoder upstream <kind> (http 4xx):` 前缀 —— 新判据读到的就是这条前缀里的状态码，
+    结论与旧版逐条相同（配额仍是 `QUOTA`、限流仍是 `RATE_LIMIT`、真凭据失败仍是 `AUTH`）。
+    夹具里六个真实文案的对比表见 followup 文档 §二。
+  - **差点踩的坑**：手工补夹具时先补了两个函数、漏了新常量，`new Function(...)` 当场
+    `ReferenceError: LEADING_HTTP_STATUS is not defined`。于是把「再抄一遍」换成一条命令：
+    新增 `scripts/extract-host-classifier.mjs`（按签名定位 + 花括号配平截取 + 唯一性检查），
+    `package.json` 加 `pnpm run fixture:host-classifier`，`--check` 只比对不写。
+    自检现在会逐字比对**三段**（含新常量），少了常量会以「与宿主不一致」红，而不是语法错。
+
+### 文档
+
+- 新增 [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md)：逐包 diff、
+  六个真实文案的新旧分类对比、以及「看起来要改其实不用」的清单
+  （`dsh-llm-pi-ai` 的 `PrefixDigests`/`onThinkingOmitted`、`HarnessError` 搬到
+  `@deepseek-ai/dsh-error`、`ui-slots` 的 `hoc` 种类、`settings.launcher` 的
+  `openSettings(sectionId?)`、`ui-primitives` 删掉 `useAnchoredPosition`、以及
+  `settings-general` 里多出来的第二颗 `aria-haspopup` 按钮）。
+- README 双语：新增「当前宿主：0.2.2-rc.2」一节，上一轮的 rc.1 小节降级为「上一轮」。
+  两份 README 的 peer 范围表**不用改**（见下一条）。
+- `package.json` 的 `files` 与 `RELEASING.md` 的打包清单收入新文档。
+
+### 其余
+
+- **peer 范围不需要新分支**（这一条直觉相反，所以用断言钉住）：`0.2.2-rc.2` 与
+  `0.2.2-rc.1` 是**同一元组**，第四支 `>=0.2.2-rc.1 <0.3.0-0` 已经开闸。加分支的判据是
+  「补丁号变了」，不是「rc 号变了」。`tests/dsh-line.spec.ts` 把 `0.2.2-rc.2` 加进
+  `ADMITTED_PRERELEASES` 与宿主门禁那条用例；下一个待补的仍是 `0.2.3-rc.1`。
+- **开发依赖树升到 `0.2.2-rc.2`**，并显式钉住 `@deepseek-ai/dsh-error`：rc.2 起
+  `HarnessError` 从 `dsh-llm` 搬进这个独立包，`dsh-llm` 与 `dsh-attachment` 都以**精确版本**
+  声明它为 peer —— 将来某个包放宽成 `^` 时，解析出第二个副本会让
+  `instanceof HarnessError` 在两个类之间失效。
+- 回归：`pnpm run check` 全绿，**1472 通过 / 12 跳过**（rc.1 树上是 1471 + 1 条夹具自检红）。
+
 ## 1.25.0 (2026-11-12)
 
 > 版本号是 **minor**：两处**用户看得见的目录 / 界面变化** —— 国际版模型选择器里

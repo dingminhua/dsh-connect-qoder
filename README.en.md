@@ -336,7 +336,7 @@ pnpm exec dsh-connect-qoder doctor --json        # machine-readable output
 >
 > **pi-ai gets its own row** because it changed major: Desktop 0.2.1-rc.1 moved pi-ai from 0.85 to 1.x, and the two generations consume different context shapes (1.x normalizes in its Models layer). The declaration and the runtime detection must agree — otherwise you get the silent tool-loss bug fixed in 1.1.0. See [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md).
 
-### Current host baseline: 0.2.2-rc.1 (measured 2026-11-05)
+### Previous host baseline: 0.2.2-rc.1 (measured 2026-11-05)
 
 The host moved to `0.2.2-rc.1` (every `@deepseek-ai/dsh-*` inside `app.asar` is `0.2.2-rc.1`, with bundled pi-ai **`1.3.0`**, cordis `4.1.0`, schemastery `3.19.0`). This round **did need adaptation**, unlike the zero-change 0.2.1 line:
 
@@ -352,6 +352,22 @@ The host moved to `0.2.2-rc.1` (every `@deepseek-ai/dsh-*` inside `app.asar` is 
 | Regression | `pnpm run typecheck` (host and client projects) plus `pnpm test` are green |
 
 > The 0.2.1-rc.4 / rc.5 round stays documented in [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md); this round's measurements, reproduction script and open decisions are in [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md).
+
+### Current host: 0.2.2-rc.2 (measured 2026-11-12)
+
+The host moved to `0.2.2-rc.2`. **No runtime code changed this round** — pi-ai (`1.3.0`), cordis (`4.1.0`) and schemastery (`3.19.0`) all stayed put, and the `dsh-*` changes are all additive surfaces:
+
+| Check | Result |
+| --- | --- |
+| Failure classifier | 🔴 The host rewrote `classifyPiAiError` to read a leading status code first (new constant `LEADING_HTTP_STATUS`) → the golden fixture **had to be re-extracted**; that is now one command, `pnpm run fixture:host-classifier` |
+| Classification results | **Unchanged**: our sanitising already rewrites bare 401/403 to `4xx` and prefixes `qoder upstream <kind> (http …)`, so the new rule reaches the same verdict (case-by-case table in the follow-up doc, §2) |
+| `dsh-llm-pi-ai` | New optional request-prefix digests (`PrefixDigests`) and an `onThinkingOmitted` observer; the plugin builds no replay state and the feature only serves Anthropic signed thinking → untouched |
+| `HarnessError` / `AttachmentError` | `HarnessError` moved into a standalone `@deepseek-ai/dsh-error`; the plugin never uses the error base classes and only `import type { AttachmentStore }` |
+| Slots | `dsh-client-ui-slots` gained an `hoc` kind plus new slots such as `conversation.input.model.options`; all six slots the plugin uses kept their contract (`settings.launcher`'s `openSettings` merely gained an optional parameter, and this plugin does not register it) |
+| Peer range | **No new branch needed**: `0.2.2-rc.2` shares a tuple with `0.2.2-rc.1`, which the fourth branch already opens. `0.2.3-rc.1` is still the next one to add |
+| Regression | `pnpm run check` green (1472 passed / 12 skipped) |
+
+> Evidence, per-package diffs and the list of surfaces that look affected but are not are in [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md).
 
 ## Security notes
 
