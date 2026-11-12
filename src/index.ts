@@ -30,7 +30,7 @@ import { failoverNoticeText, queuedFailoverNoticeText, upstreamDownFailoverNotic
 import type { QoderUsage, QoderChatDelta, QoderRegion, QoderUpstreamError, UpstreamErrorKind, QoderCampaignFeed } from './upstream.ts'
 import { isQoderUpstreamError } from './upstream.ts'
 import type { QoderModelInfo } from './catalog.ts'
-import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters, withoutAbstractModels, mapContextTier, mapContextTiers, migrateContextBudgets } from './catalog.ts'
+import { QoderCatalog, fallbackModelInfo, deriveCatalog, initialEnabledKeys, parseUpstreamModel, applyContextBudgets, modelDisplayName, withoutRouters, withoutAbstractModels, withoutForeignRegionModels, mapContextTier, mapContextTiers, migrateContextBudgets } from './catalog.ts'
 import { QODER_FALLBACK_MODELS } from './catalog.ts'
 import { readPromotion, type QoderPromotion } from './promo.ts'
 import { defaultOffModelIds, offCapabilityOf, withEffectiveOff } from './off-thinking.ts'
@@ -64,6 +64,7 @@ import {
   type QoderWebCredits,
   type QoderWebCreditPackage,
   type QoderWebAccountCredit,
+  type QoderWebDedicatedPackage,
   type QoderWebRecovery,
   type QoderWebQuotaExhaustion,
   type QoderCreditPosition,
@@ -709,6 +710,23 @@ function stampOffSelection(
 }
 
 /**
+ * 目录里**用户能看见的那部分**：两条读点判据合在一处。
+ *
+ * 拆成两条判据而不是一条，是因为理由不同（见 `catalog.ts` 的两处注释）：
+ *
+ *   1. `withoutAbstractModels` —— 那几行只有一个抽象形容词，看不出背后是谁；
+ *   2. `withoutForeignRegionModels` —— 国内版上游**根本没有**这几条，
+ *      列出来是一个点下去就失败的选项。
+ *
+ * 合在一个函数里是为了「所有读点用同一份判定」：此前两处调用点各自写一遍，
+ * 加第二条判据时必然漏掉一处（issue #37 之后的真实风险 —— 兜底目录两个区域
+ * 共用，漏掉的那处会把 `Sonus` 摆到国内版用户面前）。
+ */
+function visibleModels(models: QoderModelInfo[], region: QoderRegion): QoderModelInfo[] {
+  return withoutAbstractModels(withoutForeignRegionModels(models, region), region)
+}
+
+/**
  * 把用户的两项显式选择（图片输入、可关闭思考）盖印到运行时目录上。
  *
  * 两者机制相同：上游声明不可全信，用户的选择是唯一权威；未保存过时用核对表/
@@ -720,7 +738,7 @@ function stampRuntimeCatalog(
   region: QoderRegion,
   models: QoderModelInfo[],
 ): QoderModelInfo[] {
-  // **国际版那几个抽象命名的条目在这里再去掉一次。**
+  // **那两条「不该出现」的判据在这里再去掉一次。**
   //
   // 上游 `configuredModels` 已经过滤过（它管的是「这次配什么」），这一处管的是
   // 「装进运行时目录的东西」。两者不是重复：`stampRuntimeCatalog` 是
@@ -732,7 +750,7 @@ function stampRuntimeCatalog(
   // 放在这里的好处是三处同时生效：模型选择器（运行时目录）、卡片
   // （`cardCatalog`）与池视图（读卡片那份），不会出现「卡片里没了、选择器里
   // 还在」的半截状态。
-  const visible = withoutAbstractModels(models, region)
+  const visible = visibleModels(models, region)
   const images = new Set(imageModelKeysOf(config, region))
   const withImages = withImageSelection(visible, images, imageSelectionSavedOf(config, region))
   return stampOffSelection(config, region, withImages)
@@ -819,13 +837,14 @@ function configuredModels(
     // 旧存档里的 `auto` 路由器在读点去掉（写点已由 `fetchModels` 拦下）。
     // 刻意不迁移存档本身：存档保持上次刷新写下的原样，加载时不悄悄改写用户数据。
     //
-    // 国际版那几个抽象命名的条目（Fast / Ultimate / Efficient / Sonus / Cantus）
-    // 同样在读点去掉：要求是「国际版不要显示」，而这几个 id 可能已经在别人的存档里。
-    const models = withoutAbstractModels(withoutRouters(parsed), region)
+    // 那几个「不该出现」的条目（Fast / Ultimate / Efficient，以及国内版没有的
+    // Sonus / Cantus）同样在读点去掉 —— 它们可能已经在别人的存档里，也可能来自
+    // 两个区域共用的兜底表。判定与 `stampRuntimeCatalog` 用同一个 `visibleModels`。
+    const models = visibleModels(withoutRouters(parsed), region)
     if (models.length > 0) return models
   }
-  const fallback = withoutAbstractModels(QODER_FALLBACK_MODELS.map(fallbackModelInfo), region)
-  return live.length > 0 ? withoutAbstractModels(live, region) : fallback
+  const fallback = visibleModels(QODER_FALLBACK_MODELS.map(fallbackModelInfo), region)
+  return live.length > 0 ? visibleModels(live, region) : fallback
 }
 
 /**
@@ -871,6 +890,55 @@ export function creditsOf(usage: QoderUsage): QoderWebCredits {
     expiringSoon: 0,
     ...(usage.expiresAt === undefined ? {} : { planExpiresAtMs: usage.expiresAt }),
   }
+}
+
+/**
+ * 把专属积分包映射进面板那一列的 DTO（issue #38）。
+ *
+ * **不并进 `total`。** 这是这一条最容易做错的地方：专属包是「选了某个模型才
+ * 优先抵扣」的一笔钱（上游原文：在模型选择器中选择 Sonus 模型时优先抵扣该
+ * 积分），与「普通积分」是**两个池子**。把它们相加会让胶囊显示一个用户花不掉
+ * 的数字 —— 不选那只模型，这笔钱一分都动不了。所以它单独一列，普通积分那一列
+ * 一个字都不变。
+ *
+ * 只留 `remaining > 0` 的（issue #38 的原话：「且 remaining > 0 时才多出这一
+ * 列」）：一个用光的专属包留在读数里，用户会以为那笔钱还在。`remaining` 缺席
+ * 的行**保留**（那是「上游没报」，不是「用完了」），界面画成「—」。
+ */
+export function dedicatedPackagesOf(usage: QoderUsage): QoderWebDedicatedPackage[] {
+  const out: QoderWebDedicatedPackage[] = []
+  for (const [index, entry] of (usage.dedicatedResourcePackages ?? []).entries()) {
+    if (entry.remaining !== undefined && entry.remaining <= 0) continue
+    // 上游实测恒有 id；缺席时退回位置索引，只为让 React key 在同一份报文内稳定。
+    out.push({
+      id: entry.id === '' ? `dedicated-${index}` : entry.id,
+      ...entry.title === undefined ? {} : { title: prunedLabel(entry.title) },
+      ...entry.description === undefined ? {} : { description: prunedLabel(entry.description) },
+      ...entry.remaining === undefined ? {} : { remaining: entry.remaining },
+      ...entry.total === undefined ? {} : { total: entry.total },
+      ...entry.expiresAtMs === undefined ? {} : { expiresAtMs: entry.expiresAtMs },
+    })
+  }
+  return out
+}
+
+/** 去掉空字符串那一侧，只留下真正有文案的语言。 */
+function prunedLabel(label: { zh?: string | undefined, en?: string | undefined }): { zh?: string, en?: string } {
+  return {
+    ...label.zh === undefined ? {} : { zh: label.zh },
+    ...label.en === undefined ? {} : { en: label.en },
+  }
+}
+
+/**
+ * 只在**真有专属包**时才往 DTO 上挂 `dedicated`。
+ *
+ * 空数组不是「没有专属包」的另一种写法，而是一个会让面板多画一列空列的坑：
+ * 国内版恒缺席这个字段，若这里写 `dedicated: []`，那一列的判据就得从
+ * 「字段在不在」变成「数组长不长」，两条判据迟早分叉。缺席就是缺席。
+ */
+function withDedicated(packages: QoderWebDedicatedPackage[]): { dedicated?: QoderWebDedicatedPackage[] } {
+  return packages.length === 0 ? {} : { dedicated: packages }
 }
 
 /**
@@ -2348,6 +2416,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
         // 这个时刻是谁给的（issue #32）：上游申报 vs 签到快照推的，卡片要分开说。
         ...probe?.retrySource === undefined ? {} : { retrySource: probe.retrySource },
         ...usage === undefined ? {} : { credits: creditsOf(usage).total },
+        // 专属积分包（issue #38）：**逐号各读自己那一份**。这张表本来就为每个号
+        // 付了一次 usage 读数，所以多带这一个字段不增加任何上游调用 —— 而把它
+        // 挂在区域级文档上就只能显示「读那份文档的那个号」的包，别的行全是错的。
+        ...usage === undefined ? {} : withDedicated(dedicatedPackagesOf(usage)),
       })
     }
     return out

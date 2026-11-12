@@ -450,6 +450,89 @@ describe('parseUsage', () => {
     expect(usage).toBeDefined()
     expect(usage?.userQuota).toBeUndefined()
   })
+
+  it('reads dedicatedResourcePackages (issue #38) — 两种语言都收，名字不翻译', () => {
+    // 国际版实测报文（issue #38 附的原文），原样进来。这里钉四件事：
+    //   1. `displayLabels` 里 zh-CN / en-US 两句话**都要留下** —— 界面按当前语言
+    //      挑一条，解析层不知道也不该猜读者用哪种语言；
+    //   2. 裸 `value`（没有 valueI18n 的老形状）也能读，两边共用同一句原文；
+    //   3. `remaining` / `total` / `expiresAt` / `status` 逐字透传；
+    //   4. 国内版报文（没有这个键）里该字段**缺席**，而不是空数组。
+    const usage = parseUsage({
+      qoderUsage: {
+        userQuota: { total: 300, used: 0 },
+        dedicatedResourcePackages: [{
+          id: 'pkg-example',
+          name: 'act-example',
+          total: 888,
+          used: 0,
+          remaining: 888,
+          percentage: 0,
+          unit: 'credits',
+          expiresAt: 1798732800000,
+          available: true,
+          status: 'QUOTA_DETAIL_STATUS_ACTIVE',
+          displayLabels: [
+            {
+              dimension: 'title',
+              value: 'sota model series',
+              valueI18n: { 'en-US': 'SOTA Exclusive Credits', 'zh-CN': 'SOTA 专属积分' },
+            },
+            {
+              dimension: 'description',
+              value: 'sota model series description',
+              valueI18n: {
+                'en-US': 'SOTA Exclusive Credits: used first when you select the Sonus model.',
+                'zh-CN': 'SOTA 专属积分：在模型选择器中选择 Sonus 模型时优先抵扣该积分。',
+              },
+            },
+          ],
+        }],
+      },
+    })
+    const packages = usage?.dedicatedResourcePackages
+    expect(packages).toHaveLength(1)
+    expect(packages?.[0]).toMatchObject({
+      id: 'pkg-example', remaining: 888, total: 888, expiresAtMs: 1798732800000,
+      status: 'QUOTA_DETAIL_STATUS_ACTIVE',
+    })
+    expect(packages?.[0]?.title).toEqual({ zh: 'SOTA 专属积分', en: 'SOTA Exclusive Credits' })
+    expect(packages?.[0]?.description?.en).toContain('Sonus')
+    expect(packages?.[0]?.description?.zh).toContain('Sonus')
+
+    // 国内版实测没有这个键：必须**缺席**（`undefined`），不是 `[]` —— 后者会让
+    // 「没有专属包」与「上游没给这个字段」在读者眼里变成同一个形状。
+    const cn = parseUsage({ qoderUsage: { userQuota: { total: 300, used: 0 } } })
+    expect(cn?.dedicatedResourcePackages).toBeUndefined()
+  })
+
+  it('专属包：停用 / 过期的不算，remaining 缺席不折成 0', () => {
+    // 上游用 `available` 与 `status` 两个独立字段表达同一件事；不筛的话，一个
+    // 已停用的包会顶着一行「剩余 888」出现在读数里 —— 用户会以为那笔钱还在。
+    const usage = parseUsage({
+      qoderUsage: {
+        dedicatedResourcePackages: [
+          { id: 'live', remaining: 100, available: true, status: 'QUOTA_DETAIL_STATUS_ACTIVE' },
+          { id: 'expired', remaining: 888, available: false, status: 'QUOTA_DETAIL_STATUS_ACTIVE' },
+          { id: 'stopped', remaining: 888, available: true, status: 'QUOTA_DETAIL_STATUS_EXPIRED' },
+          // 上游这一行没写 remaining：留着（界面画「—」），**不**补成 0。
+          { id: 'unknown', available: true, status: 'QUOTA_DETAIL_STATUS_ACTIVE' },
+          // 不是数字的（`NaN` 线上会变成 null）、负数的都不该被当成读数：
+          // 前者按「没报」，后者按 0（一个「剩余 -5」上屏只会像插件算错了）。
+          { id: 'nan', remaining: null, total: 'n/a', available: true, status: 'QUOTA_DETAIL_STATUS_ACTIVE' },
+          { id: 'negative', remaining: -5, available: true, status: 'QUOTA_DETAIL_STATUS_ACTIVE' },
+          // 读不懂的条目：跳过，但绝不因此把整次解析判失败。
+          null,
+          'garbage',
+        ],
+      },
+    })
+    expect(usage?.dedicatedResourcePackages?.map(p => p.id)).toEqual(['live', 'unknown', 'nan', 'negative'])
+    expect(usage?.dedicatedResourcePackages?.[1]?.remaining).toBeUndefined()
+    expect(usage?.dedicatedResourcePackages?.[2]?.remaining).toBeUndefined()
+    expect(usage?.dedicatedResourcePackages?.[2]?.total).toBeUndefined()
+    expect(usage?.dedicatedResourcePackages?.[3]?.remaining).toBe(0)
+  })
 })
 describe('sash usage credential (regression)', () => {
   // 实测（2026-10，CN）：`sash/api/v2/me/usage` 只认 jobToken 交换产出的

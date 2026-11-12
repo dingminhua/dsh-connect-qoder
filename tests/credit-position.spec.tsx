@@ -837,6 +837,22 @@ describe('面板表格不会被长文案撑开（issue #34）', () => {
     expect(rulesMentioning('dsm-qoder-composer-panel-num').join(';')).toContain('white-space:nowrap')
   })
 
+  it('专属积分那一列有定宽与截断兜底（issue #38，与「积分」列同一套判据）', () => {
+    // 加列这件事本身会把 issue #34 的修复重新打开一次：`table-layout:fixed` 之后
+    // 列宽只认声明，新加的那一列如果没写宽度，它会与账号列平分剩下的像素 ——
+    // 一个永远只有四位数的数字换掉半格账号名。
+    const cells = rulesMentioning('dsm-qoder-composer-panel-dedicated').join(';')
+    expect(cells, '专属列没定宽').toContain('width:56px')
+    // 它没有单独再写 overflow/ellipsis：那三条由面板数字格那条规则统一给
+    // （两个类名总在同一格子上），重复声明只会让两处宽度打架。
+    const num = rulesMentioning('dsm-qoder-composer-panel-num').join(';')
+    expect(num).toContain('overflow:hidden')
+    expect(num).toContain('text-overflow:ellipsis')
+    // 浮层加宽那一条必须存在，否则多一列时账号名被压扁（56px 正好是这一列的预算）。
+    const wide = rulesMentioning('dsm-qoder-composer-panel-wide').join(';')
+    expect(wide, '没有加宽浮层').toContain('304px')
+  })
+
   it('状态文案可以折行 —— 它继承的 nowrap 正是根因', () => {
     const mark = rulesMentioning('dsm-qoder-composer-panel-mark')
       .find(body => body.includes('font-size:11px'))

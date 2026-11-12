@@ -7,6 +7,9 @@ import {
   deriveCatalog,
   withoutRouters,
   withoutAbstractModels,
+  withoutForeignRegionModels,
+  ABSTRACT_MODEL_IDS,
+  GLOBAL_ONLY_MODEL_IDS,
   QoderCatalog,
   QODER_FALLBACK_MODELS,
   pickDefaultContextWindow,
@@ -247,8 +250,8 @@ describe('selection derivation', () => {
     // 用户先要求「国际版不要显示这些抽象选项」，随后在国内版模型栏里看到
     // `Fast (0.80x)` 仍在，追加「国内版的 fast 也取消掉」。
     //
-    // 所以这条判据**不属于区域**：`Fast` / `Ultimate` / `Efficient` / `Sonus` /
-    // `Cantus` 只有一个抽象形容词，换到哪个区域都看不出背后是哪个模型。
+    // 所以这条判据**不属于区域**：`Fast` / `Ultimate` / `Efficient` 只有一个
+    // 抽象形容词，换到哪个区域都看不出背后是哪个模型。
     // 我此前按「只有国际版过滤」实现，依据是「上游只为国际版下发」——那条依据
     // 是**错的**：兜底表里 `fast` 两个区域共用，国内版一样会出现。
     //
@@ -256,12 +259,59 @@ describe('selection derivation', () => {
     // 单词都丢」）会误伤真模型。
     const models = [
       fallbackModelInfo(QODER_FALLBACK_MODELS[0]!),
-      ...['fast', 'ultimate', 'efficient', 'smodel', 'cmodel'].map(key => ({
+      ...['fast', 'ultimate', 'efficient'].map(key => ({
         ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key.toUpperCase(),
       })),
     ]
     const kept = withoutAbstractModels(models).map(m => m.key)
     expect(kept, '抽象命名的条目没被过滤掉').toEqual([models[0]!.key])
+  })
+
+  it('Sonus / Cantus 不是抽象词，绝不能被那一条判据吃掉（issue #37）', () => {
+    // 判据是「看不出背后是哪家的哪个模型」，而 Sonus / Cantus 是**产品名**，
+    // 与 Qwen3.8-Max、GLM-5.3 同一层级：上游给它们 `is_new: true`（fast /
+    // efficient / ultimate 都没有），说明上游把它们当新模型推送，不是路由档位；
+    // 它们还是全目录里最贵的两条（x8 / x4），恰恰是付费用户最想主动选的。
+    //
+    // 这一条是**回归护栏**，钉的是「别再把产品名塞进那张表」：把 `smodel` /
+    // `cmodel` 加回 `ABSTRACT_MODEL_IDS`，这里立刻红。
+    for (const key of ['smodel', 'cmodel']) {
+      expect(ABSTRACT_MODEL_IDS.has(key), `${key} 又被当成抽象命名了`).toBe(false)
+    }
+    const models = ['smodel', 'cmodel'].map(key => ({
+      ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key.toUpperCase(),
+    }))
+    expect(withoutAbstractModels(models).map(m => m.key)).toEqual(['smodel', 'cmodel'])
+  })
+
+  it('国内版过滤「上游没有的」条目：Sonus / Cantus 只在国际版出现', () => {
+    // issue #37 的直接后果，值得单独一条：兜底表 `QODER_FALLBACK_MODELS` 是
+    // **两个区域共用**的（它没有区域轴），里面就写着 `smodel` / `cmodel`。
+    // 它们过去被「抽象命名」那张表顺手挡住，所以没人发现兜底目录在国内版其实
+    // 是超集。把产品名从那张表移出之后，这层遮挡消失 —— 如果不补这一条判据，
+    // 国内版用户会在选择器里看到一只点下去就失败的模型。
+    const models = ['smodel', 'cmodel', 'qmodel_38max'].map(key => ({
+      ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key,
+    }))
+    expect(withoutForeignRegionModels(models, 'global').map(m => m.key), '国际版被误删')
+      .toEqual(['smodel', 'cmodel', 'qmodel_38max'])
+    expect(withoutForeignRegionModels(models, 'cn').map(m => m.key), '国内版还在列上游没有的模型')
+      .toEqual(['qmodel_38max'])
+    // 不传区域 = 不按区域收窄（老调用点 / 纯函数测试的兼容面）。
+    expect(withoutForeignRegionModels(models).map(m => m.key)).toHaveLength(3)
+    // 产品名只受**区域**那一条约束，否则「把它们从抽象表移出去」这个修复就白做
+    // 了 —— 这一对断言是这次修复的正身。
+    for (const key of ['smodel', 'cmodel']) {
+      expect(ABSTRACT_MODEL_IDS.has(key), `${key} 又回到抽象表里了`).toBe(false)
+      expect(GLOBAL_ONLY_MODEL_IDS.has(key), `${key} 应当受区域判据约束`).toBe(true)
+    }
+    // 反向：区域表只放**拿得出实测证据**的 id。`ultimate` / `efficient` 虽然在
+    // 兜底目录里被注释成「仅国际版下发」，实测条数表（国内 10 / 国际 14）证明
+    // 国内版有它们；而它们已被抽象表在两区过滤，放不放进这张表都看不出差别 ——
+    // 所以宁可空着，也不要让一张解释性表格写着一条没核实的结论。
+    for (const key of ['ultimate', 'efficient']) {
+      expect(GLOBAL_ONLY_MODEL_IDS.has(key), `${key} 没有实测依据却被写进区域表`).toBe(false)
+    }
   })
 
   it('国内版与国际版都过滤：这条判据不属于区域', () => {
@@ -271,7 +321,7 @@ describe('selection derivation', () => {
     //
     // 保留区域参数是**为了不影响别的判据**（有些过滤确实按区域），但这个函数
     // 自己的答案与区域无关 —— 两个区域必须给出同一个结果。
-    const ids = ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']
+    const ids = ['fast', 'ultimate', 'efficient']
     const models = ids.map(key => ({
       ...fallbackModelInfo(QODER_FALLBACK_MODELS[0]!), key, displayName: key,
     }))

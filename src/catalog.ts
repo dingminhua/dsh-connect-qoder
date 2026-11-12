@@ -523,14 +523,24 @@ export function withoutRouters(models: readonly QoderModelInfo[]): QoderModelInf
 /**
  * 那几条「抽象命名」的模型 id —— **两个区域都过滤**。
  *
- * 指的是目录里这几行：`Fast` / `Ultimate` / `Efficient` / `Sonus` / `Cantus`。
- * 它们与 `Qwen3.8-Max` 那种「看名字就知道是谁家的哪个型号」的条目不同：只有
- * 一个抽象形容词，看不出背后是哪一家的模型，勾了也不知道自己勾的是什么。
+ * 指的是目录里这几行：`Fast` / `Ultimate` / `Efficient`。它们与 `Qwen3.8-Max`
+ * 那种「看名字就知道是谁家的哪个型号」的条目不同：只有一个抽象形容词，看不出
+ * 背后是哪一家的模型，勾了也不知道自己勾的是什么。
  *
  * 用户先要求「国际版不要显示这些抽象选项」，随后在国内版模型栏里看到
  * `Fast (0.80x)` 仍在，追加「国内版的 fast 也取消掉」。所以这条判据**不属于
  * 区域** —— 我此前按「上游只为国际版下发」把它限定在 global，那条依据是错的：
  * 兜底表两个区域共用，`fast` 在国内版目录里本来就在。
+ *
+ * **`Sonus` / `Cantus` 曾经也在这张表里，是错的（issue #37）。** 判据是「看不
+ * 出背后是哪家的哪个模型」，而这两个是**产品名**，与 `Qwen3.8-Max`、`GLM-5.3`
+ * 同一层级：上游对它们下发 `is_new: true`（`fast` / `efficient` / `ultimate`
+ * 都没有），说明上游把它们当新模型推送，而不是路由档位；它们还是全目录最贵的
+ * 两条（x8 / x4），恰恰是付费用户最想主动选的。把它们归进这一档，等于拿一句
+ * 「用户不想看抽象词」去藏两只具体模型。
+ *
+ * 它们**不属于区域**，但**属于上游的哪个区域**是另一件事：见
+ * {@link GLOBAL_ONLY_MODEL_IDS}。
  *
  * **用显式表，不用名字启发式**（与 `ROUTER_MODEL_IDS` 同一条判据）：「首字母
  * 大写的单词都丢」迟早会误伤一个真的叫这个名字的模型。要往这里加 id，先拿到
@@ -543,6 +553,45 @@ export const ABSTRACT_MODEL_IDS: ReadonlySet<string> = new Set([
   'fast',
   'ultimate',
   'efficient',
+])
+
+/**
+ * 上游**只在国际版**下发的模型 id —— 国内版目录里一律去掉。
+ *
+ * 这一条与 {@link ABSTRACT_MODEL_IDS} 是**两套判据**，混过一次，值得写清楚：
+ *
+ *   - 抽象命名：说什么都不该列（用户不想做无谓的选择）；
+ *   - 区域专属：**上游国内版根本没有这个模型**，列出来是一个点下去就失败的选项。
+ *
+ * 依据是 `src/upstream.ts` 的实测表（2026-10-29，两个区域各一枚真实 PAT）：
+ * 国内版 10 条、国际版 14 条，多出来的正是 `smodel` / `cmodel`（`fast` 两区
+ * 都有）。这张表是**静默**的差异——国内版请求一个不存在的 key，上游不会提前
+ * 告诉你。
+ *
+ * 为什么这条判据必须存在（issue #37 的直接后果）：静态兜底目录 `QODER_FALLBACK_MODELS`
+ * 是**两个区域共用**的（它没有区域轴），里面就写着 `smodel` / `cmodel`
+ * （注释原文：「仅国际版下发（cn 没有这几条）」）。它们过去被「抽象命名」那张
+ * 表顺手挡住了，所以没人发现兜底目录在国内版其实是**超集**。把 `smodel` /
+ * `cmodel` 从那张表里移出之后，这层遮挡消失，兜底目录会把两只国内版没有的
+ * 模型摆到国内版用户面前——于是这条判据从「将来也许用得上」变成**现在必须
+ * 有效**。
+ *
+ * 过滤同样发生在读点，不动存档：存档里若有，新代码跑起来那一刻就消失。
+ *
+ * ## 为什么表里**只有** `smodel` / `cmodel`
+ *
+ * 兜底目录的注释把 `ultimate` / `efficient` 也写在「仅国际版下发」那一栏里，但
+ * `src/upstream.ts` 的实测表（同一组两个真实 PAT 的目录条数）说国内版是 10 条、
+ * 国际版 14 条，多出来的只有 `smodel` / `cmodel` / `fast` —— 也就是说 `ultimate`
+ * 与 `efficient` 在国内版**是有的**。两份记录互相矛盾。
+ *
+ * 这条矛盾不碍事（那两条已被 `ABSTRACT_MODEL_IDS` 在**两个区域**都过滤掉，这张
+ * 表怎么写都不改变它们的可见性），所以这里选择**不背书**自己没实测过的那一半：
+ * 一张将来可能被用来解释「为什么国内版少了某个模型」的表，只该放能拿出证据的 id。
+ * 哪天 `ultimate` / `efficient` 从抽象表里移出（它们确实是抽象词，移出的理由不会
+ * 成立），再补一次两区实测来决定它们归不归这里。
+ */
+export const GLOBAL_ONLY_MODEL_IDS: ReadonlySet<string> = new Set([
   'smodel',
   'cmodel',
 ])
@@ -557,12 +606,38 @@ export const ABSTRACT_MODEL_IDS: ReadonlySet<string> = new Set([
  *   保留它有两个理由：调用点本来就握着区域（传了比不传更省心）；以及这里是
  *   「按区域过滤」这一类判据将来会加进来的地方 —— 到时候它就有用了。签名里
  *   写清楚「现在不按区域分支」，比让后来的人以为漏判了一次要好。
+ *
+ *   ⚠️ 「按区域过滤」的那一条**没有**加进这个函数，而是另开了
+ *   {@link withoutForeignRegionModels}：两个判据的理由完全不同（一个说「看不
+ *   出是什么」，一个说「国内版根本没有」），合在一个函数里就没人能单独改其中
+ *   一条，而 issue #37 正是「改一条时必须不动另一条」。
  */
 export function withoutAbstractModels(
   models: readonly QoderModelInfo[],
   _region?: 'cn' | 'global',
 ): QoderModelInfo[] {
   return models.filter(model => !ABSTRACT_MODEL_IDS.has(model.key.trim().toLowerCase()))
+}
+
+/**
+ * 去掉**该区域上游不提供**的条目（见 {@link GLOBAL_ONLY_MODEL_IDS}）。
+ *
+ * 只对国内版生效：国际版是那张表的全集，没什么可去的。
+ *
+ * 为什么不写在 `upstream.fetchModels`（真实的写点）里：那里拿不到「目录是从哪
+ * 个区域的存档里读回来的」——`lastCatalog` 是用户档案里的旧快照，而静态兜底
+ * 表两个区域共用。读点过滤是唯一能同时盖住这三条来源的位置（存档 / 兜底 /
+ * 实时），与 `withoutRouters` 的选择相同、理由相同。
+ *
+ * @param models - 一个区域的目录（可能是存档、兜底或实时拉取的结果）。
+ * @param region - 目录所属区域。**这一条按区域分支**：`global` 原样返回。
+ */
+export function withoutForeignRegionModels(
+  models: readonly QoderModelInfo[],
+  region?: 'cn' | 'global',
+): QoderModelInfo[] {
+  if (region !== 'cn') return [...models]
+  return models.filter(model => !GLOBAL_ONLY_MODEL_IDS.has(model.key.trim().toLowerCase()))
 }
 
 /**

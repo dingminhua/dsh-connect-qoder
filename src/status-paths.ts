@@ -784,6 +784,44 @@ export interface QoderWebAccountCredit {
    * 当日窗口结束时刻。后者是本地推算，面板要写明，不能与上游说的话混成一句。
    */
   retrySource?: QoderWebPoolRetrySource
+  /**
+   * 这个号的**专属积分包**（issue #38），逐个透传上游的读数。
+   *
+   * 为什么挂在「账号」这一行而不是整份文档上：`dedicatedResourcePackages` 躺在
+   * `qoderUsage` 里，即**读这份报文那个号**的专属包。面板是按账号列表格，
+   * 所以每一行填自己的 —— 这张表本来就是逐号各读一次 usage
+   * （`accountCreditsOf`），多带一个字段不增加任何上游调用。
+   *
+   * 缺席 = 这个号没有专属包（国内版恒缺席：上游实测不给这个键），不是读失败。
+   */
+  dedicated?: readonly QoderWebDedicatedPackage[]
+}
+
+/**
+ * 一笔专属积分包，面板要画的那几个字段（issue #38）。
+ *
+ * 与上游 DTO（`QoderDedicatedPackage`）分开声明，理由与
+ * {@link QoderWebProbeOutcome} 相同：`status-paths.ts` 是**无 node 依赖的桥**，
+ * 客户端会 import 它，不该顺着类型把上游模块（`node:http`、cosy 签名那一套）
+ * 拖进浏览器包里。
+ */
+export interface QoderWebDedicatedPackage {
+  /** 上游的包 id —— 同一次报文内唯一，界面拿它做 React key。 */
+  id: string
+  /**
+   * 上游自己的双语标题（`SOTA 专属积分` / `SOTA Exclusive Credits`）。
+   *
+   * **插件不翻译它。** 上游在 `displayLabels[].valueI18n` 里已经给了两种语言，
+   * 自己再写一份译文只会在上游改词时落后一步，而这是个营销词、不是术语。
+   */
+  title?: { zh?: string, en?: string }
+  /** 上游自己的双语说明（「在模型选择器中选择 Sonus 时优先抵扣该积分」）。 */
+  description?: { zh?: string, en?: string }
+  /** 剩余额度；缺席 = 上游这一行没报（**不是 0**）。 */
+  remaining?: number
+  total?: number
+  /** 这一包的到期时刻（ms）。 */
+  expiresAtMs?: number
 }
 
 // ---------------------------------------------------------------------------

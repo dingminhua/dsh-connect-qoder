@@ -955,6 +955,12 @@ export const QODER_COMPOSER_CSS = `
   backdrop-filter:var(--dsw-menu-backdrop-filter,none);
   font-size:12px;line-height:18px;color:var(--dsw-alias-label-secondary,#444);
 }
+/* 多一列专属积分时的加宽（issue #38）。248px 是按「账号名 + 64px 数字」调的：
+   再塞一列进来，账号名会直接从两行文字被压成一截省略号。56px 是那一列自己的
+   宽度预算（与 .dsm-qoder-composer-panel-dedicated 的 width 对齐），加宽的是
+   **浮层**；表格仍是 width:100% + table-layout:fixed（issue #34 的修复不动）。
+   clamp 的上限照旧是视口：窄屏上它仍然是「不超出窗口」，只是少了 56px 可用宽。 */
+.dsm-qoder-composer-panel-wide{width:min(304px,calc(100vw - 24px))}
 .dsm-qoder-composer-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
 /* nowrap 不是洁癖：页头是一个标题加一颗 11px 的控件挤在约 250px 的浮层里，
    设置按钮一进来，标题当场折成两行（workbuddy 在真机 Desktop 上量到过
@@ -1068,6 +1074,17 @@ export const QODER_COMPOSER_CSS = `
   width:64px;overflow:hidden;text-overflow:ellipsis;
 }
 .dsm-qoder-composer-panel-table thead th.dsm-qoder-composer-panel-num{padding-right:0}
+/* 专属积分那一列（issue #38）：56px，比「积分」窄一档。
+   宽度的来历与 64px 那条相同 —— Chrome、12px、tabular-nums 下四位数（含千分位
+   「2,000」）约 36px，表头「SOTA」（11px）不到 30px，56 是留了余量的那一档；
+   再宽就只是从账号名那一格（全表最贵的一格）身上割肉。
+   它**没有**单独再写 overflow/ellipsis：那三条已经由上面「面板数字格」那条规则
+   给了（两个类名总在同一格子上），重复一遍只会让两处宽度声明打架。
+   选择器**指名 th / td 而不用裸类名**：上面那条定宽规则带着 thead th / tbody td，
+   特异性比裸类名高 —— 只写裸类名的话表头那一格仍按 64px 算，而 table-layout:fixed
+   拿表头那行当列宽基准，于是正文 56、表头 64，实际列宽以 64 为准。 */
+.dsm-qoder-composer-panel-table thead th.dsm-qoder-composer-panel-dedicated,
+.dsm-qoder-composer-panel-table tbody td.dsm-qoder-composer-panel-dedicated{width:56px}
 .dsm-qoder-composer-panel-table tbody th{
   padding:0;font-weight:400;text-align:left;vertical-align:middle;
 }
@@ -1113,6 +1130,11 @@ export const QODER_COMPOSER_CSS = `
   outline:2px solid var(--dsw-alias-brand-primary,#5686fe);outline-offset:-1px;
 }
 .dsm-qoder-composer-panel-switch:disabled{cursor:default}
+/* 这一行没有专属包时的「—」：比数字淡一档，别让读者把它读成一个读数。
+   只给专属那一列用；「余额读不出来」的格子仍是原来的裸字面量 —— 那条路
+   已有自己的回归用例（composer-billing 的「计费号哪都没有余额读数」），
+   顺手改它的样式属于本次之外的改动。 */
+.dsm-qoder-composer-panel-none{color:var(--dsw-alias-label-tertiary,GrayText)}
 /* 点的颜色由数据驱动（行内 style，见 account-state.ts），这里只留尺寸。
    此前的两条规则把颜色钉死在 CSS 里 -- 面板于是不看数据就报「当前使用」，
    额度用尽的号顶着绿点、能用的号是灰的（用户实拍 2026-10-18）。 */

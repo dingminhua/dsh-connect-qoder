@@ -142,27 +142,36 @@ describe('Qoder provider registration', () => {
     expect(cnModels.map(m => m.id)).toContain('dmodel')
     const globalModels = await ctx.llm.listModels('qoder-global')
     expect(globalModels.length).toBeGreaterThan(0)
-    // 国际版目录**不再**与国内版逐条相等（用户要求：国际版不列那几个抽象命名的
-    // 条目）。反过来也不做「CN 有的 GLOBAL 都要有」——共用的兜底表里 `fast`
-    // 这类条目本来两个区域都有，只在国际版这一侧被过滤，所以收窄方向是单向的。
+    // 国际版目录**不再**与国内版逐条相等。两个方向的差异各有来由：
+    //   · 国际版多：`smodel` / `cmodel` 只在国际版上游下发（issue #37 之前它们
+    //     被「抽象命名」那张表顺手挡住，看起来两区一样）；
+    //   · 国内版多：不存在（国内版是国际版的子集）——两个区域共用的兜底表里
+    //     `fast` 这类条目本来两个区域都有，只是两区都会被过滤掉。
     const cnIds = cnModels.map(m => m.id)
     const globalIds = globalModels.map(m => m.id)
     expect(globalIds.length).toBeGreaterThan(0)
     expect(cnIds).toContain('qmodel_38max')
     // 兜底表是**两个区域共用**的（它没有区域轴），所以 `fast` 这种条目在两个
     // 区域的兜底目录里都会出现。用户先要求国际版不要显示，随后在国内版模型栏里
-    // 看到 `Fast (0.80x)` 仍在，追加「国内版的 fast 也取消掉」——所以这条判据
-    // 不属于区域，两个区域都要断言。
-    for (const abstractId of ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']) {
+    // 看到 `Fast (0.80x)` 仍在，追加「国内版的 fast 也取消掉」——所以「抽象命名」
+    // 这条判据不属于区域，两个区域都要断言。
+    for (const abstractId of ['fast', 'ultimate', 'efficient']) {
       expect(globalIds, `国际版还在列 ${abstractId}`).not.toContain(abstractId)
       expect(cnIds, `国内版还在列 ${abstractId}`).not.toContain(abstractId)
+    }
+    // **Sonus / Cantus 不在这张表里**（issue #37）：它们是产品名，不是
+    // 「看不出背后是谁」的抽象词，国际版必须列出来（上游给它们 is_new，且是全
+    // 目录最贵的两条）。它们属于**另一条**判据 —— 上游国内版根本不提供它们。
+    for (const globalOnly of ['smodel', 'cmodel']) {
+      expect(globalIds, `国际版丢了上游下发的 ${globalOnly}`).toContain(globalOnly)
+      expect(cnIds, `国内版列了上游没有的 ${globalOnly}`).not.toContain(globalOnly)
     }
   })
 
   it('抽象命名的条目在两个区域的模型选择器里都不出现', async () => {
     // 用户先要求「国际版不要显示这些抽象选项」，随后在国内版看到 `Fast (0.80x)`
-    // 仍在，追加「国内版的 fast 也取消掉」。Fast / Ultimate / Efficient / Sonus /
-    // Cantus 这几行只有一个抽象形容词，看不出背后是哪个模型。
+    // 仍在，追加「国内版的 fast 也取消掉」。Fast / Ultimate / Efficient 这几行
+    // 只有一个抽象形容词，看不出背后是哪个模型。
     //
     // 这条走**真实的选择器路径**（`ctx.llm.listModels` → 适配器 → 运行时目录），
     // 而不是只测那个纯函数：纯函数测绿了、但没人调用它，是这一版最容易犯的错。
@@ -173,7 +182,7 @@ describe('Qoder provider registration', () => {
     await mountQoder(ctx, { regions: {} })
     await expect.poll(() => ctx.llm.listProviders().map(p => p.id)).toContain('qoder-global')
 
-    const abstractIds = ['fast', 'ultimate', 'efficient', 'smodel', 'cmodel']
+    const abstractIds = ['fast', 'ultimate', 'efficient']
     const globalIds = (await ctx.llm.listModels('qoder-global')).map(m => m.id)
     const cnIds = (await ctx.llm.listModels('qoder')).map(m => m.id)
     expect(globalIds.length).toBeGreaterThan(0)
@@ -183,6 +192,12 @@ describe('Qoder provider registration', () => {
       // 用户实拍国内版的 `Fast (0.80x)` 那一行 —— 这条就是钉它。
       expect(cnIds, `国内版选择器里还有 ${id}`).not.toContain(id)
     }
+    // 区域专属（issue #37）：兜底表两个区域共用，`smodel` / `cmodel` 只该在
+    // 国际版出现 —— 国内版选了也只会得到一次上游失败。
+    expect(globalIds, '国际版选择器里没有 Sonus').toContain('smodel')
+    expect(globalIds, '国际版选择器里没有 Cantus').toContain('cmodel')
+    expect(cnIds, '国内版选择器里出现了上游国内版没有的 Sonus').not.toContain('smodel')
+    expect(cnIds, '国内版选择器里出现了上游国内版没有的 Cantus').not.toContain('cmodel')
     // 过滤只认显式表：两个区域该有的真模型一个都不少。
     for (const real of ['qmodel_38max', 'dmodel']) {
       expect(cnIds, `国内版丢了真模型 ${real}`).toContain(real)
@@ -1291,6 +1306,50 @@ describe('creditsOf：套餐到期与积分到期分开（issue #31 建议 1）'
       // 「不按月刷新」与「作者没填」。
       expect(pkg).not.toHaveProperty('monthly')
     }
+  })
+
+  it('专属积分包不进 `total` —— 它是另一笔钱，不是普通积分的一部分（issue #38）', () => {
+    // 上游原文：「在模型选择器中选择 Sonus 模型时优先抵扣该积分」。也就是说
+    // 不选那只模型，这笔钱一分都动不了。把它加进 `total` 会让胶囊显示一个用户
+    // 花不掉的数字 —— 这正是 `creditsOf` 必须**看不见**它的理由，`dedicatedPackagesOf`
+    // 才对它负责。
+    const view = Qoder.creditsOf({
+      userQuota: { total: 300, used: 0 },
+      dedicatedResourcePackages: [{ id: 'sota', remaining: 888, total: 888 }],
+    })
+    expect(view.total, '专属积分被加进了普通积分').toBe(300)
+    expect(view.packages.map(p => p.packageName)).toEqual(['base'])
+  })
+})
+
+describe('dedicatedPackagesOf：专属积分包映射（issue #38）', () => {
+  it('透传名称 / 读数 / 到期，并且只留还有余额的那些', () => {
+    const out = Qoder.dedicatedPackagesOf({
+      dedicatedResourcePackages: [
+        {
+          id: 'pkg-live', remaining: 888, total: 888, expiresAtMs: 1798732800000,
+          title: { zh: 'SOTA 专属积分', en: 'SOTA Exclusive Credits' },
+          description: { zh: '说明', en: 'hint' },
+        },
+        // 用光的：不进读数（留着会让用户以为那笔钱还在）。
+        { id: 'pkg-spent', remaining: 0, total: 888 },
+        // 上游没报 remaining：**留着**（画「—」），因为「没报」不是「用完了」。
+        { id: 'pkg-unknown' },
+      ],
+    })
+    expect(out.map(p => p.id)).toEqual(['pkg-live', 'pkg-unknown'])
+    expect(out[0]).toMatchObject({
+      remaining: 888, total: 888, expiresAtMs: 1798732800000,
+      title: { zh: 'SOTA 专属积分', en: 'SOTA Exclusive Credits' },
+    })
+    expect(out[1]?.remaining).toBeUndefined()
+    // 没有 id 时退回位置索引：React key 至少要稳定，绝不编一个含账号数据的串。
+    const fallback = Qoder.dedicatedPackagesOf({ dedicatedResourcePackages: [{ id: '', remaining: 5 }] })
+    expect(fallback[0]?.id).toBe('dedicated-0')
+  })
+
+  it('国内版报文（没有这个键）得到空数组，不编造', () => {
+    expect(Qoder.dedicatedPackagesOf({ userQuota: { total: 300, used: 0 } })).toEqual([])
   })
 })
 

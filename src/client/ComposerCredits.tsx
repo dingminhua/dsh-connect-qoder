@@ -30,11 +30,12 @@ import {
 import { writeAccountSlot } from './account-selection.ts'
 import type { QoderAccountScope } from './account-selection.ts'
 import { exclusionText } from './exclusion-text.ts'
+import { hostLanguage } from './promo-badge.ts'
 import { accountStateTone, accountStateColor } from './account-state.ts'
 import { QODER_COMPOSER_CSS } from './styles.ts'
 import { installPluginStyle } from './style-injector.ts'
 import { pollMinutesOf } from '../status-paths.ts'
-import type { QoderWebAccountCredit, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
+import type { QoderWebAccountCredit, QoderWebDedicatedPackage, QoderWebRegion, QoderWebUsage } from '../status-paths.ts'
 import type { QoderSettingsKey, Translate } from './locales.ts'
 
 /**
@@ -126,6 +127,36 @@ function formatCredits(value: number): string {
  */
 function formatClock(value: number): string {
   return new Date(value).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' })
+}
+
+/**
+ * A calendar date in the reader's locale — for an expiry, which is usually not
+ * today.
+ *
+ * Separate from {@link formatClock} on purpose: a bare `11:59 PM` on a package
+ * that expires next week reads as tonight. The expiry of an exclusive credit
+ * package is a date the user plans around, so it gets its own format.
+ */
+function formatDay(value: number): string {
+  return new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: '2-digit', day: '2-digit' })
+}
+
+/**
+ * 上游给的双语文案按**界面语言**挑一侧（issue #38）。
+ *
+ * 语言信号复用 `promo-badge.ts` 的 `hostLanguage(t)`：宿主绑定好的 `t` 是这里
+ * 唯一能读到的界面语言（浏览器语言不会跟着 DSH 的语言设置变，只看
+ * `navigator.language` 会出现「中文界面配英文表头」）。
+ *
+ * 只在下发的那一侧缺席时退回另一侧 —— 两条都是上游自己的话，不是我们翻译的，
+ * 所以「退回」不是降级，只是换了上游给的另一种说法。
+ */
+function localizedLabel(
+  label: { zh?: string, en?: string } | undefined,
+  english: boolean,
+): string | undefined {
+  if (label === undefined) return undefined
+  return english ? (label.en ?? label.zh) : (label.zh ?? label.en)
 }
 
 export function ComposerCredits(props: ComposerCreditsProps) {
@@ -428,6 +459,73 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const poolTestable = (poolMembers?.length ?? 0) > 0
 
   /**
+   * 专属积分包那一列（issue #38）在**这一张表里**到底要不要画。
+   *
+   * 判据只有一条：**有没有哪一行真的带 `dedicated`**。不能按区域判（国内版实测
+   * 没有这个字段，但那是上游的现状、不是契约），也不能按「这份文档是国际版」判
+   * —— 面板列的是逐号读数，可能混着两个来源。没有专属包时整列（连 `th` 一起）
+   * 不渲染，于是国内版与没有专属包的用户看到的仍是原来那两列。
+   */
+  const dedicatedShown = rows.some(row => (row.dedicated?.length ?? 0) > 0)
+  /** 界面是否英文 —— 只用来挑上游双语标题/描述里的哪一侧。 */
+  const english = hostLanguage(t).toLowerCase().startsWith('en')
+
+  /**
+   * 一行的专属积分读数（合计 + 悬停）。
+   *
+   * **多个包只显示合计**（issue #38 留了「合计或按包分行」两个选项）：这一列
+   * 只有 56px，分行会让一个账号在某一行里占掉三四行高，而面板的用途是「谁在
+   * 服务、还剩多少」。逐包的细节放进悬停 —— 那里放得下标题、说明与各自的到期
+   * 时刻，也就没有丢信息。
+   */
+  const dedicatedOf = (packages: readonly QoderWebDedicatedPackage[] | undefined): {
+    text: string
+    title: string | undefined
+  } | undefined => {
+    if (packages === undefined || packages.length === 0) return undefined
+    // 全部缺席 `remaining` 时合计没有意义 —— 那是「上游没报」而不是「0」。
+    const known = packages.filter(entry => entry.remaining !== undefined)
+    const total = known.length === 0
+      ? undefined
+      : known.reduce((sum, entry) => sum + (entry.remaining ?? 0), 0)
+    const lines: string[] = []
+    for (const entry of packages) {
+      const name = localizedLabel(entry.title, english) ?? t('composer.dedicated')
+      const hint = localizedLabel(entry.description, english) ?? t('composer.dedicatedHint')
+      const amount = entry.remaining === undefined ? '—' : formatCredits(entry.remaining)
+      const expires = entry.expiresAtMs === undefined
+        ? ''
+        : ` · ${t('composer.dedicatedExpires', { time: formatDay(entry.expiresAtMs) })}`
+      lines.push(`${name}: ${amount}${expires} — ${hint}`)
+    }
+    // 多个包时先给一行合计：悬停里逐条列出之后，读者仍需要一个总数。
+    if (packages.length > 1 && total !== undefined) {
+      lines.unshift(t('composer.dedicatedMultiple', { count: packages.length, remaining: formatCredits(total) }))
+    }
+    return {
+      text: total === undefined ? '—' : formatCredits(total),
+      title: lines.join('\n'),
+    }
+  }
+
+  /**
+   * 这一列表头的文字：优先**上游自己的话**（`title` 的当前语言那一侧）。
+   *
+   * 上游在 `displayLabels` 里已经给了「SOTA 专属积分 / SOTA Exclusive Credits」，
+   * 而这是个营销词、不是术语 —— 自己再写一份译文只会在上游改词时落后。字典里
+   * 那条 `composer.dedicated` 只是上游没下发标题时的兜底，不是主文案。
+   */
+  const dedicatedHeader = (() => {
+    for (const row of rows) {
+      for (const entry of row.dedicated ?? []) {
+        const label = localizedLabel(entry.title, english)
+        if (label !== undefined) return label
+      }
+    }
+    return t('composer.dedicated')
+  })()
+
+  /**
    * 页脚显示的时刻：优先用**数据的真实读取时刻**（宿主给的 `creditsAtMs`），
    * 没有才退回本组件 fetch 成功的时刻。
    *
@@ -455,7 +553,12 @@ export function ComposerCredits(props: ComposerCreditsProps) {
       {open && createPortal(
         <div
           ref={panelRef}
-          className="dsm-qoder-composer-panel"
+          // 多一列时把浮层加宽 56px（issue #38）：248px 是按「账号 + 64px 数字」
+          // 调的，第三列直接从账号名身下抢位置。加宽的是**浮层**而不是表格 ——
+          // 表格仍是 width:100%，`table-layout:fixed` 照旧（issue #34 的修复）。
+          className={dedicatedShown
+            ? 'dsm-qoder-composer-panel dsm-qoder-composer-panel-wide'
+            : 'dsm-qoder-composer-panel'}
           style={position ?? { visibility: 'hidden', left: 0, top: 0 }}
           role="dialog"
           aria-label={t('composer.panelTitle')}
@@ -577,6 +680,13 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                   <thead>
                     <tr>
                       <th scope="col">{t('composer.account')}</th>
+                      {/* 专属积分（issue #38）：**独立一列、在普通积分左边**，因为
+                          它是「选了某只模型才优先抵扣」的另一笔钱 —— 加进右边那个
+                          数字会让胶囊显示一个用户花不掉的总数。没有专属包时这一列
+                          （连 th 一起）不渲染，两列形态与以前逐字相同。 */}
+                      {dedicatedShown
+                        ? <th scope="col" className="dsm-qoder-composer-panel-num dsm-qoder-composer-panel-dedicated">{dedicatedHeader}</th>
+                        : null}
                       <th scope="col" className="dsm-qoder-composer-panel-num">{t('composer.credits')}</th>
                     </tr>
                   </thead>
@@ -598,6 +708,8 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                       // 点色只有两种：能用绿、不能用红（account-state.ts 的同一判定，
                       // 与设置页大表同源）。此前它还要分辨「测过/没测过」，用户改口
                       // 后没测过但没被排除就是「能用」——绿。
+                      /** 这一行的专属积分读数（合计 + 悬停）；没有包时 `undefined`。 */
+                      const rowDedicated = dedicatedOf(row.dedicated)
                       const dotColor = accountStateColor(accountStateTone({
                         ...row.excludedBy === undefined ? {} : { excludedBy: row.excludedBy },
                         ...row.probeOutcome === undefined ? {} : { probeOutcome: row.probeOutcome },
@@ -636,6 +748,17 @@ export function ComposerCredits(props: ComposerCreditsProps) {
                               </span>
                             </button>
                           </th>
+                          {/* 专属包只填在**它自己的那一行**：`dedicated` 是逐号读
+                              usage 时各号自己那份，别的行没有就是没有（不是 0）。 */}
+                          {dedicatedShown
+                            ? (
+                              <td className="dsm-qoder-composer-panel-num dsm-qoder-composer-panel-dedicated">
+                                {rowDedicated === undefined
+                                  ? <span className="dsm-qoder-composer-panel-none">—</span>
+                                  : <span title={rowDedicated.title}>{rowDedicated.text}</span>}
+                              </td>
+                              )
+                            : null}
                           <td className="dsm-qoder-composer-panel-num">
                             {row.credits === undefined ? '—' : formatCredits(row.credits)}
                           </td>

@@ -361,6 +361,54 @@ export interface QoderUpstreamModel {
   raw: Record<string, unknown>
 }
 
+/**
+ * 一笔**专属积分包**（issue #38）—— 上游 `qoderUsage.dedicatedResourcePackages[]`。
+ *
+ * 国际版实测（`GET /sash/api/v2/me/usage`）：
+ *
+ * ```json
+ * [{ "id": "pkg-example", "name": "act-example", "total": 888, "used": 0,
+ *    "remaining": 888, "percentage": 0, "unit": "credits",
+ *    "expiresAt": 1798732800000, "available": true,
+ *    "status": "QUOTA_DETAIL_STATUS_ACTIVE",
+ *    "displayLabels": [
+ *      { "dimension": "title", "value": "sota model series",
+ *        "valueI18n": { "en-US": "SOTA Exclusive Credits", "zh-CN": "SOTA 专属积分" } },
+ *      { "dimension": "description", "value": "…",
+ *        "valueI18n": { "en-US": "…", "zh-CN": "…" } } ] }]
+ * ```
+ *
+ * 三条「不用自己编」的性质，正是这个类型只透传、不解释的理由：
+ *
+ *  - **名字上游自己就给了**（`displayLabels` 的 `valueI18n` 带 zh-CN / en-US），
+ *    所以 DTO 里存的是**两种语言的原文**，由界面按当前语言挑一条 —— 插件翻译
+ *    一个营销词只会在上游改词时落后；
+ *  - 它有 `remaining` / `total`，能直接填读数；
+ *  - 它有 `status`，`QUOTA_DETAIL_STATUS_ACTIVE` 以外的不该算。
+ *
+ * ⚠️ 国内版实测 `qoderUsage` 里**没有**这个键，所以这一整块天然只在国际版出现。
+ */
+export interface QoderDedicatedPackage {
+  /** 上游的包 id（同一次报文内唯一；界面用它做 React key）。 */
+  id: string
+  /** 上游给的**两种语言**标题；两边都没有时才缺席（那时界面不外显这一个包）。 */
+  title?: { zh?: string | undefined, en?: string | undefined } | undefined
+  /** 上游给的双语说明（「在模型选择器中选择 Sonus 时优先抵扣」）。 */
+  description?: { zh?: string | undefined, en?: string | undefined } | undefined
+  /**
+   * 剩余额度；`undefined` = 上游这一行没报（不是 0）。
+   *
+   * 与 `creditsOf` 里的积分包同一条规矩：0 是关于账号的一个断言，缺席只是
+   * 「这次没读到」。
+   */
+  remaining?: number | undefined
+  total?: number | undefined
+  /** 这一包的到期时刻（ms）。有它就能放进悬停，不必另编一个倒计时。 */
+  expiresAtMs?: number | undefined
+  /** 上游的原始 `status`（`QUOTA_DETAIL_STATUS_ACTIVE` 等），原样保留。 */
+  status?: string | undefined
+}
+
 /** 用量信息（sash/api/v2/me/usage 的 qoderUsage 形状，官方 SDK UsageInfo 核对）。 */
 export interface QoderUsage {
   userType?: string | undefined
@@ -369,6 +417,13 @@ export interface QoderUsage {
   userQuota?: { total?: number | undefined; used?: number | undefined; remaining?: number | undefined; percentage?: number | undefined } | undefined
   addOnQuota?: { total?: number | undefined; used?: number | undefined; remaining?: number | undefined; percentage?: number | undefined; detailUrl?: string | undefined } | undefined
   orgResourcePackage?: { used?: number | undefined; cap?: number | undefined; remaining?: number | undefined; percentage?: number | undefined; available?: boolean | undefined } | undefined
+  /**
+   * 专属积分包（issue #38）。**只有国际版下发**；国内版实测没有这个键。
+   *
+   * 缺席 = 这个账号没有（或上游这次没给），不是「读失败」——两者的处理不同：
+   * 前者界面不画那一列，后者与「积分读不出来」同路。
+   */
+  dedicatedResourcePackages?: readonly QoderDedicatedPackage[] | undefined
   isQuotaExceeded?: boolean
 }
 
@@ -1399,7 +1454,104 @@ export function parseUsage(data: Record<string, unknown>): QoderUsage | undefine
       percentage: num(org.percentage), available: org.available === true,
     }
   }
+  const dedicated = readDedicatedPackages(source.dedicatedResourcePackages)
+  if (dedicated.length > 0) out.dedicatedResourcePackages = dedicated
   return out
+}
+
+/**
+ * 读 `dedicatedResourcePackages`（issue #38）。
+ *
+ * 三条取舍，都对应上游这一块真实存在的形态：
+ *
+ *  1. **整块读不懂就当没有**：不是数组、或者元素不是对象 → `[]`。一个读不懂的
+ *     专属包不该让整次用量解析失败（那会把「有积分」变成「积分读不出来」）。
+ *  2. **筛掉明确停用的**：`available === false` 直接丢；`status` 有值却不等于
+ *     ACTIVE 也丢。两个字段是同一件事的两种写法，只认**明确说不**的那一侧 ——
+ *     字段缺席不构成停用证据（老上游可能只发其中一个）。不筛的话，一个已过期 /
+ *     已停用的包会顶着一行「剩余 888」出现在读数里，用户会以为那笔钱还在。
+ *  3. **`remaining` 缺席不折成 0**（与 `readBucket` 同一条规矩）：0 是「这个包
+ *     用完了」的断言，缺席只是「上游这一行没写」。界面把缺席画成「—」。
+ */
+function readDedicatedPackages(value: unknown): QoderDedicatedPackage[] {
+  if (!Array.isArray(value)) return []
+  const out: QoderDedicatedPackage[] = []
+  for (const item of value) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue
+    const raw = item as Record<string, unknown>
+    if (raw['available'] === false) continue
+    const status = typeof raw['status'] === 'string' ? raw['status'] : undefined
+    if (status !== undefined && status !== DEDICATED_ACTIVE_STATUS) continue
+    const title = readI18nLabel(raw['displayLabels'], 'title')
+    const description = readI18nLabel(raw['displayLabels'], 'description')
+    out.push({
+      // id 缺席时用下标位置兜底会让 React key 在同一次报文内相对稳定；但上游
+      // 实测恒有 id，所以这里退化成 name 或空串都只是防御，不额外编造。
+      id: typeof raw['id'] === 'string' && raw['id'] !== ''
+        ? raw['id']
+        : (typeof raw['name'] === 'string' ? raw['name'] : ''),
+      ...title === undefined ? {} : { title },
+      ...description === undefined ? {} : { description },
+      // 负数不是上游可能给出的余额（实测恒 >= 0）；真出现时按 0 读 —— 一个
+      // 「剩余 -5」出现在读数里只会让读者以为是插件算错了。非有限数照旧当成
+      // 「没报」（`num` 只放行 `typeof number`，NaN 会落进来，这里挡掉）。
+      ...!isFiniteNumber(num(raw['remaining'])) ? {} : { remaining: Math.max(num(raw['remaining'])!, 0) },
+      ...!isFiniteNumber(num(raw['total'])) ? {} : { total: num(raw['total'])! },
+      ...!isFiniteNumber(num(raw['expiresAt'])) ? {} : { expiresAtMs: num(raw['expiresAt'])! },
+      ...status === undefined ? {} : { status },
+    })
+  }
+  return out
+}
+
+/** 上游声明的「这个专属包还在生效」。 */
+const DEDICATED_ACTIVE_STATUS = 'QUOTA_DETAIL_STATUS_ACTIVE'
+
+/** 有限数才算「上游报了」。`NaN` / `Infinity` 与缺席同义（`num` 只筛 typeof）。 */
+function isFiniteNumber(value: number | undefined): value is number {
+  return value !== undefined && Number.isFinite(value)
+}
+
+/**
+ * 从 `displayLabels[]` 里取某一条双语文案。
+ *
+ * 形状是 `[{ dimension: 'title', value: 'zh 原文', valueI18n: { 'zh-CN': …, 'en-US': … } }, …]`。
+ * **两种语言都收**，界面按当前语言挑：这一层不知道也不该猜读者用哪种语言
+ * （客户端才握着宿主语言，见 `promo-badge.ts` 的 `hostLanguage`）。
+ *
+ * `valueI18n` 缺席时退回裸 `value`：那至少是上游自己的一句话，比没有强。
+ */
+function readI18nLabel(
+  labels: unknown,
+  dimension: 'title' | 'description',
+): { zh?: string | undefined, en?: string | undefined } | undefined {
+  if (!Array.isArray(labels)) return undefined
+  for (const entry of labels) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) continue
+    const row = entry as Record<string, unknown>
+    if (row['dimension'] !== dimension) continue
+    const i18n = row['valueI18n']
+    const zh = i18n !== null && typeof i18n === 'object' && !Array.isArray(i18n)
+      ? textOf((i18n as Record<string, unknown>)['zh-CN']) ?? textOf((i18n as Record<string, unknown>)['zh'])
+      : undefined
+    const en = i18n !== null && typeof i18n === 'object' && !Array.isArray(i18n)
+      ? textOf((i18n as Record<string, unknown>)['en-US']) ?? textOf((i18n as Record<string, unknown>)['en'])
+      : undefined
+    const plain = textOf(row['value'])
+    if (zh === undefined && en === undefined && plain === undefined) return undefined
+    return {
+      ...zh === undefined && plain === undefined ? {} : { zh: zh ?? plain! },
+      ...en === undefined && plain === undefined ? {} : { en: en ?? plain! },
+    }
+  }
+  return undefined
+}
+
+/** 非空、非全空白的字符串。 */
+function textOf(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined
+  const trimmed = value.trim()
+  return trimmed === '' ? undefined : trimmed
 }
 
 function readBucket(value: unknown): { total?: number | undefined; used?: number | undefined; remaining?: number | undefined; percentage?: number | undefined } | undefined {

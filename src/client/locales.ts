@@ -444,6 +444,16 @@ export const en = {
   'composer.panelTitleCn': 'QD CN credits',
   'composer.panelTitleGlobal': 'QD AI credits',
   'composer.account': 'Account',
+  // 专属积分包那一列（issue #38）。**表头用上游自己的话**：上游
+  // `displayLabels[].valueI18n` 已经给了 zh-CN / en-US 两种原文（「SOTA 专属积分」
+  // /「SOTA Exclusive Credits」），那一列的表头就取它，所以这里只是一条**兜底**
+  // ——上游哪天没有下发标题时，面板仍要有一个能读的表头，而不是空白的 th。
+  'composer.dedicated': 'SOTA',
+  // 悬停：说清这一列是什么、钱花在哪、什么时候到期。上游的描述自己带一句
+  // （「在模型选择器中选择 Sonus 时优先抵扣该积分」），有它就用它，这句兜底。
+  'composer.dedicatedHint': 'Exclusive credits, used first when you pick the model they are tied to. Not counted in the credits column: they cannot be spent on any other model.',
+  'composer.dedicatedExpires': 'Expires {time}',
+  'composer.dedicatedMultiple': '{count} packages, {remaining} left in total',
   'composer.credits': 'Credits',
   'composer.switchTo': 'Switch to {account}',
   'composer.noAccounts': 'No account in this region',
@@ -880,6 +890,11 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.panelTitleCn': 'QD CN 积分',
   'composer.panelTitleGlobal': 'QD AI 积分',
   'composer.account': '账号',
+  // 专属积分包那一列（issue #38），见 en 侧同名注释：表头优先用上游自己的话。
+  'composer.dedicated': 'SOTA',
+  'composer.dedicatedHint': '专属积分，选中与之绑定的模型时优先抵扣。不计入右边的「积分」列：不选那只模型时这笔钱一分都动不了。',
+  'composer.dedicatedExpires': '{time} 到期',
+  'composer.dedicatedMultiple': '共 {count} 个专属包，合计剩余 {remaining}',
   'composer.credits': '积分',
   'composer.switchTo': '切换到 {account}',
   'composer.noAccounts': '该区域暂无账号',
