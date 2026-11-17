@@ -353,9 +353,9 @@ The host moved to `0.2.2-rc.1` (every `@deepseek-ai/dsh-*` inside `app.asar` is 
 
 > The 0.2.1-rc.4 / rc.5 round stays documented in [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md); this round's measurements, reproduction script and open decisions are in [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md).
 
-### Current host: 0.2.2-rc.2 (measured 2026-11-12)
+### Previous host baseline: 0.2.2-rc.2 (measured 2026-11-12)
 
-The host moved to `0.2.2-rc.2`. **No runtime code changed this round** — pi-ai (`1.3.0`), cordis (`4.1.0`) and schemastery (`3.19.0`) all stayed put, and the `dsh-*` changes are all additive surfaces:
+The host moved to `0.2.2-rc.2`. **No runtime code changed that round** — pi-ai (`1.3.0`), cordis (`4.1.0`) and schemastery (`3.19.0`) all stayed put, and the `dsh-*` changes were all additive surfaces:
 
 | Check | Result |
 | --- | --- |
@@ -367,7 +367,24 @@ The host moved to `0.2.2-rc.2`. **No runtime code changed this round** — pi-ai
 | Peer range | **No new branch needed**: `0.2.2-rc.2` shares a tuple with `0.2.2-rc.1`, which the fourth branch already opens. `0.2.3-rc.1` is still the next one to add |
 | Regression | `pnpm run check` green (1472 passed / 12 skipped) |
 
-> Evidence, per-package diffs and the list of surfaces that look affected but are not are in [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md).
+> That round's per-package diffs and the list of surfaces that look affected but are not are in [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md).
+
+### Current host: 0.2.2-rc.3 (measured 2026-11-14)
+
+The host moved to `0.2.2-rc.3`. **No runtime code changed this round either** — pi-ai (`1.3.0`), cordis (`4.1.0`) and schemastery (`3.19.0`) still did not move, and nearly all of rc.3 comes from one commit (importing DeepSeek chat exports, a brand-new experimental bundle):
+
+| Check | Result |
+| --- | --- |
+| New package `dsh-deepseek-chat-import` | A brand-new experimental bundle shipping with rc.3 and needing explicit installation; the plugin does not reference it |
+| `sidebar.session.action` (new `hoc` slot) | The New-session row is now wrapped by `renderSlot`. The plugin uses `sidebar.panellist` / `panellist.actions`, both unchanged verbatim |
+| `workspace.picker` (new Factory slot) | `ui-workspace` uses `SlotFactoryMap` for the first time; the plugin touches neither workspaces nor the directory picker |
+| Settings shell | 🟢 The three things `settings-jump.ts` relies on were checked verbatim: the `sidebar.settings` store seat, the `aria-haspopup="dialog"` trigger and `data-shortcut-modal="settings"` are all unchanged (`ui-settings-general`'s bundle differs only by the version string) |
+| Failure-classifier fixture | 🟢 The host did **not** touch the three source segments; only the asar sha changed → one metadata re-extraction. Its `extractedAt` now records a local date (a UTC+8 run after midnight used to write the previous day) |
+| Slot catalog | 114 → 116 entries, neither addition ours; all nine slots the plugin uses keep their kind and scope, and `conversation.input.model.label` is still `single` with no `entryKey` |
+| Peer range | **Still no new branch** (second time this tuple is proven open). `0.2.3-rc.1` is still the next one to add |
+| Regression | `pnpm run check` green (1472 passed / 12 skipped) |
+
+> Per-package diffs (17 of the 329 packages pinned to rc.3 changed; all 11 imported ones are byte-identical) and the list of surfaces that look affected but are not are in [`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md).
 
 ## Security notes
 

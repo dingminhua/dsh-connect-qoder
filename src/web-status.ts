@@ -421,7 +421,7 @@ function requiredRegion(res: ServerResponse, url: string): QoderRegion | undefin
 }
 
 /** Project one model into the card's web row. */
-function webModelOf(m: QoderModelInfo): QoderWebModel {
+export function webModelOf(m: QoderModelInfo): QoderWebModel {
   return {
     key: m.key,
     name: m.displayName,

@@ -1073,6 +1073,11 @@ export interface QoderWebPoolModel {
   name: string
   /** Absent when the upstream stated no multiplier (NOT the same as free). */
   creditMultiplier?: number
+  /**
+   * 活动规则（issue #41）：只给下拉**显示**活动实际价用，与 `creditMultiplier`
+   * 的「免费即 0」判据分开走。缺席 = 没有活动。
+   */
+  promotion?: QoderPromotion
 }
 
 /**

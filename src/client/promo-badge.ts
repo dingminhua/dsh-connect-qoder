@@ -17,6 +17,8 @@
 
 import type { Translate } from './locales.ts'
 import type { QoderPromotion } from '../promo.ts'
+import type { MultiplierSource } from '../promo.ts'
+import { displayMultiplierOf } from '../promo.ts'
 
 /**
  * 界面语言，由浏览器报告。
@@ -85,4 +87,34 @@ export function promoBadgeTooltip(promo: QoderPromotion, language?: string): str
   const link = pick(promo.link, language)
   if (link !== undefined) parts.push(link)
   return parts.join(' · ')
+}
+
+/**
+ * 倍率标签的悬停（issue #41）：显示的是活动实际价时，补一句「这是活动价，
+ * 基准价是 N.NN」，避免用户拿它去和别处（或下个月的账单）对不上而误以为出错。
+ *
+ * 只有显示倍率与基准价**不同**时才给提示；相同（没有折扣、窗口外、不采信折扣）
+ * 时返回 `undefined`，调用方不挂 title——没有差异就不必解释。
+ *
+ * 这句是插件自己写的解释，不是上游的话：上游 `promotion` 只给折扣数字，没给
+ * 「基准价是多少」的文案，而用户需要知道屏幕上那个 0 是活动价（与「免费」徽标
+ * 的判据解释 `row.modelFreeHint` 同一类用法）。
+ *
+ * @param source - 该模型的基准价与活动规则。
+ * @param now - 与显示倍率同一个渲染时刻，保证「显示值」与「提示里的基准价」同源。
+ * @param t - 当前界面的翻译函数。
+ */
+export function rateHint(
+  source: MultiplierSource,
+  now: Date,
+  t: Translate | undefined,
+): string | undefined {
+  const shown = displayMultiplierOf(source, now)
+  if (shown === source.priceFactor) return undefined
+  const key: 'row.ratePromoHint' = 'row.ratePromoHint'
+  // `t` 在单测里可能是直通 key 的假翻译器，这里也只要求它填 {base}。
+  const template = t?.(key, { base: source.priceFactor.toFixed(2) }) ?? key
+  return template === key
+    ? `Base rate x${source.priceFactor.toFixed(2)} during this promotion`
+    : template
 }

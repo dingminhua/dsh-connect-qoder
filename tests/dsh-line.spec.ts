@@ -99,6 +99,9 @@ const ADMITTED_PRERELEASES = [
   // `>=0.2.2-rc.1` 自带预发布标签，于是整个 `0.2.2` 元组都开闸 ——
   // 这条用例正是为了证明「补齐到 rc.1 就够了」这个判断，别再手工追加。
   '0.2.2-rc.2',
+  // 0.2.2-rc.3（2026-11-13）：同上。这一条是**第二次**实证同一个判断，不是
+  // 又一个待办 —— 同一元组内再开分支会与第四支重复，反而不说明任何事。
+  '0.2.2-rc.3',
 ]
 
 /** Published, but deliberately outside the declared range. */
@@ -260,7 +263,7 @@ describe('declared DSH host line', () => {
     const hostAdmits = (v: string): boolean =>
       semver.satisfies(v, declaredRange(), { includePrerelease: true })
 
-    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.1', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.9-rc.99']) {
+    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.1', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.9-rc.99']) {
       expect(hostAdmits(version), `host gate must admit ${version}`).toBe(true)
     }
   })

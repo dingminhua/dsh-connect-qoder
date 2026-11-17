@@ -186,6 +186,9 @@ export const en = {
   // 「错峰」徽标在窗口外灰显时的悬停前缀：{start} 是上游声明的起点（如 22:00），
   // 用来说清「还没到点」，与实心状态下的「正在打折」区分开。
   'row.promoPending': 'Not active yet — starts at {start}',
+  // issue #41：显示倍率被活动改写时，倍率标签的悬停补一句「基准价」，免得用户
+  // 拿活动实际价去和别处对账以为出错。{base} 是从不参与计费的 price_factor。
+  'row.ratePromoHint': 'Promotional rate — base rate is x{base}',
   'row.modelImage': 'Image',
   'row.modelImageText': 'This model is documented as text-only — it does not accept image input',
   'row.modelImageUnverified': 'Native multimodal support is not verified for this model; leave it off unless you know it accepts images',
@@ -643,6 +646,8 @@ export const zh: Record<QoderSettingsKey, string> = {
   'row.modelFreeHint': '倍率为 0，不消耗积分',
   // 窗口外灰显时的悬停前缀，见 en 侧同名注释。
   'row.promoPending': '当前未生效，{start} 起生效',
+  // 见 en 侧同名注释：显示的是活动实际价时补一句基准价（issue #41）。
+  'row.ratePromoHint': '活动价，基准价 x{base}',
   'row.modelImage': '图片',
   'row.modelImageText': '厂商文档标注该模型为纯文本，不接收图片输入',
   'row.modelImageUnverified': '该模型的原生多模态能力未经核实；除非你确定它能读图，否则请保持关闭',

@@ -3,9 +3,9 @@
   "_refresh": "node scripts/extract-host-classifier.mjs（--check 只比对不写）",
   "source": {
     "app": "DeepSeek Harness.app/Contents/Resources/app.asar",
-    "dshVersion": "0.2.2-rc.2",
-    "asarSha256": "1535941c163698d68a0cf45dd06e1ce1a18a308108d9b84076074f35a6e9c39d",
-    "extractedAt": "2026-11-12"
+    "dshVersion": "0.2.2-rc.3",
+    "asarSha256": "c0ce89f77d25e98e11952728d1fc054b6e2300db17402af83a1a225c8b36e843",
+    "extractedAt": "2026-11-14"
   },
   "quotaCodeConstant": {
     "QUOTA": "Account-token quota replenished through the first-party billing page",

@@ -356,7 +356,7 @@ pnpm exec dsh-connect-qoder doctor --json        # 机器可读输出
 
 > 0.2.1-rc.4 / rc.5 那一轮的逐条核查保留在 [`docs/DSH-0.2.1-RC1-FOLLOWUP.md`](docs/DSH-0.2.1-RC1-FOLLOWUP.md)；rc.1 那一轮的实测依据、复现脚本与仍待决策项见 [`docs/DSH-0.2.2-RC1-FOLLOWUP.md`](docs/DSH-0.2.2-RC1-FOLLOWUP.md)。
 
-### 当前宿主：0.2.2-rc.2（2026-11-12 实测）
+### 上一轮宿主基线：0.2.2-rc.2（2026-11-12 实测）
 
 宿主升到 `0.2.2-rc.2`。**这一轮不改运行时代码** —— pi-ai（`1.3.0`）、cordis（`4.1.0`）、
 schemastery（`3.19.0`）都没换，`dsh-*` 的改动全是**新增**面：
@@ -371,7 +371,27 @@ schemastery（`3.19.0`）都没换，`dsh-*` 的改动全是**新增**面：
 | peer 范围 | **不需要新分支**：`0.2.2-rc.2` 与 `0.2.2-rc.1` 同一元组，第四支已经开闸。下一个要补的仍是 `0.2.3-rc.1` |
 | 回归 | `pnpm run check` 全绿（1472 例通过 / 12 跳过） |
 
-> 依据、逐包 diff 与「哪些面看起来要改其实不用」的清单见 [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md)。
+> 那一轮的逐包 diff 与「哪些面看起来要改其实不用」的清单见 [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md)。
+
+### 当前宿主：0.2.2-rc.3（2026-11-14 实测）
+
+宿主升到 `0.2.2-rc.3`。**这一轮同样不改运行时代码** —— pi-ai（`1.3.0`）、cordis（`4.1.0`）、
+schemastery（`3.19.0`）还是没换，rc.3 的内容几乎全部来自一个 commit
+（DeepSeek 官网对话导出导入，一个全新的 experimental bundle）：
+
+| 检查项 | 结论 |
+| --- | --- |
+| 新包 `dsh-deepseek-chat-import` | 全新的 experimental bundle，随 rc.3 首发、需用户显式安装；插件不引用 |
+| `sidebar.session.action`（新 hoc 槽） | 「新建会话」行改由 `renderSlot` 包裹。插件用的是 `sidebar.panellist` / `panellist.actions`，两处逐字未变 |
+| `workspace.picker`（新 Factory 槽） | `ui-workspace` 第一次用 `SlotFactoryMap`；插件既不碰 workspace 也不碰 directory picker |
+| 设置页外壳 | 🟢 `settings-jump.ts` 依赖的三样逐字核对过：`sidebar.settings` 的 store 座位、`aria-haspopup="dialog"` 触发器、`data-shortcut-modal="settings"` 全部未变（`ui-settings-general` 的 bundle 只有版本串变了） |
+| 失败分类器夹具 | 🟢 三段源码宿主**没动**，只有 asar 的 sha 变了 → 重提取一次元数据；顺手把 `extractedAt` 改成本地日期（UTC+8 凌晨跑会写前一天） |
+| 槽位目录 | 114 → 116 条，新增的两条都不是我们的；插件用到的九个槽 kind / scope 逐条相同，`conversation.input.model.label` 仍是 `single` 且仍无 `entryKey` |
+| peer 范围 | **仍然不需要新分支**（第二次实证同一元组开闸）。下一个要补的仍是 `0.2.3-rc.1` |
+| 回归 | `pnpm run check` 全绿（1472 例通过 / 12 跳过） |
+
+> 逐包 diff（329 个钉在 rc.3 的包里 17 个有实质变化、11 个被 import 的逐字节相同）与「哪些面看起来
+> 要改其实不用」的清单见 [`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md)。
 
 ## 安全说明
 

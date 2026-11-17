@@ -49,6 +49,7 @@ import type {
   QoderWebRegion,
 } from '../status-paths.ts'
 import { exclusionText } from './exclusion-text.ts'
+import { displayMultiplierOf } from '../promo.ts'
 import { accountDotTone, accountStateColor } from './account-state.ts'
 import { BusyOverlay } from './BusyOverlay.tsx'
 import type { Translate } from './locales.ts'
@@ -1467,12 +1468,17 @@ function RenderSettings(props: {
               : null}
             {/* 显示名 + 倍率，与 workbuddy 同构（`名字 (x0.79)`）：选项文本此前
                 直接渲染模型 id（`qmodel_latest`），既不是用户认得的名字，也让
-                「这次测试花不花积分」无从判断——而那正是选目标的全部意义。 */}
+                「这次测试花不花积分」无从判断——而那正是选目标的全部意义。
+                issue #41：活动期用活动实际价（如限时免费 x0.00），与 Qoder 官方
+                菜单一致；creditMultiplier 仍是基准价，只用于「免费即 0」判据。 */}
             {(catalog ?? []).map(model => (
               <option key={model.id} value={model.id}>
                 {model.creditMultiplier === undefined
                   ? model.name
-                  : `${model.name} (x${model.creditMultiplier.toFixed(2)})`}
+                  : `${model.name} (x${displayMultiplierOf(
+                      { priceFactor: model.creditMultiplier, promotion: model.promotion },
+                      new Date(),
+                    ).toFixed(2)})`}
               </option>
             ))}
           </select>

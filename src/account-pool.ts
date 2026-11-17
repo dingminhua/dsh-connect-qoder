@@ -26,6 +26,7 @@
 
 import type { QoderWebPoolExclusion } from './status-paths.ts'
 import type { QoderWebProbeOutcome } from './status-paths.ts'
+import type { QoderPromotion } from './promo.ts'
 
 /**
  * Which of the pool's writers produced a measurement.
@@ -464,6 +465,11 @@ export interface QoderPoolModel {
   creditMultiplier?: number
   /** Model context window, used to prefer the biggest free model. */
   contextWindow: number
+  /**
+   * 活动规则（issue #41）：只给目标下拉**显示**活动实际价用，绝不参与
+   * 「免费即 0」判据。与 `creditMultiplier` 分开走，避免把活动价折叠成免费。
+   */
+  promotion?: QoderPromotion
 }
 
 /** The resolved target model, and where the choice came from. */
@@ -542,17 +548,22 @@ export function poolModelOf(model: {
   isFree?: boolean | undefined
   priceFactor?: number | undefined
   contextWindow: number
+  promotion?: QoderPromotion | undefined
 }): QoderPoolModel {
   return {
     id: model.key,
     name: model.displayName,
-    // 「免费即 0」是 resolveTargetModel 的契约；付费模型透传真实倍率，让选项
+    // 「免费即 0」是 resolveTargetModel 的契约；付费模型透传**基准**倍率，让选项
     // 标签能定价（`名字 (x0.79)`）；`priceFactor` 缺席时不写字段 —— 缺席**不是**
     // 免费，这是「绝不悄悄花用户积分」那条规矩的投影层半边。
+    // issue #41：活动折扣价只放在旁边的 `promotion` 里给 UI 现算，绝不折叠进
+    // `creditMultiplier`——那样一个「基准收费、活动期免费」的模型会被当成免费
+    // 反复探测，静默烧掉真实积分。
     ...model.isFree === true
       ? { creditMultiplier: 0 }
       : model.priceFactor === undefined ? {} : { creditMultiplier: model.priceFactor },
     contextWindow: model.contextWindow,
+    ...model.promotion === undefined ? {} : { promotion: model.promotion },
   }
 }
 

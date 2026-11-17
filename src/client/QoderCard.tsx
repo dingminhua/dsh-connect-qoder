@@ -81,8 +81,8 @@ import { QODER_PLUGIN_ICON } from './icon.ts'
 import { QODER_CARD_CSS } from './styles.ts'
 import { installPluginStyle } from './style-injector.ts'
 import { imageDefaultFor, modalityKeyOf, nativeModalityOf } from '../native-modality.ts'
-import { promoDisplayAt } from '../promo.ts'
-import { promoBadgeLabel, promoBadgeTooltip, hostLanguage } from './promo-badge.ts'
+import { promoDisplayAt, displayMultiplierOf } from '../promo.ts'
+import { promoBadgeLabel, promoBadgeTooltip, hostLanguage, rateHint } from './promo-badge.ts'
 import type { QoderSettingsKey, Translate } from './locales.ts'
 
 /** Localized copy injected by the browser-plugin registration. */
@@ -1140,7 +1140,18 @@ export function QoderCard(props: QoderCardProps): ReactElement {
                       <span className="dsm-qoder-model-name" title={model.key}>
                         {model.name}
                         {typeof model.creditMultiplier === 'number'
-                          ? <span className="dsm-qoder-model-name-rate">({model.creditMultiplier.toFixed(2)}x)</span>
+                          ? <span
+                              className="dsm-qoder-model-name-rate"
+                              title={(() => {
+                                // issue #41：活动期显示的是活动实际价（如限时免费 x0.00），
+                                // 与基准价不同时补一句「基准价 x0.10」，免得拿它去对账。
+                                // 与徽标共用同一个 promoNow，两种判据不会在某一帧打架。
+                                return rateHint({ priceFactor: model.creditMultiplier!, promotion: model.promotion }, promoNow, t)
+                              })()}
+                            >({displayMultiplierOf(
+                              { priceFactor: model.creditMultiplier!, promotion: model.promotion },
+                              promoNow,
+                            ).toFixed(2)}x)</span>
                           : null}
                       </span>
                       {/* 活动徽标放在**名字外面**（同一行、名字之后）：模型名是

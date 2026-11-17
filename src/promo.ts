@@ -29,6 +29,11 @@
  * `link_url` 变成可点击动作（卡片上的胶囊只是提示）、不在解析时挑定一枚
  * 徽标（判定放在渲染时刻，理由同 workbuddy 的 `selectPromoBadge`）。
  *
+ * 折扣数字（`discount_factor` / `before_promotion_price_factor`）现在**保留**：
+ * 它不是用来反推文案的（文案仍原样取上游），而是给 {@link displayMultiplierOf}
+ * 在渲染时刻算「活动实际倍率」——issue #41 里 Qoder 官方显示 `x0.00` 而插件只
+ * 显示基准价 `0.1x` 的那处不一致。计算只在 UI 层用，计费与落盘仍走基准价。
+ *
  * @module dsh-connect-qoder/promo
  */
 
@@ -86,6 +91,23 @@ export interface QoderPromotion {
   windowUnreadable?: boolean
   /** 上游的活动说明页。 */
   link?: QoderPromoLabel
+  /**
+   * 上游的折扣系数（`discount_factor`，形如 `0.4` = 基准价打四折、`0` = 免费）。
+   *
+   * 只给 {@link displayMultiplierOf} 算 UI 展示用倍率，绝不参与计费/落盘。
+   * 缺席（上游没给或不是有限数）≠ 0：前者是「不知道有没有折扣」，回退基准价。
+   */
+  discountFactor?: number
+  /**
+   * 上游声明的「折前倍率」（`before_promotion_price_factor`，形如 `0.5`）。
+   *
+   * **只作记录，不参与计算**：`displayMultiplierOf` 的公式是「当前基准价 ×
+   * `discount_factor`」（实测 `0.5 × 0.4 = 0.2`，见 PROMO_BADGE.md §5.1）。不拿
+   * 这个字段去校验基准价——一旦上游给的值与目录里的 `price_factor` 对不上
+   * （改价、或限时免费这种特价活动），用它当门会把本来该显示的 `x0.00` 又压
+   * 回基准价，正是 issue #41 要修的病。留着它是为了不丢上游声明，供日后复核。
+   */
+  beforePromotionPriceFactor?: number
 }
 
 /** 读取一个非空、非全空白的字符串。 */
@@ -159,8 +181,9 @@ export function parsePromoWindow(startRaw: unknown, endRaw: unknown): QoderPromo
  *   "link_url": { "zh": "https://docs.qoder.cn/..." }, "description": { "zh": "..." } }
  * ```
  *
- * `discount_factor` / `before_promotion_price_factor` / `rule_id` 不保留：插件不从数字
- * 反推文案，也没有任何界面消费它们，留一份没人读的副本只会随目录一起落盘。
+ * `discount_factor` / `before_promotion_price_factor` 保留为 `discountFactor` /
+ * `beforePromotionPriceFactor`（issue #41：它们要用来算 UI 显示的「活动实际价」）；
+ * `rule_id` 仍不保留——插件不给它任何语义，也不从数字反推文案。
  */
 export function parseQoderPromotion(value: unknown): QoderPromotion | undefined {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) return undefined
@@ -174,6 +197,8 @@ export function parseQoderPromotion(value: unknown): QoderPromotion | undefined 
   // 「声明了但读不懂」与「没声明」必须分开：前者不能退化成全天，见 `windowUnreadable`。
   const declared = text(raw['window_start']) !== undefined || text(raw['window_end']) !== undefined
   const unreadable = window === undefined && declared
+  const discountFactor = number(raw['discount_factor'])
+  const beforePromotionPriceFactor = number(raw['before_promotion_price_factor'])
   return {
     active: raw['active'] === true,
     badge,
@@ -182,6 +207,8 @@ export function parseQoderPromotion(value: unknown): QoderPromotion | undefined 
     ...timeZone === undefined ? {} : { timeZone },
     ...window === undefined ? {} : { window },
     ...unreadable ? { windowUnreadable: true } : {},
+    ...discountFactor === undefined ? {} : { discountFactor },
+    ...beforePromotionPriceFactor === undefined ? {} : { beforePromotionPriceFactor },
   }
 }
 
@@ -234,6 +261,10 @@ export function readPromotion(value: unknown): QoderPromotion | undefined {
     }
   }
   if (promo.window === undefined && raw['windowUnreadable'] === true) promo.windowUnreadable = true
+  const discountFactor = number(raw['discountFactor'])
+  if (discountFactor !== undefined) promo.discountFactor = discountFactor
+  const beforePromotionPriceFactor = number(raw['beforePromotionPriceFactor'])
+  if (beforePromotionPriceFactor !== undefined) promo.beforePromotionPriceFactor = beforePromotionPriceFactor
   return promo
 }
 
@@ -334,4 +365,51 @@ export function promoDisplayAt(promo: QoderPromotion | undefined, now: Date): Pr
  */
 export function promoLiveAt(promo: QoderPromotion | undefined, now: Date): promo is QoderPromotion {
   return promoDisplayAt(promo, now) === 'live'
+}
+
+// ---------------------------------------------------------------------------
+// 活动期显示倍率（issue #41）
+// ---------------------------------------------------------------------------
+
+/**
+ * 「显示倍率」计算的最小入参。结构性类型，避免让纯判定函数依赖 `QoderModelInfo`
+ * 或卡片投影类型（Host 与卡片两端都要用它，见下方注释）。
+ */
+export interface MultiplierSource {
+  /** 基准价（`price_factor` / `creditMultiplier`），永远不动。 */
+  priceFactor: number
+  promotion?: QoderPromotion | undefined
+}
+
+/**
+ * 某一时刻 UI 该显示的积分倍率 = 基准价 × 当前生效活动的折扣系数。
+ *
+ * **只是显示。** 计费由 Qoder 服务端按请求结算，pi-ai 请求体、目标模型 id、
+ * `creditMultiplier` 的「免费即 0」判据、落盘的 `priceFactor` 全部仍走基准价，
+ * 这里碰都不会碰（issue #41 的建议就是加一个「显示倍率」字段仅用于 UI）。
+ *
+ * 为什么不把结果存成目录字段：折扣随窗口开关，是个渲染时刻的纯函数；一旦
+ * 写进 `lastCatalog`，夜里读到的一份就会冻结到第二天早上——这与 §3.2「判定
+ * 必须在渲染时刻」是同一条理由。所以这里现算，卡片/选择器各自用自己的时钟。
+ *
+ * 采信一条折扣的前提（任何一条不满足就**原样退回基准价**，宁可少显示也不说错话）：
+ * - 此刻 `promoDisplayAt === 'live'`（有窗口按窗口，没窗口才看 `active`）；
+ * - 上游给了可信的 `discountFactor`（有限数，且 `0 ≤ x ≤ 1`——0 = 免费，1 = 不打折）；
+ * - 算出的结果必须有限且非负，按两位小数归一（消除 `0.5 × 0.4 = 0.20000000000000001`）。
+ *
+ * `before_promotion_price_factor` **不**用来校验：限时免费这类活动里它可能与目录里的
+ * `price_factor` 对不上，拿它当门恰好会压掉 issue #41 要修的 `x0.00`。基准价永远取
+ * 目录当前值（`source.priceFactor`），而不是折前快照。
+ *
+ * @param source - 基准价与该模型的活动规则（缺席即无活动）。
+ * @param now - 判定用的时刻（渲染时刻现给的 `new Date()`）。
+ */
+export function displayMultiplierOf(source: MultiplierSource, now: Date): number {
+  const base = source.priceFactor
+  const promo = source.promotion
+  if (promo === undefined || promoDisplayAt(promo, now) !== 'live') return base
+  const factor = promo.discountFactor
+  if (factor === undefined || !Number.isFinite(factor) || factor < 0 || factor > 1) return base
+  const result = Math.round(base * factor * 100) / 100
+  return Number.isFinite(result) && result >= 0 ? result : base
 }

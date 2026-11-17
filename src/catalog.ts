@@ -8,7 +8,7 @@
  */
 
 import type { QoderUpstreamModel } from './upstream.ts'
-import { parseQoderPromotion, type QoderPromotion } from './promo.ts'
+import { parseQoderPromotion, displayMultiplierOf, type QoderPromotion } from './promo.ts'
 import { isRouterModelId } from './native-modality.ts'
 
 // ---------------------------------------------------------------------------
@@ -470,9 +470,16 @@ export function applyContextBudgets(
 /**
  * 模型显示名：内嵌积分倍率（与 Qoder 自身菜单格式一致——倍率为 1 也照写，
  * `Qwen3.7-Max · x1.00`）。workbuddy 的选择器同名规则同样不省略 1。
+ *
+ * issue #41：这里嵌的是**显示倍率**（`displayMultiplierOf`），活动期会跟着窗口
+ * 变成活动实际价（如基准 `0.1` + 限时免费 → `x0.00`），与 Qoder 官方菜单一致。
+ * 它只是显示——DSH 侧所有关联都按模型 id 做，改名不影响选择器当前项、会话事件、
+ * 请求线上的 `model`。计费与落盘的 `priceFactor` 一个字符不动。
+ *
+ * @param now - 判定活动此刻是否生效的时刻；缺席用当前时刻（生产调用点不改）。
  */
-export function modelDisplayName(info: QoderModelInfo): string {
-  return `${info.displayName} · x${info.priceFactor.toFixed(2)}`
+export function modelDisplayName(info: QoderModelInfo, now: Date = new Date()): string {
+  return `${info.displayName} · x${displayMultiplierOf(info, now).toFixed(2)}`
 }
 
 /**

@@ -2,6 +2,109 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.25.3 (2026-11-17)
+
+> **修一类中「两个客户端倍率对不上」的显示 bug（issue #41）。** 只改展示：
+> 计费、落盘、pi-ai 请求、目标模型 id 与「免费即 0」判据一个字符没动。
+> 版本取 patch——没有新界面能力，也没有改任何请求/存储形状（`promotion` 只是多带
+> 两个可选数字字段，老存档读回照旧）。
+
+### 修复
+
+- **活动期倍率显示活动实际价，与 Qoder 官方菜单一致（issue #41）。**
+  - **症状**：用户实拍国内区 `qfmodel`（Qwen3.8-Flash）在「限时免费」活动里，Qoder
+    官方下拉显示 `x0.00`，DSH 的卡片、内置模型选择器、账号池「测试用模型」下拉
+    一律显示基准价 `0.1x`。其余非活动模型两边一致，所以不是整体算错，是**活动
+    那一层没参与显示**。
+  - **根因**：上游 `model/list` 每行的 `promotion` 里带着 `discount_factor` /
+    `before_promotion_price_factor`（实测 `qmodel_38max` 是 `0.4` / `0.5`，活动期
+    实际价 = 基准价 × 折扣系数，`0.5 × 0.4 = 0.2`，与官方菜单的 `x0.20` 对得上），
+    但 `src/promo.ts` 当初为了「不从数字反推文案」把这两个数字**连数字本身一起
+    丢掉**了。于是徽标画得出「错峰 4 折」，倍率却永远是基础价。
+  - **修法**：在 `QoderPromotion` 上保留这两个可选数字（`parseQoderPromotion` 与
+    `readPromotion` 两端都补；`rule_id` 仍丢，插件不给它语义），新增纯函数
+    `displayMultiplierOf(source, now)`：仅在 `promoDisplayAt === 'live'` 且有可信
+    `discountFactor`（有限数、`0 ≤ x ≤ 1`）时算「当前基准价 × 折扣系数」，按两位
+    小数归一；否则原样退回基准价。三个 UI 面统一接它：
+    - 卡片模型行（`QoderCard.tsx` 的 `(N.NNx)`）——与徽标共用同一个 `new Date()`，
+      两种判据不会在某一帧打架；
+    - DSH 内置模型选择器 / 发现（`modelDisplayName` 增加可选 `now` 参数，适配器与
+      `registerModelDiscovery` 照旧调用，不改签名）；
+    - 账号池「测试用模型」下拉（`poolModelOf` 把 `promotion` 单独带出来，从
+      `creditMultiplier` 旁路过去，见下）。
+  - **为什么不是把活动价写进目录字段**：活动随窗口开关，是渲染时刻的纯函数；
+    写进 `lastCatalog` 会把夜里读到的一份冻结到第二天早上，与 `docs/PROMO_BADGE.md`
+    §3.2「判定必须在渲染时刻」是同一条理由。所以三个面各自用当前时钟现算。
+  - **折算公式不拿 `before_promotion_price_factor` 当门**：限时免费这类活动里它
+    可能与目录当前 `price_factor` 对不上，用它校验恰好会把该显示的 `x0.00` 压回
+    基准价。基准价只取目录当前值，折前快照只作记录。
+  - **计费与「免费即 0」完全隔离**：`priceFactor` / `creditMultiplier` 仍是基准价，
+    落盘的 `priceFactor` 也仍写基准价。尤其 `poolModelOf` 只把 `promotion` 放在
+    另一个字段，绝不把活动期 `0` 折叠进 `creditMultiplier`——那样一个「基准收费、
+    活动免费」的模型会被 `pickFreeModel` 当成免费反复探测，静默烧掉真实积分。
+  - **误读防护**：活动价与基准价不同时，倍率标签的悬停补一句「活动价，基准价
+    x0.10」（新增 locale key `row.ratePromoHint`，双语各有），避免用户拿 `x0.00`
+    去和别处对账以为计费出错；窗口外或无折扣时不挂这句悬停。
+
+### 测试
+
+- 新增 `tests/discount-multiplier.spec.ts`：先写会失败的断言，覆盖折扣数字解析/
+  落盘往返、`displayMultiplierOf` 的 live/窗口外/缺数字/越界/浮点归一、以及
+  「三条计费路径（落盘、pool 免费判据、pi-ai 名）不被活动价污染」。
+- 新增 `tests/discount-multiplier-render.spec.tsx`：卡片实渲染钉住活动期 `(0.00x)`、
+  窗口外 `(0.10x)`、以及倍率悬停；`tests/promo.spec.ts` 的「解析后的精确形状」
+  用例同步改为纳入两个折扣数字（它此前把「丢弃数字」钉成了契约）。
+- `pnpm run check` 全绿：**1490 通过 / 12 跳过**（比 1.25.2 多 18 条）。
+
+## 1.25.2 (2026-11-14)
+
+> **只升依赖树与文档，不改运行时代码。** 宿主从 `0.2.2-rc.2` 升到 `0.2.2-rc.3`。
+> pi-ai（`1.3.0`）、cordis（`4.1.0`）、schemastery（`3.19.0`）第三轮没换；rc.3 的内容
+> 几乎全部来自一个 commit（DeepSeek 官网对话导出导入，一个全新的 experimental bundle）。
+> **插件直接 import 的 11 个 `dsh-*` 包在 rc.3 里逐字节相同** —— 这是本轮零改动的硬证据。
+
+### 修复
+
+- **夹具的 `extractedAt` 会在 UTC+8 的凌晨写错一天。**
+  - **症状**：本轮 00:47 跑的 `pnpm run fixture:host-classifier` 把日期记成
+    `2026-11-13`，而当天是 11-14。根因是 `new Date().toISOString().slice(0, 10)`
+    取的是 **UTC** 日期。
+  - **为什么一直没被发现**：`source.extractedAt` 只作溯源提示、不参与任何断言，
+    所以错一天**永远不会让测试变红**——正因为它不会红，只能靠把代码写对。改成
+    `toLocaleDateString('sv-SE')`（该 locale 的默认格式恰好是 ISO 形状的本地日期）。
+  - **这条与 1.25.1 那条是同一件事的延伸**：上一轮把「再抄一遍夹具」自动化成了一条
+    命令，但脚本只自动化了**抄写**，没有自动化**抄对元数据**。
+
+### 变更
+
+- **开发依赖树升到 `0.2.2-rc.3`**（`pnpm-workspace.yaml` 的 overrides + 锁文件）。
+  `dsh-*` 之外仍是 cordis 4.1.0 / schemastery 3.19.0 / pi-ai 1.3.0 —— 宿主没换。
+- **夹具按 rc.3 的 asar 重提取**：`classifyPiAiError` / `isQuotaExceededError` /
+  `LEADING_HTTP_STATUS` 三段源码**逐字没变**（升级前 `--check` 就直接报一致），
+  变的只有 `source.dshVersion` 与 `source.asarSha256`。
+- **peer 范围仍然不需要新分支**（这是第二次实证，不是新待办）：`0.2.2-rc.3` 与
+  rc.1 / rc.2 同一元组，第四支 `>=0.2.2-rc.1 <0.3.0-0` 已经开闸。
+  `tests/dsh-line.spec.ts` 把 `0.2.2-rc.3` 加进 `ADMITTED_PRERELEASES` 与宿主门禁
+  那条用例，注释写明「第二次实证同一判断」。下一个待补的仍是 `0.2.3-rc.1`。
+
+### 文档
+
+- 新增 [`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md)：钉在 rc.3 的
+  329 个 `@deepseek-ai/*` 依赖逐包 diff 的结果（17 个有实质变化、11 个被 import 的
+  逐字节相同）、槽位目录从 114 条到 116 条的逐条比对、复现命令，以及「看起来要改其实
+  不用」的清单（新的 `sidebar.session.action` hoc 槽、`workspace.picker` Factory、
+  `ui-settings-general` 只差版本串、`settings-jump.ts` 依赖的三个外壳形状逐字未变）。
+- README 双语：「当前宿主」小节轮换到 rc.3，rc.2 的一节降级为「上一轮基线」。
+  两份 README 的 peer 范围表**不用改**（见上一条）。
+- `package.json` 的 `files` 与 `RELEASING.md` 的打包清单收入新文档。
+
+### 其余
+
+- 回归：`pnpm run check` 全绿，**1472 通过 / 12 跳过**（与 rc.2 树完全一致）。
+- 明确排除：新的 `dsh-deepseek-chat-import`（需用户显式安装的 experimental bundle）、
+  `dsh-session-log-export` 的「缺附件不再整包失败」、CUA helper 的二进制换 hash
+  （macOS 上可能要求重新授权一次，属宿主行为）—— 逐条理由见 followup 文档 §六。
+
 ## 1.25.1 (2026-11-12)
 
 > **只改测试与文档，不改运行时代码。** 宿主从 `0.2.2-rc.1` 升到 `0.2.2-rc.2`。

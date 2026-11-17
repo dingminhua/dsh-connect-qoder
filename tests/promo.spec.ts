@@ -72,10 +72,11 @@ describe('解析上游 promotion', () => {
       link: { zh: 'https://docs.qoder.cn/product-overview/qwen-3-7-series-model-staggering-discount' },
       timeZone: 'Asia/Shanghai',
       window: { start: '22:00', end: '08:00', startMinute: 1320, endMinute: 480 },
+      // issue #41：折扣数字保留给 displayMultiplierOf 算 UI 显示的活动实际价；
+      // rule_id 仍不保留（插件不给它任何语义），也不从数字反推文案。
+      discountFactor: 0.4,
+      beforePromotionPriceFactor: 0.5,
     })
-    // 上游的 discount_factor / before_promotion_price_factor / rule_id 刻意不保留：
-    // 插件不从数字反推文案，也没有界面消费它们，留下只会随目录一起落盘。
-    expect(Object.keys(parsed)).not.toContain('discountFactor')
     expect(Object.keys(parsed)).not.toContain('ruleId')
   })
 

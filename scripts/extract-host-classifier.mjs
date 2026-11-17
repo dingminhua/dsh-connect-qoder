@@ -178,7 +178,12 @@ function main(argv) {
       app: APP_LABEL,
       dshVersion: dshVersion(raw) ?? existing.source.dshVersion,
       asarSha256: createHash('sha256').update(bytes).digest('hex'),
-      extractedAt: new Date().toISOString().slice(0, 10),
+      // **本地日期，不是 UTC。** 这里原本是 `toISOString().slice(0, 10)`，在
+      // UTC+8 上任何一次 00:00–08:00 之间的提取都会写进**前一天** —— 0.2.2-rc.3
+      // 那一轮就撞上了：11-14 凌晨跑的提取把 `extractedAt` 记成 `2026-11-13`。
+      // 这个字段只作溯源提示，不影响任何断言，所以错一天不会红；正因为它不会红，
+      // 只能靠这里写对它。用 `toLocaleDateString('sv-SE')`（ISO 形状的本地日期）。
+      extractedAt: new Date().toLocaleDateString('sv-SE'),
     },
     quotaCodeConstant: existing.quotaCodeConstant,
     isQuotaExceededError: extracted.isQuotaExceededError,

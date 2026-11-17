@@ -68,8 +68,8 @@
    窗口外的那枚灰显（§3.3），位置与文案不变。
 6. **文案、悬停都只说上游的话。** 胶囊文字取 `badge.zh`（中文界面）/ `badge.en`；
    悬停取 `description`，再补上「时段 + 时区」与 `link_url` 原文。插件不翻译、不改写、
-   不从 `discount_factor` 反推「4 折」这类数字（那三个数字字段因此在解析时就被丢掉，
-   不随目录落盘）。
+   **不从 `discount_factor` 反推「4 折」这类文案**（`rule_id` 因此仍不保留）。
+   但折扣**数字本身**现在保留了——它不进文案，只给「活动实际倍率」用，见 §3.4。
 
 ### 3.1 为什么「有窗口时窗口说了算」
 
@@ -123,6 +123,36 @@
 
 `none` 里那两条不能进 `pending`：读不懂的窗口给不出「几点生效」（说一个猜的时间比不说
 更糟），没有窗口的常驻活动同理。
+
+### 3.4 活动期的「显示倍率」（issue #41）
+
+徽标之外，活动还有第二个用户可见的后果：**实际计费倍率变了**。上游 `promotion` 里
+`discount_factor`（折后系数，如 `0.4`）与 `before_promotion_price_factor`（折前价，如
+`0.5`）给出了这条规则的数字面。实测 `qmodel_38max` 在窗口内的实际价 `0.20x` =
+基准价 `0.5 × 0.4`——与 Qoder 官方菜单对得上。但插件此前只显示 `price_factor` 基准价，
+于是一个「限时免费」（`discount_factor: 0`）的模型，官方写 `x0.00`、插件写 `0.1x`，
+两个客户端的数字对不上，用户以为计费出错（issue #41）。
+
+修法是一条**只在 UI 显示**的旁路，与徽标共用同一份规则、同一套判定：
+
+- `QoderPromotion` 保留 `discountFactor` / `beforePromotionPriceFactor` 两个可选数字
+  （`rule_id` 仍丢，插件不给它语义；文案仍不反推数字——「4 折」那句话永远是上游的原话）。
+- `displayMultiplierOf(source, now)`：仅当此刻 `promoDisplayAt === 'live'` 且有可信
+  `discountFactor`（有限数、`0 ≤ x ≤ 1`）时，返回「当前基准价 × 折扣系数」（两位小数
+  归一）；否则原样返回基准价。它和徽标判定一样是**渲染时刻的纯函数**，不落盘——
+  理由与 §3.2 相同（窗口绑死的值写进 `lastCatalog` 会冻结到第二天早上）。
+- 三个展示面都接它：卡片模型行的 `(N.NNx)`、DSH 内置模型选择器的 `· xN.NN`
+  （`modelDisplayName` 增加可选 `now` 参数）、账号池「测试用模型」下拉。倍率与基准价
+  不同时，标签悬停补一句插件写的解释「活动价，基准价 x0.10」（`row.ratePromoHint`），
+  免得用户拿活动价和别处对账。
+- **计费路径一个字符没动**：`priceFactor` / `creditMultiplier` 仍写基准价并照旧落盘；
+  `poolModelOf` 把 `promotion` 放在 `creditMultiplier` 之外的独立字段，绝不把活动期的
+  `0` 折叠进「免费即 0」判据——否则一个「基准收费、活动免费」的模型会被账号池当成
+  免费模型反复探测，静默烧掉真积分。pi-ai 请求与目标模型 id 也一律按模型 key，不读
+  这个显示倍率。
+- **不拿 `before_promotion_price_factor` 当校验门**：限时免费这类活动里它可能与目录
+  当前 `price_factor` 对不上，用它做等值校验恰好会把该显示的 `x0.00` 压回基准价。
+  折算只取目录当前基准价；折前快照只作记录、供日后复核。
 
 ## 4. 与另两个插件的能力对照
 
@@ -196,7 +226,10 @@ parsed models: 11   carrying a rule: 2
 | `src/promo.ts` `clockMinute` / `parsePromoWindow` | `HH:MM` → 分钟数（终点接受 `24:00`） |
 | `src/promo.ts` `promoWithinWindow` | 按上游时区判时段（跨零点、起点含终点不含） |
 | `src/promo.ts` `promoLiveAt` | 渲染时刻的「此刻画不画」 |
+| `src/promo.ts` `displayMultiplierOf` | 渲染时刻的「活动实际倍率」（issue #41；只用于 UI，不落盘、不进计费） |
+| `src/client/promo-badge.ts` `rateHint` | 活动价与基准价不同时的「基准价 x0.10」悬停解释 |
 | `src/catalog.ts` `QoderModelInfo.promotion` | 目录条目带规则（`parseUpstreamModel` 里解析） |
+| `src/catalog.ts` `modelDisplayName` | DSH 内置选择器名 `· xN.NN`：显示倍率走 `displayMultiplierOf` |
 | `src/index.ts` `modelConfig.promotion` | `lastCatalog` 持久化 schema（`z.any<QoderPromotion>()`） |
 | `src/status-paths.ts` `QoderWebModel` / `QoderPersistedModel` | 投影给卡片的模型行类型 |
 | `src/web-status.ts` `webModelOf` | 投影时原样带出（对象展开，运行期无需改） |
