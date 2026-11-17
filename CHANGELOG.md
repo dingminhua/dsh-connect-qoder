@@ -2,6 +2,50 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.26.3 (2026-11-18)
+
+> **修 issue #44 标题里那条 `10605`：`403 + 10605`（模型请求排队）被报成
+> 「连不上上游——上游没有给出可用答复」，两句都错。** 上游给了明确答复，而且
+> 官方定义 `10605 = Model request is queued`（模型级排队），不是连不上、更不是
+> 凭据问题。只补一个「业务码兜底」判据，没动码表、映射或存储形状，patch 版本。
+
+### 修复
+
+- **业务码 `10605` 自身作为排队信号，不再依赖能否从报文里读出 `isQueued`（issue #44）。**
+  - **症状**：issue #44 标题的现场是聊天撞上 `403 {"code":"403","message":
+    "{\"code\":\"10605\",\"message…"}`（内层被 UI 截断），池子把账号标成红色
+    `✗ 连不上上游——上游没有给出可用答复` + 整号冷却。维护者定性「换个模型试试」
+    ——是模型级排队，不是账号坏、不是没答复。
+  - **联网核查**（本次）：用户问的「10065」Qoder 官方三份文档（docs.qoder.com
+    英/中、docs.qoder.cn）出现 **0 次**，是 `10605` 的数字转位笔误。官方对
+    `10605` 的原文定义是 **「Model request is queued」→ 模型请求排队**，
+    qodercli 通常自动等待重试；[Qoder 论坛 topic 9918](https://forum.qoder.com/t/topic/9918)
+    的实拍信封也带 `isQueued/queueType/retryAfterSeconds/serviceAvailable`。
+  - **根因**：`10605` 在码表里归 `transient`，`liveRequestProbe` 判断「是否排队」
+    **只认** `context.queue.isQueued===true`。现场那条报文内层是字符串 message、
+    `queueOf` 读不出 `isQueued`（或形态是 #24 的 `isQueued:false + RESOURCE_LIMIT`
+    等待型），于是 `queued=false` → `transient → unavailable` →「连不上上游」。
+  - **改法**：`liveRequestProbe` 里 `queued = queue.isQueued===true || context.code==='10605'`。
+    业务码是上游自己给的、比「按 kind 猜」强；flag 仍优先（带 serviceAvailable
+    等更具体信息，「上游整体不可用 serviceAvailable:false → unavailable」的
+    #29 判据不变）。只认明确的业务码，不猜任何字段。
+  - **顺带修正一条旧断言**：issue #6 的「实拍排队帧 → 池里不落永久排除」用例
+    此前把 outcome 钉成 `unavailable`（记录的是旧误判），本版改为 `queued`——
+    它要守的不变量是「403 猜的 auth 不落成永久 credential-rejected」，`queued`
+    同为冷却档、到期自愈，不变量仍然成立。
+  - **与 1.26.2 的 `112` 无关**：那次修的是后来那张 6 账号图里的额度耗尽码；
+    本条修的是 issue 标题本身的 `10605` 排队码。两条都是「别把 403 里的业务码
+    误读成连不上/凭据问题」，但码与语义不同，分开记账。
+
+### 测试
+
+- `tests/index.spec.ts`：新增「10605 没解析出 isQueued 时仍按 queued」与
+  「10605 + serviceAvailable:false 仍是 unavailable（别改坏 #29）」两条；
+  更新 issue #6 那条旧断言。
+- `tests/probe-label.spec.ts`：钉住 10605→queued 后文案说「排队」不是「没给出答复」。
+- 均**先写失败断言、确认变红，再修到通过**。`pnpm run check` 全绿
+  （**1505 通过 / 12 跳过**），`tests/privacy.spec.ts` 27 条全绿。
+
 ## 1.26.2 (2026-11-18)
 
 > **再修一个「额度不足被当成连不上上游」的误判（issue #44）：业务码 `112`。**

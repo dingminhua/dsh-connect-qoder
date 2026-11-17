@@ -1205,6 +1205,33 @@ describe('liveRequestProbe：一次真实失败要落盘的那条测量', () => 
     expect(probe?.outcome).toBe('queued')
   })
 
+  // issue #44：`10605` 官方定义就是「模型请求排队」（docs.qoder.com/sdk/errors）。
+  // 现场报文被 UI 截断、queueOf 没能从报文里读出 isQueued（例如内层的
+  // RESOURCE_LIMIT 等待形态），于是掉进 transient → unavailable →「连不上上游
+  // ——上游没有给出可用答复」。但上游明明确给了 403 + 10605 答复，而且维护者
+  // 定性「换个模型试试」= 模型级排队，不是账号/全局故障。所以只要业务码是
+  // 10605、又没有显式的「上游整体不可用」证据，就按排队处理，不冤枉账号。
+  it('code 10605 没解析出 isQueued 时仍按 queued，不报「连不上上游」（issue #44）', () => {
+    const envelope = '上游信封错误: HTTP 403 {"code":"403","message":"{\\"code\\":\\"10605\\",\\"message\\":...}"}'
+    const probe = Qoder.liveRequestProbe('transient', envelope, 'smodel', {
+      status: 403,
+      code: '10605',
+      retryAfterMs: 5_000,
+      // 没有 queue.isQueued —— 正是现场报文被截断/内层形态导致读不到的情况
+    })
+    expect(probe?.outcome).toBe('queued')
+    expect(probe?.modelId).toBe('smodel')
+    expect(probe?.retryAtMs).toBeGreaterThan(Date.now())
+  })
+
+  it('10605 但有显式 serviceAvailable:false 仍是 unavailable（整体拒服务，别改坏 #29）', () => {
+    const probe = Qoder.liveRequestProbe('transient', '10605', undefined, {
+      code: '10605',
+      queue: { isQueued: true, queueCount: 0, serviceAvailable: false },
+    })
+    expect(probe?.outcome).toBe('unavailable')
+  })
+
   // ------------------------------------------------------------------------
   // issue #32：`110` 的信封里没有等待时长，窗口时刻来自签到快照。
   // ------------------------------------------------------------------------
@@ -1523,7 +1550,7 @@ describe('凭据被拒要有凭据（issue #6）', () => {
     expect(Qoder.credentialOutcomeOf({ status: 429 })).toBe('unavailable')
   })
 
-  it('整条链：实拍的排队帧 → transient → 池里不落永久排除', () => {
+  it('整条链：实拍的排队帧 → transient → 池里按 queued 记，不落永久排除', () => {
     // 用户实拍的那一帧（CN 区）：外层 403，内层 10605（排队）。
     const frame = '{"code":403,"message":"{\\"code\\":\\"10605\\",\\"message\\":\\"qmodel 排队中，请稍后重试\\"}"}'
     const kind = classifyFailure(403, frame)
@@ -1531,9 +1558,11 @@ describe('凭据被拒要有凭据（issue #6）', () => {
     const code = deepestBusinessCode(frame)
     expect(code).toBe('10605')
     const probe = Qoder.liveRequestProbe(kind, '聊天请求失败: HTTP 403', undefined, { status: 403, code })
-    // 排队是**账号**的事实（它还排在那儿），但不是「这个号坏了」：落一条会冷却
-    // 的测量，而不是永久剔除。
-    expect(probe?.outcome).toBe('unavailable')
+    // 10605 官方定义就是「模型请求排队」（docs.qoder.com/sdk/errors）。此前这条
+    // 用例把排队帧钉成 unavailable，是因为旧代码只认 queue.isQueued、没认业务码
+    // ——帧里是字符串 message、读不出 isQueued，就落成了「连不上上游」。issue #44
+    // 修正后：业务码 10605 自身即排队信号，落 queued（会冷却、到期自愈，文案说排队）。
+    expect(probe?.outcome).toBe('queued')
     expect(exclusionOf(probe, probe!.atMs + 31 * 60_000)).toBeUndefined()
   })
 

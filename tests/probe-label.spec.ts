@@ -49,6 +49,16 @@ describe('issue #26：排队不是「连不上上游」', () => {
     expect(view.tone).toBe('bad')
   })
 
+  it('10605 排队落到 queued 后，文案说的是「排队」不是「没给出答复」（issue #44）', () => {
+    // issue #44 现场：上游给了明确答复 403 + 10605（官方定义=模型请求排队），
+    // 文案却说「上游没有给出可用答复」。修复后按 queued 渲染，说的是排队 + 等待。
+    const view = probeResultView({ outcome: 'queued', retryAtMs: NOW + 30_000 }, keyT, NOW)
+    expect(view.text).toContain('row.probeQueuedAt')
+    expect(view.text).not.toContain('row.probeUnavailable')
+    const zh = qoderLocales.zh
+    expect(render(zh['row.probeQueuedAt'], { at: '10/31 00:30' })).toContain('排队')
+  })
+
   it('排除原因里排队有自己的说法，不是「连不上上游」', () => {
     expect(exclusionText(keyT, 'queued', NOW + 30_000, NOW)).toContain('row.poolExcludedQueued')
     expect(exclusionText(keyT, 'unavailable', undefined, NOW)).toBe('row.probeUnavailable')

@@ -2748,8 +2748,17 @@ export function liveRequestProbe(
   // - `serviceAvailable: false` → `unavailable`：上游整体在拒服务
   //   （现场 `queueCount: 0`），换号、换 PAT 都无效。记成账号级 `queued`
   //   会让用户以为自己的凭据坏了。
-  const queued = context?.queue?.isQueued === true
-  const upstreamDown = queued && context?.queue?.serviceAvailable === false
+  const queuedByFlag = context?.queue?.isQueued === true
+  // issue #44：`10605` 官方定义就是「模型请求排队」（docs.qoder.com/sdk/errors），
+  // 是**业务码**层面的排队事实。现场报文被 UI 截断/内层形态导致 `queueOf` 没能
+  // 读出 `isQueued` 时，仅靠 flag 会把明确的 403+10605 答复误判成
+  // `transient → unavailable` →「连不上上游——上游没有给出可用答复」（两句都错）。
+  // 所以业务码 10605 也作为排队信号：它比 flag 弱（flag 带 serviceAvailable 等
+  // 更具体的信息），但比「按 kind 猜」强，且只认上游自己给的业务码，不猜字段。
+  const queued = queuedByFlag || context?.code === '10605'
+  // 「上游整体拒服务」只在 flag 明确给了 serviceAvailable:false 时成立（issue #29）。
+  // 业务码 10605 这条兜底路没有 serviceAvailable 证据，不能据此判成整体不可用。
+  const upstreamDown = queuedByFlag && context?.queue?.serviceAvailable === false
   const outcome = queued
     ? upstreamDown ? 'unavailable' : 'queued'
     : kind === 'auth' ? credentialOutcomeOf(context) : FAIL_OVER_OUTCOME[kind]
