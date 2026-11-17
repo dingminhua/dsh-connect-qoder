@@ -1881,6 +1881,11 @@ export function classifyBusinessCode(code: string): UpstreamErrorKind {
 
 const QUOTA_CODES: ReadonlySet<string> = new Set([
   '110', // 达到当日用量限制（本轮实测到的那一个）
+  '112', // 额度不足，message 带 pricingUrl 指向充值页（issue #44）——模型级额度
+  // 112 与 110/144 同族：额度不足、会恢复、换 PAT 无效。此前不在码表里 →
+  // 403 回落 auth → credentialOutcomeOf 降级 unavailable → 文案「连不上上游」
+  // + 整号冷却（issue #44 现场 6 个号同时如此）。维护者定性「模型额度用完，
+  // 换模型即可」，归配额族后走 out-of-credit 冷却、到期自愈。
   '113', // 用量配额耗尽
   '115', // 达到免费用户配额
   '116', // 团队管理员 Credits 耗尽

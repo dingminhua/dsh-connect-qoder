@@ -389,8 +389,8 @@ describe('error classification', () => {
       expect(classifyFailure(429, '{"code":"99999"}')).toBe('rate-limited')
     })
 
-    it('配额族全覆盖（官方码表 110/113/115-119/122 + 早期实测的 402/6004）', () => {
-      for (const code of ['110', '113', '115', '116', '117', '118', '119', '122', '402', '6004']) {
+    it('配额族全覆盖（官方码表 110/112/113/115-119/122/144 + 早期实测的 402/6004）', () => {
+      for (const code of ['110', '112', '113', '115', '116', '117', '118', '119', '122', '144', '402', '6004']) {
         expect(classifyFailure(403, `{"code":"${code}"}`)).toBe('quota-exhausted')
       }
     })
@@ -418,6 +418,30 @@ describe('error classification', () => {
       } catch (error) {
         expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
         expect((error as QoderUpstreamError).code).toBe('144')
+      }
+    })
+
+    it('code 112（pricingUrl 充值页，模型额度不足）判成配额，不是连不上上游（issue #44）', () => {
+      // issue #44 现场（6 个号同时撞）：403 + code 112 + message 带 pricingUrl
+      // 指向充值页。维护者定性「模型额度用完，换模型即可」——与 144 同族：
+      // 额度不足、会恢复、换 PAT 无效。此前码表漏 112 → 403 回落 auth →
+      // credentialOutcomeOf 降级 unavailable → 文案「连不上上游」+ 整号冷却。
+      const body = '{"code":"112","message":"{\\"pricingUrl\\":\\"https://qoder.com/pricing?client=qoder\\"}"}'
+      expect(classifyBusinessCode('112')).toBe('quota-exhausted')
+      expect(classifyFailure(403, body)).toBe('quota-exhausted')
+      // 变异检查：把 112 从 QUOTA_CODES 去掉，这条立刻红。
+      expect(classifyHttpStatus(403, body)).toBe('auth')
+    })
+
+    it('112 的 SSE 信封路径也判配额并保留码（issue #44）', () => {
+      const body = '{"code":"112","message":"{\\"pricingUrl\\":\\"https://qoder.com/pricing?client=qoder\\"}"}'
+      const frame = JSON.stringify({ body, statusCodeValue: 403 })
+      try {
+        parseStreamDelta(frame)
+        expect.unreachable('应该抛错')
+      } catch (error) {
+        expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
+        expect((error as QoderUpstreamError).code).toBe('112')
       }
     })
 

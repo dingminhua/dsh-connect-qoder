@@ -2,6 +2,43 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.26.2 (2026-11-18)
+
+> **再修一个「额度不足被当成连不上上游」的误判（issue #44）：业务码 `112`。**
+> 和 1.26.1 的 `144` 完全同构——都是往同一张 `QUOTA_CODES` 码表里补一个码，
+> 没动任何框架、映射或存储形状，patch 版本。
+
+### 修复
+
+- **`code 112`（message 带 `pricingUrl` 指向充值页）归入 `quota-exhausted`（issue #44）。**
+  - **症状**：issue #44 现场 6 个账号同时撞 `403 {"code":"112","message":
+    "{\"pricingUrl\":\"https://qoder.com/pricing?client=qoder\"}"}`，全部被标
+    `✗ 连不上上游——上游没有给出可用答复` + 整号冷却。上游明明给了明确答复
+    （还附了充值页），这句文案是错的；而维护者定性「模型额度用完，换模型即可」
+    ——换 PAT 无效、会恢复，与 `110`/`144` 同族。
+  - **根因链**：112 不在码表 → `classifyFailure(403)` 回落 `auth` →
+    `credentialOutcomeOf` 把「裸 403 猜的 auth」降级 `unavailable` →
+    文案「连不上上游」+ `exclusionOf` 整号冷却。降级本身是 issue #6 的防线，
+    但源头分类错了，最终还是误导。
+  - **改法**：`QUOTA_CODES` 加 `'112'`。改后：`classifyFailure → quota-exhausted`
+    → 池记录 `out-of-credit` → 冷却结束自动回池，文案也不再说「没给出答复」。
+  - **为什么 1.26.1 没一起修 112**：那次 #45 报告只把 112 当「同族候选」、
+    明确说未单独验证。本次 issue #44 由维护者给出权威定性 + 6 号同型号现场 +
+    逐字报文（`pricingUrl`），证据补齐才动——不猜码表是这条线一贯的规矩。
+  - **仍没动的 `10605`**：issue #44 原截图里的 `403 + 10605` 信封被 UI 截断，
+    内层字段拿不到。10605 在图里有「排队」「等 5 秒」等多种已知形态，没完整
+    报文就不猜——避免把别的 10605 误改成「额度用完」。若后续拿到完整内层对象
+    再单独处理。
+
+### 测试
+
+- `tests/upstream.spec.ts`：新增 112 的 `classifyBusinessCode` / `classifyFailure`
+  / SSE 信封三条断言（含变异检查），并把「配额族全覆盖」清单补上 `112`/`144`。
+- `tests/index.spec.ts`：新增整条链断言——403+112 → `quota-exhausted` → 池探针
+  `out-of-credit` → 冷却结束回池（不再是 unavailable 的「连不上上游」）。
+- 均**先写失败断言、确认变红，再修到通过**。`pnpm run check` 全绿，
+  `tests/privacy.spec.ts` 全绿。
+
 ## 1.26.1 (2026-11-18)
 
 > **修一个「积分不足被当成凭据失效」的误判（issue #45）。** 上游业务码 `144`

@@ -1537,6 +1537,22 @@ describe('凭据被拒要有凭据（issue #6）', () => {
     expect(exclusionOf(probe, probe!.atMs + 31 * 60_000)).toBeUndefined()
   })
 
+  it('整条链：code 112（pricingUrl，模型额度不足）→ quota-exhausted → 冷却自愈，不是「连不上上游」（issue #44）', () => {
+    // issue #44 现场：6 个号同时 403 + code 112 + pricingUrl 充值页。维护者定性
+    // 「模型额度用完，换模型即可」。此前 112 不在码表 → 403 回落 auth →
+    // credentialOutcomeOf 降级 unavailable → 文案「连不上上游」+ 整号冷却。
+    const frame = '{"code":"112","message":"{\\"pricingUrl\\":\\"https://qoder.com/pricing?client=qoder\\"}"}'
+    const kind = classifyFailure(403, frame)
+    expect(kind).toBe('quota-exhausted')
+    const code = deepestBusinessCode(frame)
+    expect(code).toBe('112')
+    const probe = Qoder.liveRequestProbe(kind, '聊天请求失败: HTTP 403', undefined, { status: 403, code })
+    // 关键：落 out-of-credit（配额族、会按冷却期自愈），不是 unavailable（连不上上游）。
+    expect(probe?.outcome).toBe('out-of-credit')
+    expect(exclusionOf(probe, probe!.atMs)).toBe('out-of-credit')
+    expect(exclusionOf(probe, probe!.atMs + 31 * 60_000)).toBeUndefined()
+  })
+
   it('整条链：code 144（专属积分包不足）→ quota-exhausted → 会自愈的冷却，不是永久排除（issue #45）', () => {
     // issue #45 现场：403 + code 144 + modelKey smodel。此前码表漏 144 → 403
     // 回落 auth → credential-rejected → 账号被踢出池且充值后也不回。
