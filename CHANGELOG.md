@@ -2,6 +2,64 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.26.0 (2026-11-17)
+
+> **修两个「数字看着对、语义是错的」问题（issue #42 / #43）。** 一个是每轮换
+> `session_id` 让 prompt cache 100% 失效（成本问题），一个是把用途不同的专属积分包
+> 相加成一个花不掉的数（决策误导）。两者都改的是**展示 / 请求标识的语义**，
+> 计费规则、上游协议字段的含义与账号池逻辑一个字符没动。
+> 版本取 minor：新增了「模型 compat 开 session-affinity 头」这一对外可见的
+> 请求行为（老宿主读不到头时自动退回旧行为，向后兼容）。
+
+### 修复
+
+- **同一会话的 `session_id` 不再每轮换新，prompt cache 能跨轮命中（issue #42）。**
+  - **症状**：`chatStream` 每轮 `template.session_id = randomId()`，而 Qoder 网关的
+    prompt cache 按 `session_id` 分桶 —— 每轮换桶、命中恒 0。用户实测对照：
+    同一份请求体、只把 `session_id` 固定住，命中率从 **0% 变成 99.8%**；真实
+    长会话里 `cached_tokens` 恒定卡在系统提示 + 工具定义那一段（约 15002），
+    **对话内容一个 token 都没进缓存**。长对话每轮都为前 N-1 轮重复付全价。
+  - **根因**：`messages.ts:63` 那句「每个请求必须换 ID」被套到了 `session_id`
+    身上。但 `request_id` / `chat_record_id` / `request_set_id` / `business.id` 是
+    **单次请求**标识（换新正确），`session_id` 是**会话**标识（必须稳定）。
+  - **稳定值从哪来**：DSH 的 agent loop 每轮都把 `session.id` 盖进 LLM 请求
+    （`dsh-agent-loop/src/agent.ts:746`，`Session.id` 即不可变 header id），
+    pi-ai 的 session-affinity 机制在 `compat.sendSessionAffinityHeaders` 打开时
+    把它写成 `session_id` 头。这个 compat 默认只给 OpenRouter 开，所以本次在
+    `toPiModel()` 里显式打开 `sendSessionAffinityHeaders: true` +
+    `sessionAffinityFormat: 'openai'`（DSH 的 compat 门禁 `withhold` 只校验配置文件，
+    本插件自注册 Provider 的 compat 直达 pi-ai，不受影响）。
+  - **接线**：shim 的 `handleChat` 从入站头读 `session_id`（兼容别名
+    `x-session-affinity` / `x-client-request-id`），作为 `chatStream` 的新可选参数
+    `sessionId` 传下去；上游把它写进请求体 `session_id`，其余单次请求 ID 照旧
+    每轮换新。**读不到头就退回 `randomId()`** —— 老宿主 / 非 DSH 客户端行为不变。
+  - **范围**：这是 per-session 值；同一会话内分支 / 子代理有各自的 session id，
+    分桶独立属预期，不影响正确性。
+
+- **专属积分列不再把用途不同的包相加（issue #43）。**
+  - **症状**：国际版同一账号下发两个包 —— SOTA 专属 1960（绑 Sonus）与极致专属
+    500（绑另一个模型），面板主列显示 **2460**。这个数不对应任何能花出去的额度：
+    用 Sonus 时超出 1960 的部分会掉回通用积分（当时为 0 → 直接充值提示）。两笔钱
+    各绑各的模型、不能互换，悬停里逐包明细本来是对的，只有主列的汇总数算错了语义。
+  - **为什么当时选了合计**：issue #38 在「合计 / 按包分行」之间选了合计，理由是
+    列宽只有 56px、分行会让一个账号占三四行。但那个决定建立在「多个同类包」的
+    假设上，上游这次从 1 个变 2 个、且用途不同，才暴露出「合计 = 一个花不掉的数」。
+  - **修法**（issue 建议里的 D 方案）：主列显示**主包（第一个有余额的包）自己的
+    真实余额 + `+N`** 溢出标记（本例 `1,960+1`），逐包明细留在悬停；悬停那行
+    「共 N 个专属包」不再带合计数字。宽度仍在 56px 预算内（四位数 + 两字符），
+    不占额外行，又保证「一个数字对应一件真事」。双语 locale 的 `dedicatedMultiple`
+    文案一并去掉 `{remaining}` 占位。
+
+### 测试
+
+- 新增/扩充三个测试文件，均**先写失败断言、确认变红，再修到通过**：
+  `tests/adapter.spec.ts`（compat 开 affinity 头）、`tests/shim.spec.ts`（头透传
+  为 `chatStream` 的 `sessionId`）、`tests/upstream.spec.ts`（同一 sessionId 两轮
+  写进同一个 `session_id`，其余 ID 每轮换新）；`tests/composer-billing.spec.tsx`
+  从「合计 1,000」改为钉住 `1,960+1` / `888+1` 与悬停无合计。
+- `pnpm run check` 全绿：**1496 通过 / 12 跳过**（比 1.25.3 多 6 条）。
+  `tests/privacy.spec.ts` 27 条全绿。
+
 ## 1.25.3 (2026-11-17)
 
 > **修一类中「两个客户端倍率对不上」的显示 bug（issue #41）。** 只改展示：

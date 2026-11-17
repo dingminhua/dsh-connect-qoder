@@ -779,6 +779,13 @@ export class QoderUpstreamClient {
       signal?: AbortSignal
       onDelta: (delta: QoderChatDelta) => void
       userType?: string
+      /**
+       * 会话标识（issue #42）—— Qoder 网关的 prompt cache 按请求体 `session_id`
+       * 分桶，所以每会话必须稳定。DSH 每轮把 `session.id` 盖在 LLM 请求上，
+       * shim 从 `session_id` 头读出后传到这里。缺席（老宿主 / 直连调用）时退回
+       * 随机值，保持旧调用方行为不变。
+       */
+      sessionId?: string
     },
   ): Promise<void> {
     const holder = await this.ensureSession(credential)
@@ -803,7 +810,13 @@ export class QoderUpstreamClient {
     template.request_id = randomId()
     template.chat_record_id = template.request_id
     template.request_set_id = randomId()
-    template.session_id = randomId()
+    // issue #42：`session_id` 是「会话」标识，不是单次请求标识 —— 它在同一场
+    // 会话内必须稳定，否则 Qoder 的 prompt cache 每轮换桶、100% 失效，长对话
+    // 每轮都为整段历史重复付全价。request_id / request_set_id / business.id
+    // 每轮换新仍然正确（它们是单次请求标识）。
+    template.session_id = options.sessionId !== undefined && options.sessionId !== ''
+      ? options.sessionId
+      : randomId()
     template.business.id = randomId()
     template.business.name = prompt.slice(0, 30) || 'hi'
     template.business.begin_at = Date.now()

@@ -471,23 +471,28 @@ export function ComposerCredits(props: ComposerCreditsProps) {
   const english = hostLanguage(t).toLowerCase().startsWith('en')
 
   /**
-   * 一行的专属积分读数（合计 + 悬停）。
+   * 一行的专属积分读数（主列 + 悬停）。
    *
-   * **多个包只显示合计**（issue #38 留了「合计或按包分行」两个选项）：这一列
-   * 只有 56px，分行会让一个账号在某一行里占掉三四行高，而面板的用途是「谁在
-   * 服务、还剩多少」。逐包的细节放进悬停 —— 那里放得下标题、说明与各自的到期
-   * 时刻，也就没有丢信息。
+   * **主列只显示「主包自己的余额 + 溢出标记」，绝不再把多个包相加**（issue #43）。
+   * issue #38 当时在「合计 / 按包分行」之间选了合计，但那个决定建立在「多个同类
+   * 的包」的假设上。实测上游会下发**用途不同**的包（SOTA 专属 1960 绑 Sonus、
+   * 极致专属 500 绑另一个模型），两笔钱各绑各的模型、不能互换 —— 它们相加出来的
+   * 2460 不对应任何能花出去的额度：选 Sonus 时超出 1960 的部分会掉回通用积分。
+   * 「一个数字必须对应一件真事」，所以主列取第一个包（主包）的真实余额，后面跟
+   * `+N` 表示还有 N 个别的包，逐包明细进悬停。
+   *
+   * 不按「按包分行」是为了保住 issue #38 的宽度预算：这一列只有 56px，一个账号
+   * 占三四行会挤掉别的账号；`+N` 把宽度控制在「四位数 + 两字符」以内，同时不让
+   * 数字撒谎。
    */
   const dedicatedOf = (packages: readonly QoderWebDedicatedPackage[] | undefined): {
     text: string
     title: string | undefined
   } | undefined => {
     if (packages === undefined || packages.length === 0) return undefined
-    // 全部缺席 `remaining` 时合计没有意义 —— 那是「上游没报」而不是「0」。
-    const known = packages.filter(entry => entry.remaining !== undefined)
-    const total = known.length === 0
-      ? undefined
-      : known.reduce((sum, entry) => sum + (entry.remaining ?? 0), 0)
+    // 主包 = 第一个有 `remaining` 的包。上游没报余额的包不能当主包（否则主列
+    // 只能画「—」，而后面的包明明有数）；全都没报才是真的「不知道」。
+    const primary = packages.find(entry => entry.remaining !== undefined)
     const lines: string[] = []
     for (const entry of packages) {
       const name = localizedLabel(entry.title, english) ?? t('composer.dedicated')
@@ -498,12 +503,16 @@ export function ComposerCredits(props: ComposerCreditsProps) {
         : ` · ${t('composer.dedicatedExpires', { time: formatDay(entry.expiresAtMs) })}`
       lines.push(`${name}: ${amount}${expires} — ${hint}`)
     }
-    // 多个包时先给一行合计：悬停里逐条列出之后，读者仍需要一个总数。
-    if (packages.length > 1 && total !== undefined) {
-      lines.unshift(t('composer.dedicatedMultiple', { count: packages.length, remaining: formatCredits(total) }))
+    // 多个包时先给一行「共几个」的说明，但**不带合计数字** —— 合计是个花不掉的
+    // 数，写出来就是误导（issue #43）。
+    if (packages.length > 1) {
+      lines.unshift(t('composer.dedicatedMultiple', { count: packages.length }))
     }
+    const primaryText = primary === undefined ? '—' : formatCredits(primary.remaining ?? 0)
+    // +N：除了主包之外还有几个包。悬停里有它们的逐条明细。
+    const overflow = packages.length - 1
     return {
-      text: total === undefined ? '—' : formatCredits(total),
+      text: primaryText + (overflow > 0 ? `+${overflow}` : ''),
       title: lines.join('\n'),
     }
   }

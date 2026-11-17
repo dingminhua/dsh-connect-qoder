@@ -1601,3 +1601,60 @@ describe('issue #26：排队信封（message 是对象的那种）', () => {
     }
   })
 })
+
+// ==========================================================================
+// issue #42：session_id 必须在一场会话内稳定，否则 prompt cache 100% 失效
+//
+// Qoder 网关按请求体 `session_id` 给 prompt cache 分桶。此前 chatStream 每轮
+// `randomId()`，于是每轮落进全新桶、缓存恒 0；实测固定同一个值命中率 99.8%。
+// 这里钉住：传入的 sessionId 原样进请求体，且其他 ID 仍是每轮换新的。
+// ==========================================================================
+describe('chatStream 的 session_id 稳定性（issue #42）', () => {
+  /** 跑一次 chatStream，回解 cosy 编码的请求体，并计数。 */
+  function capture() {
+    const bodies: Array<Record<string, unknown>> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u', name: 'n', expireTime: Date.now() + 1_000_000,
+          securityOauthToken: 'jt-TEST', refreshToken: 'r', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      // chat 请求体就是 cosy 编码后的模板 JSON（不像 jobTokenBody 那样再套一层 payload）。
+      const encoded = typeof init?.body === 'string' ? init.body : ''
+      const decoded = Buffer.from(cosyDecode(encoded)).toString('utf8')
+      bodies.push(JSON.parse(decoded) as Record<string, unknown>)
+      return new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as unknown as typeof fetch
+    return { bodies, client: new QoderUpstreamClient('cn', { fetch: fetchImpl }) }
+  }
+
+  it('同一个 sessionId 连续两轮写进同一个 session_id；request_id 每轮换新', async () => {
+    const { bodies, client } = capture()
+    const sessionId = 'session-stable-1234'
+    for (let i = 0; i < 2; i += 1) {
+      await client.chatStream('pt-x', 'qfmodel', [{ role: 'user', content: `turn ${i}` }], {
+        sessionId,
+        onDelta: () => {},
+      })
+    }
+    expect(bodies).toHaveLength(2)
+    expect(bodies[0]!.session_id).toBe(sessionId)
+    expect(bodies[1]!.session_id).toBe(sessionId)
+    // 单次请求标识仍每轮换新 —— 它们换新是正确的，只有 session_id 不该换。
+    expect(bodies[0]!.request_id).not.toBe(bodies[1]!.request_id)
+    expect(bodies[0]!.request_set_id).not.toBe(bodies[1]!.request_set_id)
+    expect((bodies[0]!.business as Record<string, unknown>).id).not.toBe(
+      (bodies[1]!.business as Record<string, unknown>).id,
+    )
+  })
+
+  it('sessionId 缺席时退回随机，不写空串（老调用方不受影响）', async () => {
+    const { bodies, client } = capture()
+    await client.chatStream('pt-x', 'qfmodel', [{ role: 'user', content: 'hi' }], { onDelta: () => {} })
+    expect(bodies).toHaveLength(1)
+    expect(typeof bodies[0]!.session_id).toBe('string')
+    expect((bodies[0]!.session_id as string).length).toBeGreaterThan(0)
+  })
+})

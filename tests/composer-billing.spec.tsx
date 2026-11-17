@@ -346,7 +346,33 @@ describe('composer 面板的专属积分列（issue #38）', () => {
     await view.unmount()
   })
 
-  it('多个专属包显示合计，逐包细节进悬停', async () => {
+  it('多个专属包：主列只显示主包自己的余额 + +N，不再显示花不掉的合计（issue #43）', async () => {
+    const view = await openPanel({
+      table: [
+        {
+          id: 'a', accountName: 'acct-a', selected: true, current: true, credits: 100,
+          dedicated: [
+            { id: 'p1', title: { zh: 'SOTA 专属积分', en: 'SOTA Exclusive Credits' }, remaining: 1960 },
+            { id: 'p2', title: { zh: '极致专属积分', en: 'Ultimate Exclusive Credits' }, remaining: 500 },
+          ],
+        },
+      ],
+      doc: { ...takenOverDoc(undefined), accountId: 'a', accountName: 'acct-a', credits: { total: 100 } },
+    })
+    // 2,460 不对应任何能花出去的额度：SOTA 只能用 1,960，极致只能用 500，
+    // 两笔钱绑不同模型、不能互换。主列必须是一个真实的数 + 溢出标记。
+    expect(view.dedicatedCells.get('acct-a')).toBe('1,960+1')
+    const cell = document.querySelector('td.dsm-qoder-composer-panel-dedicated')
+    const title = cell?.querySelector('span')?.getAttribute('title') ?? ''
+    // 悬停逐包列出各自余额（标题取上游 `displayLabels` 里与界面语言对应的
+    // 那一侧，此处 en-US，见上面的用例），且不再出现误导性的合计。
+    expect(title).toContain('SOTA Exclusive Credits: 1,960')
+    expect(title).toContain('Ultimate Exclusive Credits: 500')
+    expect(title).not.toContain('2,460')
+    await view.unmount()
+  })
+
+  it('两个专属包时悬停仍给出「共几个」的说明，但不带合计数字（issue #43）', async () => {
     const view = await openPanel({
       table: [
         {
@@ -359,11 +385,9 @@ describe('composer 面板的专属积分列（issue #38）', () => {
       ],
       doc: { ...takenOverDoc(undefined), accountId: 'a', accountName: 'acct-a', credits: { total: 100 } },
     })
-    expect(view.dedicatedCells.get('acct-a')).toBe('1,000')
+    expect(view.dedicatedCells.get('acct-a')).toBe('888+1')
     const cell = document.querySelector('td.dsm-qoder-composer-panel-dedicated')
     const title = cell?.querySelector('span')?.getAttribute('title') ?? ''
-    // 合计那一行 + 每个包各一行（标题、余额、上游说明都在）。标题取上游
-    // `displayLabels` 里与界面语言对应的那一侧（此处 en-US，见上一条用例）。
     expect(title).toContain('composer.dedicatedMultiple')
     expect(title).toContain('SOTA Exclusive Credits: 888')
     expect(title).toContain('Cantus Exclusive Credits: 112')

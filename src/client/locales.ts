@@ -456,7 +456,9 @@ export const en = {
   // （「在模型选择器中选择 Sonus 时优先抵扣该积分」），有它就用它，这句兜底。
   'composer.dedicatedHint': 'Exclusive credits, used first when you pick the model they are tied to. Not counted in the credits column: they cannot be spent on any other model.',
   'composer.dedicatedExpires': 'Expires {time}',
-  'composer.dedicatedMultiple': '{count} packages, {remaining} left in total',
+  // issue #43：多个包的用途不同、不能互换，主列只显示主包余额 + +N。
+  // 悬停这一行只说「共几个包」，不再带合计数字 —— 合计不对应任何能花出去的额度。
+  'composer.dedicatedMultiple': '{count} exclusive packages (see each balance below)',
   'composer.credits': 'Credits',
   'composer.switchTo': 'Switch to {account}',
   'composer.noAccounts': 'No account in this region',
@@ -899,7 +901,8 @@ export const zh: Record<QoderSettingsKey, string> = {
   'composer.dedicated': 'SOTA',
   'composer.dedicatedHint': '专属积分，选中与之绑定的模型时优先抵扣。不计入右边的「积分」列：不选那只模型时这笔钱一分都动不了。',
   'composer.dedicatedExpires': '{time} 到期',
-  'composer.dedicatedMultiple': '共 {count} 个专属包，合计剩余 {remaining}',
+  // issue #43：不再写「合计剩余」——不同用途的包相加是个花不掉的数。
+  'composer.dedicatedMultiple': '共 {count} 个专属包，各自余额见下',
   'composer.credits': '积分',
   'composer.switchTo': '切换到 {account}',
   'composer.noAccounts': '该区域暂无账号',

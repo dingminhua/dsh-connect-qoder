@@ -301,6 +301,12 @@ function toPiModel(
     compat: {
       supportsReasoningEffort: thinkingLevelMap !== undefined,
       supportsDeveloperRole: false,
+      // issue #42：让 DSH 的每会话稳定 `session.id` 以 `session_id` 头到达
+      // shim（pi-ai 只在 compat 打开时才写这个头，默认仅 OpenRouter 开）。
+      // shim 读到后写进 Qoder 请求体的 `session_id`，prompt cache 才能跨轮命中
+      // ——此前每轮 randomId()，长对话每轮为整段历史重复付全价。
+      sendSessionAffinityHeaders: true,
+      sessionAffinityFormat: 'openai',
       // 0.2.2-rc.1 起宿主开始**真的**读这个能力：为 false 时，对话中途的
       // system 文本会被包成 user 角色的 `<system-reminder>`（闭合标签转义），
       // 而不是以 system 角色直发。0.2.1 是无论能力如何都按 system 发。

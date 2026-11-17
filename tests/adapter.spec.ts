@@ -74,6 +74,19 @@ describe('模型 compat：必须关掉 developer 角色', () => {
     const model = providerOf({ ...MODEL, supportsThinking: false }).getModels()[0]!
     expect(model.compat?.supportsDeveloperRole).toBe(false)
   })
+
+  it('打开 session-affinity 头，让 DSH 的每会话稳定 sessionId 到达 shim（issue #42）', () => {
+    // Qoder 网关的 prompt cache 按请求体 `session_id` 分桶。pi-ai 只有在
+    // compat.sendSessionAffinityHeaders 为真时才把 options.sessionId 写成
+    // header，shim 才能读到它。默认 false（仅 OpenRouter 开），所以必须显式开。
+    const model = providerOf({ ...MODEL, supportsThinking: false }).getModels()[0]! as {
+      compat?: { sendSessionAffinityHeaders?: boolean, sessionAffinityFormat?: string }
+    }
+    expect(model.compat?.sendSessionAffinityHeaders).toBe(true)
+    // format 用 openai：pi-ai 会写 `session_id` 头（shim 读的那一个）；
+    // 默认按 URL 猜，我们的 loopback 不是 OpenRouter，不能靠猜。
+    expect(model.compat?.sessionAffinityFormat).toBe('openai')
+  })
 })
 
 describe('configuredMaxTokens：宿主据此给 defaultMaxTokens（issue #35）', () => {

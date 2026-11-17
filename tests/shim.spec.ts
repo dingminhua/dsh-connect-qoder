@@ -17,6 +17,7 @@ interface ChatCall {
   signal?: AbortSignal | undefined
   isReasoning?: boolean | undefined
   reasoningEffort?: string | undefined
+  sessionId?: string | undefined
 }
 
 function delta(text: string): Delta {
@@ -34,10 +35,12 @@ function stubUpstream(failures: Record<string, UpstreamErrorKind>, calls: ChatCa
       signal?: AbortSignal
       onDelta: (d: Delta) => void
       userType?: string
+      sessionId?: string
     }) => {
       calls.push({
         credential, modelKey, tools: options.tools, signal: options.signal,
         isReasoning: options.isReasoning, reasoningEffort: options.reasoningEffort,
+        sessionId: options.sessionId,
       })
       const kind = failures[credential]
       if (kind !== undefined) {
@@ -316,6 +319,24 @@ describe('Qoder shim chat translation', () => {
     expect(calls[0]!.reasoningEffort).toBe('xhigh')
     // 选中档位本身即「开启思考」，所以布尔侧也必须是 true。
     expect(calls[0]!.isReasoning).toBe(true)
+  })
+
+  it('把宿主的 session_id 头透传为 chatStream 的 sessionId（issue #42）', async () => {
+    // DSH 每会话稳定地在请求上盖 session_id 头；shim 必须读到它并交给上游，
+    // 上游才能把它写进 Qoder 请求体的 session_id（prompt cache 分桶键）。
+    const calls: ChatCall[] = []
+    const shim = await startShim({ upstream: stubUpstream({}, calls) })
+    const resp = await chat(shim, {}, { session_id: 'session-stable-header' })
+    expect(resp.status).toBe(200)
+    expect(calls[0]!.sessionId).toBe('session-stable-header')
+  })
+
+  it('session_id 缺席时 chatStream 拿不到 sessionId（由上游退回随机）', async () => {
+    const calls: ChatCall[] = []
+    const shim = await startShim({ upstream: stubUpstream({}, calls) })
+    const resp = await chat(shim, {})
+    expect(resp.status).toBe(200)
+    expect(calls[0]!.sessionId).toBeUndefined()
   })
 
   it('sends no strength when the model has none saved', async () => {

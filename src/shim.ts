@@ -554,6 +554,17 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
     const model = typeof body.model === 'string' ? body.model : ''
     const messages = Array.isArray(body.messages) ? body.messages as Array<Record<string, unknown>> : []
     const stream = body.stream !== false
+    /**
+     * 会话标识（issue #42）：DSH 每轮把它的 `session.id` 盖成 `session_id` 头
+     * （pi-ai 的 session-affinity 机制，我们在 `adapter.ts` 的 compat 里开了
+     * `sendSessionAffinityHeaders`）。它在一场会话内稳定，是 Qoder prompt cache
+     * 的分桶键。按优先级依次读 `session_id` / `x-session-affinity` /
+     * `x-client-request-id` —— 后两个是 pi-ai 同时写的别名，兼容不同格式。
+     * 读不到就传 undefined，由上游退回随机（老宿主 / 非 DSH 客户端照旧）。
+     */
+    const sessionId = (['session_id', 'x-session-affinity', 'x-client-request-id']
+      .map(name => req.headers[name])
+      .find(value => typeof value === 'string' && value !== '')) as string | undefined
 
     if (messages.length === 0) {
       writeJson(res, 400, { error: { message: 'messages is required', code: 'invalid_request_error' } })
@@ -686,6 +697,7 @@ export function createQoderShim(options: QoderShimOptions): QoderShim {
           ...(tools === undefined ? {} : { tools }),
           isReasoning,
           ...(reasoningEffort === undefined ? {} : { reasoningEffort }),
+          ...(sessionId === undefined ? {} : { sessionId }),
           isVl: supportsImages,
           signal: controller.signal,
           onDelta: (delta) => {
