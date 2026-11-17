@@ -395,6 +395,32 @@ describe('error classification', () => {
       }
     })
 
+    // ======================================================================
+    // issue #45：上游 `code 144`（专属积分包余额不足）也是配额族，不是凭据问题。
+    // 现场是 HTTP 403 + {"code":"144","message":"Dedicated resource package
+    // balance is low","modelKey":"smodel"}。此前码表里没有 144 → 回落 403→auth
+    // → 宿主侧 401 invalid_api_key、账号被标 credential-rejected 永久排除。
+    // ======================================================================
+    it('code 144（专属积分包余额不足）判成配额，不是凭据被拒（issue #45）', () => {
+      const body = '{"code":"144","message":"Dedicated resource package balance is low","modelKey":"smodel"}'
+      expect(classifyBusinessCode('144')).toBe('quota-exhausted')
+      expect(classifyFailure(403, body)).toBe('quota-exhausted')
+      // 变异检查：把 144 从 QUOTA_CODES 去掉，这条立刻红。
+      expect(classifyHttpStatus(403, body)).toBe('auth')
+    })
+
+    it('144 的 SSE 信封路径也判配额并保留码（issue #45）', () => {
+      const body = '{"code":"144","message":"Dedicated resource package balance is low","modelKey":"smodel"}'
+      const frame = JSON.stringify({ body, statusCodeValue: 403 })
+      try {
+        parseStreamDelta(frame)
+        expect.unreachable('应该抛错')
+      } catch (error) {
+        expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
+        expect((error as QoderUpstreamError).code).toBe('144')
+      }
+    })
+
     it('请求类与瞬时类也按码分（406 内容策略 / 80411 输入过长 / 10500 服务内部错）', () => {
       expect(classifyFailure(400, '{"code":"406","message":"blocked"}')).toBe('content-policy')
       expect(classifyFailure(403, '{"code":"80411","message":"input too long"}')).toBe('invalid-request')

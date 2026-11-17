@@ -1536,6 +1536,26 @@ describe('凭据被拒要有凭据（issue #6）', () => {
     expect(probe?.outcome).toBe('unavailable')
     expect(exclusionOf(probe, probe!.atMs + 31 * 60_000)).toBeUndefined()
   })
+
+  it('整条链：code 144（专属积分包不足）→ quota-exhausted → 会自愈的冷却，不是永久排除（issue #45）', () => {
+    // issue #45 现场：403 + code 144 + modelKey smodel。此前码表漏 144 → 403
+    // 回落 auth → credential-rejected → 账号被踢出池且充值后也不回。
+    const frame = '{"code":"144","message":"Dedicated resource package balance is low","modelKey":"smodel"}'
+    const kind = classifyFailure(403, frame)
+    expect(kind).toBe('quota-exhausted')
+    const code = deepestBusinessCode(frame)
+    expect(code).toBe('144')
+    const probe = Qoder.liveRequestProbe(kind, '聊天请求失败: HTTP 403', 'smodel', { status: 403, code })
+    // 关键：落 out-of-credit（会按冷却期自愈），不是 credential-rejected（永久）。
+    expect(probe?.outcome).toBe('out-of-credit')
+    expect(probe?.modelId).toBe('smodel')
+    // 冷却期内排除、冷却结束后回池 —— 关键的第二条此前恒不成立（永久排除）。
+    expect(exclusionOf(probe, probe!.atMs, 'smodel')).toBe('out-of-credit')
+    expect(exclusionOf(probe, probe!.atMs + 31 * 60_000, 'smodel')).toBeUndefined()
+    // 探针带 modelId 时，exclusionOf 会只排除那一个模型（issue #45 提到的按模型
+    // 粒度）；这里钉住这一既有行为在 144 的结论上照常生效，别的模型不受影响。
+    expect(exclusionOf(probe, probe!.atMs, 'another-model')).toBeUndefined()
+  })
 })
 
 // ==========================================================================

@@ -1888,6 +1888,12 @@ const QUOTA_CODES: ReadonlySet<string> = new Set([
   '118', // 个人 Credits 耗尽
   '119', // 所选模型的免费额度已用完
   '122', // Billing Group 的 Credits 达到上限
+  '144', // 专属积分包余额不足（issue #45）—— message 带 modelKey，是按模型的额度
+  // 144 与 110 同族（都是「额度不足」），只是粒度不同：110 是账号级当日次数，
+  // 144 是某个专属包用完。此前 144 不在码表里 → 403 回落 auth → 宿主侧
+  // 401 invalid_api_key + 账号被 credential-rejected 永久排除（充值也不自愈）。
+  // 归到配额族后：shim 映射 429 quota_exceeded，池记录 out-of-credit 走冷却期、
+  // 到期自动回池。探针记录了 modelId 时，exclusionOf 还会只排除那一个模型。
   '402',
   '6004',
 ])

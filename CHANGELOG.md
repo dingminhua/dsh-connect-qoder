@@ -2,6 +2,47 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.26.1 (2026-11-18)
+
+> **修一个「积分不足被当成凭据失效」的误判（issue #45）。** 上游业务码 `144`
+> （专属积分包余额不足）不在码表里，403 回落到 `auth`，宿主侧报 `401
+> invalid_api_key`、账号被标 `credential-rejected` 永久排除（充值也不回池）。
+> 只是往配额族码表里补一个码，没有改任何分类框架、映射表或存储形状 ——
+> patch 版本。
+
+### 修复
+
+- **`code 144`（专属积分包余额不足）归入 `quota-exhausted`（issue #45）。**
+  - **症状**：6 个并行子代理里 4 个在 18 秒内撞 `403 {"code":"144",
+    "message":"Dedicated resource package balance is low","modelKey":"smodel"}`。
+    插件码表没有 144 → `classifyFailure` 回落 `classifyHttpStatus(403)` → `auth`。
+    后果两层：诊断文案说「凭据无效 / 请换 PAT」（实际该充值或等待），且
+    `credential-rejected` 在 `exclusionOf` 里**不看冷却期、永久排除**——一个只是
+    专属积分用完的号被踢出池，第二天补充了也不会自动回。
+  - **为什么归配额族**：144 与已在表里的 110（当日用量）是同一语义——额度不足、
+    会自愈、换 PAT 无效，只是粒度不同（110 账号级、144 某个专属包级）。上游
+    `message` 带 `modelKey`，探针的 `modelId` 字段与本轮已有的 `exclusionOf`
+    按模型判定，会在探针记录了 modelId 时只排除那一个模型。
+  - **改法**：`QUOTA_CODES` 加 `'144'`，其余不动。改完后的链路：
+    `classifyFailure → quota-exhausted` → shim 映射 `429 quota_exceeded`、
+    池记录 `out-of-credit` → `exclusionOf` 走 `retryDue` 冷却、到期自动回池。
+  - **一处澄清**：issue 报告里「宿主拿到 401」的链路在本版本里已被 issue #6
+    的 `credentialOutcomeOf` 部分挡住（裸 403 的 auth 在池记录里降级成
+    `unavailable` 冷却），但**宿主侧 shim 错误**和探针分类仍是错的；本修复让两者
+    都走配额语义，不再依赖那层降级兜底。
+  - **没一起处理的 `112`**：issue 提到它带 `pricingUrl`、像额度类，但没有确认过
+    确切含义，报告本身也建议不要直接归类。缺证据就不猜——保持现状，等有实测码表
+    再动。
+
+### 测试
+
+- `tests/upstream.spec.ts`：新增 144 的 `classifyBusinessCode` / `classifyFailure`
+  / SSE 信封三条断言（含「去掉 144 就变红」的变异检查）。
+- `tests/index.spec.ts`：新增整条链断言——403+144 → `quota-exhausted` → 池探针
+  `out-of-credit`（带 modelId）+ 冷却结束回池 + 别的模型不受影响。
+- 均**先写失败断言、确认变红，再修到通过**。`pnpm run check` 全绿，
+  `tests/privacy.spec.ts` 全绿。
+
 ## 1.26.0 (2026-11-17)
 
 > **修两个「数字看着对、语义是错的」问题（issue #42 / #43）。** 一个是每轮换
