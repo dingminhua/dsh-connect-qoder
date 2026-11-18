@@ -384,6 +384,30 @@ function safeMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
+/**
+ * issue #47：「没有可用凭据」不是上游故障，是「这个区域还没登录」的正常状态。
+ *
+ * 此前 `campaignsOf` 无凭据时抛普通 Error，路由的 catch-all 一律回 502 —— 前端
+ * 于是把「请添加 PAT」显示成「HTTP 502」，用户既不知道该做什么，也误以为上游坏了。
+ * 用独立类把这类错误从「读上游失败」里分出来，路由就能回 401 + `reason:
+ * 'no-credential'`，卡片据此给出添加 PAT 的引导，而真正的上游故障仍是 502。
+ */
+export class QoderNoCredentialError extends Error {
+  readonly reason = 'no-credential' as const
+  constructor(message = '未配置凭据') {
+    super(message)
+    this.name = 'QoderNoCredentialError'
+  }
+}
+
+/** 把可识别的业务错误投影成 HTTP 错误码 + reason；其余按上游故障 502。 */
+function routeFailureOf(error: unknown): { status: number, reason?: string, error: string } {
+  if (error instanceof QoderNoCredentialError) {
+    return { status: 401, reason: error.reason, error: error.message }
+  }
+  return { status: 502, error: safeMessage(error) }
+}
+
 function loopbackOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin
   if (origin === undefined) return true
@@ -530,7 +554,13 @@ export function registerQoderWebRoutes(ctx: Context, deps: QoderWebRouteDeps): Q
       const feed = await deps.campaigns(region)
       return json(res, 200, feed)
     } catch (error: unknown) {
-      return json(res, 502, { error: safeMessage(error) })
+      // issue #47：无凭据是「未登录」，回 401 + reason 让卡片能引导添加 PAT；
+      // 真正的上游故障仍回 502（保持原行为）。
+      const failure = routeFailureOf(error)
+      return json(res, failure.status, {
+        ...failure.reason === undefined ? {} : { reason: failure.reason },
+        error: failure.error,
+      })
     }
   })
 

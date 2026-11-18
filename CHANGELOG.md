@@ -2,6 +2,47 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.26.4 (2026-11-18)
+
+> **修 issue #47：无 PAT 打开设置卡片，「活动」区报「HTTP 502」，真正的
+> 「未配置凭据」被前端丢了。** 一处是语义分级（「未登录」不该冒充上游故障），
+> 一处是前端读错地方（`!response.ok` 时没读响应体），两处都修，patch 版本。
+
+### 修复
+
+- **Host：`/campaigns` 对「无可用凭据」回 401 + `reason:'no-credential'`，不再一律 502（issue #47）。**
+  - **症状**：不添加任何 PAT（含用企业版账号登录 Qoder 客户端、但插件侧没有
+    PAT 的场景）打开设置卡片，「活动」区显示「活动信息暂不可用：HTTP 502」；
+    `curl` 那条路由的响应体其实是 `{"error":"未配置凭据"}`，`/usage` 也是
+    `status:"signed-out"`，但用户看不到。
+  - **根因**：`campaignsOf()` 无凭据时抛普通 `Error('未配置凭据')`，路由的 catch
+    把**所有**异常都映射成 502 —— 把「这个区域还没登录」的正常状态同化成了
+    「读上游失败」。
+  - **改法**：新增 `QoderNoCredentialError`（带 `reason:'no-credential'`），
+    `campaignsOf` 抛它；`/campaigns` 的 catch 先用它分级：无凭据 → 401 + reason，
+    真正的上游故障仍是 502（原行为不变）。只改这一条路由，其余路由的 502 语义
+    不碰。
+  - **为什么不直接用 503/409**：401 表达「未认证、需要先配置凭据」，与 `/usage`
+    的 `signed-out` 同义；`reason` 字段让前端不必靠错误文本匹配。
+- **客户端：`QoderCampaigns` 失败时先读 `body.error`，并对无凭据给添加 PAT 的引导（issue #47）。**
+  - **根因**：`!response.ok` 时直接 `throw new Error('HTTP 502')`，从不读响应体，
+    而同文件其他路由（`AddAccount` / `AccountTransfer`）早就是
+    `body.error ?? HTTP 状态码` 的写法 —— `/campaigns` 是漏网之鱼。
+  - **改法**：沿用同仓库的读法：`response.json().catch(() => ({}))`，优先用
+    `body.error`，取不到才回退 HTTP 状态码（非 JSON 错误体不吞错）；当
+    `body.reason === 'no-credential'` 时额外渲染一句「请在账号池添加一个 PAT」。
+    新增双语 key `row.campaignsNoCredential` 与一条中性提示样式，错误行仍保留
+    真实原因（读出来是什么就显示什么）。
+
+### 测试
+
+- `tests/campaigns.spec.tsx`：新增 502 读 `body.error`、`reason=no-credential` 时
+  渲染引导、以及错误体非 JSON 时回退状态码三条（前两条先写失败断言、确认变红
+  再修到绿）。
+- `tests/web-status.spec.ts`：`/campaigns` 路由新增无凭据 → 401 + reason 一条。
+- `tests/index.spec.ts`：从**真插件**挂载的 `/campaigns` 路由取证，不配置 PAT 时
+  回 401 + `no-credential`、错误体带「未配置凭据」。三条新增用例修前均红、修后均绿。
+
 ## 1.26.3 (2026-11-18)
 
 > **修 issue #44 标题里那条 `10605`：`403 + 10605`（模型请求排队）被报成

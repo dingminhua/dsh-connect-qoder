@@ -41,6 +41,7 @@ import type { RetryPolicyConfig } from '@deepseek-ai/dsh-llm'
 import { probeModel, probeUserMessage, redactUpstreamText, type QoderProbeClient, type QoderProbeError } from './probe.ts'
 import {
   registerQoderWebRoutes,
+  QoderNoCredentialError,
   type QoderPoolDeps,
   type QoderAccountDeps,
   type QoderAccountEntryLike,
@@ -2433,7 +2434,10 @@ function displayModels(region: QoderRegion): readonly QoderModelInfo[] {
    */
   async function campaignsOf(region: QoderRegion, signal?: AbortSignal): Promise<QoderCampaignFeed> {
     const serving = await resolveServing(region)
-    if (!serving) throw new Error('未配置凭据')
+    // issue #47：这里是「未登录」的正常状态，不是上游故障。抛带 reason 的专用
+    // 错误，让 /campaigns 路由回 401 + no-credential，卡片才能把「请添加 PAT」
+    // 显示出来，而不是笼统的 HTTP 502。
+    if (!serving) throw new QoderNoCredentialError()
     return stacks[region].upstream.fetchCampaignFeed(serving.pat, signal)
   }
 

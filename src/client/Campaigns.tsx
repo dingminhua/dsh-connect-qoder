@@ -90,6 +90,8 @@ interface QoderCampaignsProps {
 interface CampaignsState {
   feed: QoderCampaignFeed | null
   error: string | undefined
+  /** issue #47：Host 明确说「未配置凭据」时，额外给一句添加 PAT 的引导。 */
+  noCredential: boolean
   loading: boolean
 }
 
@@ -97,13 +99,13 @@ export function QoderCampaigns(props: QoderCampaignsProps): ReactElement {
   const { region, t } = props
   const language = hostLanguage(t)
   const controller = useRef<AbortController | null>(null)
-  const [state, setState] = useState<CampaignsState>({ feed: null, error: undefined, loading: true })
+  const [state, setState] = useState<CampaignsState>({ feed: null, error: undefined, noCredential: false, loading: true })
 
   useEffect(() => {
     controller.current?.abort()
     const current = new AbortController()
     controller.current = current
-    setState(prev => ({ feed: prev.feed, error: undefined, loading: true }))
+    setState(prev => ({ feed: prev.feed, error: undefined, noCredential: false, loading: true }))
 
     fetch(withQoderRegion(QODER_CAMPAIGNS_PATH, region), {
       headers: { accept: 'application/json' },
@@ -111,21 +113,33 @@ export function QoderCampaigns(props: QoderCampaignsProps): ReactElement {
       signal: current.signal,
     })
       .then(async response => {
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
+        // issue #47：失败响应体带 `error`（Host 对「未配置凭据」回 401 +
+        // `{reason:'no-credential', error:'未配置凭据'}`）。同其他路由的读法，
+        // 先读 body.error，拿不到才回退 HTTP 状态码 —— 否则用户只会看到
+        // 「HTTP 502」，真正的原因被丢掉。
+        if (!response.ok) {
+          const body = await response.json().catch(() => ({})) as { error?: string, reason?: string }
+          const thrown = new Error(body.error ?? `HTTP ${String(response.status)}`)
+          if (body.reason === 'no-credential') {
+            Object.assign(thrown, { noCredential: true })
+          }
+          throw thrown
+        }
         const feed = (await response.json()) as QoderCampaignFeed
         if (current.signal.aborted) return
-        setState({ feed, error: undefined, loading: false })
+        setState({ feed, error: undefined, noCredential: false, loading: false })
       })
       .catch((error: unknown) => {
         if (current.signal.aborted) return
         const message = error instanceof Error ? error.message : String(error)
-        setState({ feed: null, error: message, loading: false })
+        const noCredential = (error as { noCredential?: boolean })?.noCredential === true
+        setState({ feed: null, error: message, noCredential, loading: false })
       })
 
     return () => current.abort()
   }, [region])
 
-  const { feed, error, loading } = state
+  const { feed, error, noCredential, loading } = state
   const campaigns = feed?.campaigns ?? []
 
   return (
@@ -136,6 +150,11 @@ export function QoderCampaigns(props: QoderCampaignsProps): ReactElement {
         <p className="dsm-qoder-campaigns-error" role="alert">
           {t('row.campaignsError', { message: error })}
         </p>
+      ) : null}
+
+      {/* issue #47：无凭据时给出可执行的下一步，而不是让用户对着一个错误码猜。 */}
+      {noCredential ? (
+        <p className="dsm-qoder-campaigns-hint">{t('row.campaignsNoCredential')}</p>
       ) : null}
 
       {error === undefined && loading && campaigns.length === 0 ? (

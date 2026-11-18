@@ -903,6 +903,8 @@ export const QODER_CARD_CSS = `
 .dsm-qoder-campaigns-title{margin:0;color:var(--dsw-alias-label-primary,#e6e6e6);font-size:14px;font-weight:600;line-height:20px}
 .dsm-qoder-campaigns-empty{margin:0;color:var(--dsw-alias-label-tertiary,#999);font-size:12px;line-height:18px}
 .dsm-qoder-campaigns-error{margin:0;color:var(--dsw-alias-state-error-primary,#ef4444);font-size:12px;line-height:18px;white-space:pre-line}
+/* issue #47：无凭据时的可操作引导，跟在错误行后面。用中性提示色，不叠加第二个红字。 */
+.dsm-qoder-campaigns-hint{margin:0;color:var(--dsw-alias-label-secondary,#bbb);font-size:12px;line-height:18px}
 /* 瓦片网格：auto-fill + 260px 下限，在约 580px 宽的正文栏里自然排成两列，
    窄容器（侧边栏面板更窄时）退回一列。minmax(0,...) 而不是 1fr：没有它，
    一条长英文标题会把整列撑破（grid 的 min-content 陷阱）。 */

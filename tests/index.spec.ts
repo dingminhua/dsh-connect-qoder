@@ -2953,3 +2953,35 @@ describe('issue #36：自动签到（真实 apply() + 真实路由）', () => {
     }
   })
 })
+
+/**
+ * issue #47：无 PAT 时打开设置卡片，「活动」区报的是「HTTP 502」——真实的
+ * 「未配置凭据」被前端丢了。这一条从**真插件**挂载的 /campaigns 路由取证：
+ * 没有凭据时它必须回 401 + reason=no-credential（未被上游故障同化），而真实
+ * 原因随 body.error 一起到达卡片（前端读取行为在 campaigns.spec.tsx 钉死）。
+ */
+describe('issue #47: 无凭据的 /campaigns 不是上游 502', () => {
+  it('不配置 PAT 时 /campaigns 回 401 + no-credential，错误体带「未配置凭据」', async () => {
+    const routes: CapturedRoute[] = []
+    const ctx = new Context()
+    context = ctx
+    await ctx.plugin(LlmRuntime)
+    await ctx.plugin(MemorySettings)
+    ctx.provide('webServer', {
+      register: (entry: CapturedRoute) => { routes.push(entry); return () => {} },
+    } as never)
+    await mountQoder(ctx, { regions: { cn: {}, global: {} } })
+    await waitFor(() => routes.some(r => r.path.includes('/campaigns')))
+    const campaigns = routes.find(r => r.path.includes('/campaigns'))!
+
+    const res = fakeResponse()
+    await campaigns.handler(
+      { method: 'GET', url: `${campaigns.path}?region=cn`, headers: {} },
+      res.node,
+    )
+    expect(res.status()).toBe(401)
+    const answer = JSON.parse(String(res.body())) as { reason?: string, error?: string }
+    expect(answer.reason).toBe('no-credential')
+    expect(answer.error).toBe('未配置凭据')
+  })
+})

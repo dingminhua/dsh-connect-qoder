@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
-import { registerQoderWebRoutes, buildWebUsage } from '../src/web-status.ts'
+import { registerQoderWebRoutes, buildWebUsage, QoderNoCredentialError } from '../src/web-status.ts'
 import type { QoderWebRouteDeps, QoderAccountDeps, QoderPoolDeps, QoderTransferDeps, QoderAccountValidationDeps, QoderSettingsDeps } from '../src/web-status.ts'
 import {
   QODER_ACCOUNT_CREDITS_PATH,
@@ -441,6 +441,19 @@ describe('campaigns route (活动面)', () => {
     await handler(request('GET', undefined, `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
     expect(status()).toBe(502)
     expect(body()).toMatchObject({ error: 'upstream down' })
+  })
+
+  // issue #47：无凭据是「未登录」的正常状态，不是上游故障 —— 不该再回 502，
+  // 而要用 401 + 明确 reason，让卡片能把「请添加 PAT」的引导显示出来。
+  it('issue #47: 无凭据回 401 + reason=no-credential，而不是 502', async () => {
+    const captured = await mountRoutes(deps({
+      campaigns: async () => { throw new QoderNoCredentialError() },
+    }))
+    const handler = findHandler(captured, QODER_CAMPAIGNS_PATH)
+    const { res, status, body } = response()
+    await handler(request('GET', undefined, `${QODER_CAMPAIGNS_PATH}?region=cn`), res)
+    expect(status()).toBe(401)
+    expect(body()).toMatchObject({ reason: 'no-credential', error: '未配置凭据' })
   })
 
   it('refuses POST with 405', async () => {

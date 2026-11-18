@@ -45,6 +45,7 @@ function zhT(): any {
       case 'row.campaignsEmpty': return '当前没有活动。'
       case 'row.campaignsLoading': return '正在加载活动…'
       case 'row.campaignsError': return `活动信息暂不可用：${String(params?.message ?? '')}`
+      case 'row.campaignsNoCredential': return '尚未配置凭据——请在账号池添加一个 PAT 后即可加载活动。'
       case 'row.campaignUntitled': return '未命名活动'
       case 'row.campaignDetails': return '查看详情'
       case 'row.campaignClaimable': return '可领取'
@@ -199,6 +200,60 @@ describe('活动区', () => {
     const alert = container.querySelector('.dsm-qoder-campaigns-error[role="alert"]')
     expect(alert).not.toBeNull()
     expect(alert!.textContent).toBe('活动信息暂不可用：HTTP 500')
+    await act(async () => { root.unmount() })
+    container.remove()
+  })
+
+  // issue #47：Host 对「未配置凭据」回 401 {reason, error}，卡片此前只读 HTTP
+  // 码，把真正的原因丢了，用户看到的是「活动信息暂不可用：HTTP 502」——既不知道
+  // 该加 PAT，也不知道这不是上游故障。这几条先写失败断言，修完再转绿。
+  it('issue #47: 无凭据时读 body.error 显示「未配置凭据」，并给出添加 PAT 的引导', async () => {
+    setUiLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false, status: 401, json: async () => ({ reason: 'no-credential', error: '未配置凭据' }),
+    } as Response)))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => { root.render(React.createElement(QoderCampaigns, { region: 'cn' as const, t: zhT() })) })
+    const alert = container.querySelector('.dsm-qoder-campaigns-error[role="alert"]')
+    expect(alert).not.toBeNull()
+    expect(alert!.textContent).toBe('活动信息暂不可用：未配置凭据')
+    // 不能只把错误码翻译成人话，还要给可执行的下一步（添加 PAT）。
+    expect(container.querySelector('.dsm-qoder-campaigns-hint')!.textContent).toContain('添加一个 PAT')
+    await act(async () => { root.unmount() })
+    container.remove()
+  })
+
+  it('issue #47: 普通错误也读 body.error（不是只显示 HTTP 状态码）', async () => {
+    setUiLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false, status: 500, json: async () => ({ error: '上游返回 500' }),
+    } as Response)))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => { root.render(React.createElement(QoderCampaigns, { region: 'cn' as const, t: zhT() })) })
+    const alert = container.querySelector('.dsm-qoder-campaigns-error[role="alert"]')
+    expect(alert!.textContent).toBe('活动信息暂不可用：上游返回 500')
+    // 只有明确的 no-credential 才给引导，普通错误不误报「请添加 PAT」。
+    expect(container.querySelector('.dsm-qoder-campaigns-hint')).toBeNull()
+    await act(async () => { root.unmount() })
+    container.remove()
+  })
+
+  it('issue #47: 错误 body 不是 JSON 时仍回退 HTTP 状态码（不吞错）', async () => {
+    setUiLanguage('zh-CN')
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: false, status: 503, json: async () => { throw new Error('not json') },
+    } as unknown as Response)))
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root: Root = createRoot(container)
+    await act(async () => { root.render(React.createElement(QoderCampaigns, { region: 'cn' as const, t: zhT() })) })
+    const alert = container.querySelector('.dsm-qoder-campaigns-error[role="alert"]')
+    expect(alert).not.toBeNull()
+    expect(alert!.textContent).toBe('活动信息暂不可用：HTTP 503')
     await act(async () => { root.unmount() })
     container.remove()
   })
