@@ -369,7 +369,7 @@ The host moved to `0.2.2-rc.2`. **No runtime code changed that round** — pi-ai
 
 > That round's per-package diffs and the list of surfaces that look affected but are not are in [`docs/DSH-0.2.2-RC2-FOLLOWUP.md`](docs/DSH-0.2.2-RC2-FOLLOWUP.md).
 
-### Current host: 0.2.2-rc.3 (measured 2026-11-14)
+### Previous host baseline: 0.2.2-rc.3 (measured 2026-11-14)
 
 The host moved to `0.2.2-rc.3`. **No runtime code changed this round either** — pi-ai (`1.3.0`), cordis (`4.1.0`) and schemastery (`3.19.0`) still did not move, and nearly all of rc.3 comes from one commit (importing DeepSeek chat exports, a brand-new experimental bundle):
 
@@ -385,6 +385,22 @@ The host moved to `0.2.2-rc.3`. **No runtime code changed this round either** �
 | Regression | `pnpm run check` green (1472 passed / 12 skipped) |
 
 > Per-package diffs (17 of the 329 packages pinned to rc.3 changed; all 11 imported ones are byte-identical) and the list of surfaces that look affected but are not are in [`docs/DSH-0.2.2-RC3-FOLLOWUP.md`](docs/DSH-0.2.2-RC3-FOLLOWUP.md).
+
+### Current host: 0.2.2-rc.5 (measured 2026-11-19)
+
+The host moved to `0.2.2-rc.5` (across rc.4 and rc.5). **No runtime code changed this round either** — pi-ai (`1.3.0`), cordis (`4.1.0`) and schemastery (`3.19.0`) still did not move, and both applicable upgrade guides land on the **DeepSeek model surface** (refusal error code, default search provider), which the plugin does not touch:
+
+| Check | Result |
+| --- | --- |
+| `v0.2.2-rc.3` guide (refusal code) | 🟢 `MALFORMED_RESPONSE` → `CONTENT_REFUSED`; the plugin only uses `dsh-llm`'s `resolveRetryPolicy` and types, never the error-code table |
+| `v0.2.2-rc.4` guide (search default) | 🟢 Search provider is now chosen by `dsh-web` per model route; the plugin does no web search |
+| 11 host packages imported by the plugin | 🟢 10 byte-identical; `dsh-llm` only gains one error-code enum, leaving types and retry policy untouched |
+| Settings shell / sidebar | 🟢 `client.js` differs only by the embedded version string; byte-identical after normalization, and every seat `settings-jump.ts` relies on is unchanged |
+| Failure-classifier fixture | 🟢 The host did **not** touch the three source segments; `--check` passed. Only provenance metadata was refreshed (asar sha + version + date) |
+| Peer range | **Still no new branch** (third time this tuple is proven open). `0.2.3-rc.1` is still the next one to add |
+| Regression | `pnpm run check` green (1510 passed / 12 skipped) |
+
+> Per-package diffs (329 packages pinned to rc.5, ~20 with real changes, none on a plugin surface) and the itemized exclusions are in [`docs/DSH-0.2.2-RC5-FOLLOWUP.md`](docs/DSH-0.2.2-RC5-FOLLOWUP.md).
 
 ## Security notes
 

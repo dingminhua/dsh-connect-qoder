@@ -1,7 +1,7 @@
 packages:
   - '.'
 
-# 与桌面端捆绑内核同一条依赖线：0.2.2-rc.3（2026-11-14 起）。锁死版本避免 24h
+# 与桌面端捆绑内核同一条依赖线：0.2.2-rc.5（2026-11-19 起）。锁死版本避免 24h
 # 供应龄策略干扰（--frozen-lockfile 兜底）。
 #
 # 为什么从 0.1.7 线上移：主树停在 0.1.7 时，`typecheck` / `test` 从未对着真宿主
@@ -18,6 +18,10 @@ packages:
 # import 的 11 个包 `lib/index.js` / `lib/client.js` 的 sha256 逐字节相同，改动集中
 # 在一个新 experimental bundle（DeepSeek 官网对话导出导入）及其所需的两个新槽
 # （`sidebar.session.action` 的 hoc、`workspace.picker` 的 Factory）。
+#
+# rc.3 → rc.5 跨 rc.4 / rc.5 两个版本（见 docs/DSH-0.2.2-RC5-FOLLOWUP.md）：两条
+# 升级指南都落在 DeepSeek 模型面（拒答码 CONTENT_REFUSED、DeepSeek 模型搜索默认），
+# 插件不触及；import 的 11 个包里 10 个逐字节相同、dsh-llm 只新增一个错误码枚举。
 minimumReleaseAge: 0
 
 allowBuilds:
@@ -26,37 +30,37 @@ allowBuilds:
 
 overrides:
   '@deepseek-ai/cordis': 4.1.0
-  '@deepseek-ai/dsh-atomic-write': 0.2.2-rc.3
-  '@deepseek-ai/dsh-attachment': 0.2.2-rc.3
-  '@deepseek-ai/dsh-client-locale': 0.2.2-rc.3
-  '@deepseek-ai/dsh-client-ui-primitives': 0.2.2-rc.3
-  '@deepseek-ai/dsh-client-ui-renderer': 0.2.2-rc.3
-  '@deepseek-ai/dsh-client-ui-settings': 0.2.2-rc.3
-  '@deepseek-ai/dsh-client-ui-settings-plugins': 0.2.2-rc.3
-  '@deepseek-ai/dsh-client-ui-slots': 0.2.2-rc.3
-  '@deepseek-ai/dsh-home-paths': 0.2.2-rc.3
-  '@deepseek-ai/dsh-host-webserver': 0.2.2-rc.3
-  '@deepseek-ai/dsh-llm': 0.2.2-rc.3
-  '@deepseek-ai/dsh-llm-pi-ai': 0.2.2-rc.3
-  '@deepseek-ai/dsh-settings': 0.2.2-rc.3
+  '@deepseek-ai/dsh-atomic-write': 0.2.2-rc.5
+  '@deepseek-ai/dsh-attachment': 0.2.2-rc.5
+  '@deepseek-ai/dsh-client-locale': 0.2.2-rc.5
+  '@deepseek-ai/dsh-client-ui-primitives': 0.2.2-rc.5
+  '@deepseek-ai/dsh-client-ui-renderer': 0.2.2-rc.5
+  '@deepseek-ai/dsh-client-ui-settings': 0.2.2-rc.5
+  '@deepseek-ai/dsh-client-ui-settings-plugins': 0.2.2-rc.5
+  '@deepseek-ai/dsh-client-ui-slots': 0.2.2-rc.5
+  '@deepseek-ai/dsh-home-paths': 0.2.2-rc.5
+  '@deepseek-ai/dsh-host-webserver': 0.2.2-rc.5
+  '@deepseek-ai/dsh-llm': 0.2.2-rc.5
+  '@deepseek-ai/dsh-llm-pi-ai': 0.2.2-rc.5
+  '@deepseek-ai/dsh-settings': 0.2.2-rc.5
   '@deepseek-ai/schemastery': 3.19.0
   '@earendil-works/pi-ai': 1.3.0
   # Transitive peers of the 0.2.2 line (published on the next tag).
   # `dsh-invariants` 不再需要：它在 0.2.0-rc.2 之后停版，0.2.2 线没有包再引用它。
-  '@deepseek-ai/dsh-brand': 0.2.2-rc.3
-  '@deepseek-ai/dsh-timeout': 0.2.2-rc.3
-  '@deepseek-ai/dsh-fs': 0.2.2-rc.3
-  '@deepseek-ai/dsh-sandbox': 0.2.2-rc.3
-  '@deepseek-ai/dsh-scope': 0.2.2-rc.3
-  '@deepseek-ai/dsh-session': 0.2.2-rc.3
-  '@deepseek-ai/dsh-util-values': 0.2.2-rc.3
-  '@deepseek-ai/dsh-util-crypto': 0.2.2-rc.3
-  '@deepseek-ai/dsh-typert-protocol': 0.2.2-rc.3
-  '@deepseek-ai/dsh-credentials': 0.2.2-rc.3
-  '@deepseek-ai/dsh-authorization': 0.2.2-rc.3
-  '@deepseek-ai/dsh-launch-environment': 0.2.2-rc.3
+  '@deepseek-ai/dsh-brand': 0.2.2-rc.5
+  '@deepseek-ai/dsh-timeout': 0.2.2-rc.5
+  '@deepseek-ai/dsh-fs': 0.2.2-rc.5
+  '@deepseek-ai/dsh-sandbox': 0.2.2-rc.5
+  '@deepseek-ai/dsh-scope': 0.2.2-rc.5
+  '@deepseek-ai/dsh-session': 0.2.2-rc.5
+  '@deepseek-ai/dsh-util-values': 0.2.2-rc.5
+  '@deepseek-ai/dsh-util-crypto': 0.2.2-rc.5
+  '@deepseek-ai/dsh-typert-protocol': 0.2.2-rc.5
+  '@deepseek-ai/dsh-credentials': 0.2.2-rc.5
+  '@deepseek-ai/dsh-authorization': 0.2.2-rc.5
+  '@deepseek-ai/dsh-launch-environment': 0.2.2-rc.5
   # 0.2.2-rc.2 起 `HarnessError` 从 `dsh-llm` 搬进这个包：`dsh-llm` 与
   # `dsh-attachment` 都以**精确版本**声明它为 peer。钉住同一个值，免得将来
   # 某个包说 `^0.2.2` 时被解析成另一个副本 —— 那样 `instanceof HarnessError`
   # 会在两个类之间失效，而失败分类正是靠它。
-  '@deepseek-ai/dsh-error': 0.2.2-rc.3
+  '@deepseek-ai/dsh-error': 0.2.2-rc.5

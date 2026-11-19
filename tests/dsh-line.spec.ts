@@ -102,6 +102,10 @@ const ADMITTED_PRERELEASES = [
   // 0.2.2-rc.3（2026-11-13）：同上。这一条是**第二次**实证同一个判断，不是
   // 又一个待办 —— 同一元组内再开分支会与第四支重复，反而不说明任何事。
   '0.2.2-rc.3',
+  // 0.2.2-rc.4 / rc.5（2026-11-19）：**第三次**实证同一个判断。当前宿主是 rc.5，
+  // 同样不需要新分支（0.2.2 元组已被第四支整段放行）。
+  '0.2.2-rc.4',
+  '0.2.2-rc.5',
 ]
 
 /** Published, but deliberately outside the declared range. */
@@ -263,7 +267,7 @@ describe('declared DSH host line', () => {
     const hostAdmits = (v: string): boolean =>
       semver.satisfies(v, declaredRange(), { includePrerelease: true })
 
-    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.1', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.9-rc.99']) {
+    for (const version of ['0.2.1-rc.1', '0.2.1-rc.2', '0.2.1-rc.3', '0.2.1-rc.4', '0.2.1-rc.5', '0.2.1', '0.2.2-rc.1', '0.2.2-rc.2', '0.2.2-rc.3', '0.2.2-rc.4', '0.2.2-rc.5', '0.2.9-rc.99']) {
       expect(hostAdmits(version), `host gate must admit ${version}`).toBe(true)
     }
   })

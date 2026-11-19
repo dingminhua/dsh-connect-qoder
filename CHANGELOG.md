@@ -2,6 +2,46 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.27.0 (2026-11-19)
+
+> **只升依赖树与文档，不改运行时代码。** 宿主从 `0.2.2-rc.3` 跨 rc.4、rc.5 升到
+> `0.2.2-rc.5`。pi-ai（`1.3.0`）、cordis（`4.1.0`）、schemastery（`3.19.0`）又一轮没换；
+> 两条适用升级指南（`v0.2.2-rc.3` 拒答码、`v0.2.2-rc.4` 搜索默认）**都落在 DeepSeek
+> 模型面**，本插件是 Qoder 桥接，不涉及。插件 import 的 11 个宿主包里 10 个逐字节
+> 相同，唯一变了的 `dsh-llm` 只新增一个错误码枚举 —— 这是本轮零改动的硬证据。
+
+### 变更
+
+- **开发依赖树升到 `0.2.2-rc.5`**（`pnpm-workspace.yaml` 的 27 处 overrides + 锁文件）。
+  `dsh-*` 之外仍是 cordis 4.1.0 / schemastery 3.19.0 / pi-ai 1.3.0 —— 宿主没换。
+  `pnpm install --lockfile-only` 重锁后 lockfile 里 rc.3 归零、rc.5 共 187 处，
+  `pnpm install --frozen-lockfile` 复核通过。
+- **夹具按 rc.5 的 asar 重提取**：`classifyPiAiError` / `isQuotaExceededError` /
+  `LEADING_HTTP_STATUS` 三段源码**逐字没变**（升级前 `--check` 就直接报一致），
+  变的只有 `source.dshVersion` / `source.asarSha256` / `source.extractedAt`（本地日期）。
+- **peer 范围仍然不需要新分支**（这是第三次实证，不是新待办）：`0.2.2-rc.4` / `rc.5`
+  与 rc.1 同一元组，第四支 `>=0.2.2-rc.1 <0.3.0-0` 已经开闸，npm 标准语义与宿主门禁
+  均判 true。`tests/dsh-line.spec.ts` 把这两个版本加进 `ADMITTED_PRERELEASES` 与宿主
+  门禁用例，注释写明「第三次实证同一判断」。下一个待补的仍是 `0.2.3-rc.1`。
+
+### 文档
+
+- 新增 [`docs/DSH-0.2.2-RC5-FOLLOWUP.md`](docs/DSH-0.2.2-RC5-FOLLOWUP.md)：钉在 rc.5 的
+  329 个 `@deepseek-ai/*` 依赖逐包 diff 的结果、两条升级指南的逐条核对（拒答码
+  `CONTENT_REFUSED`、`DeepSeek` 模型搜索默认提供方）、`settings-general` / `sidebar`
+  的 `client.js` 只差内嵌版本串（归一化后逐字节相同）、复现命令，以及「看起来要改
+  其实不用」的逐条排除清单。
+- README 双语：「当前宿主」小节轮换到 rc.5，rc.3 的一节降级为「上一轮基线」。
+  两份 README 的 peer 范围表**不用改**（见上一条）。
+- `package.json` 的 `files` 与 `RELEASING.md` 的打包清单收入新文档。
+
+### 其余
+
+- 回归：`pnpm run check` 全绿，**1510 通过 / 12 跳过**（与 rc.3 树完全一致）。
+- 明确排除：拒答码新增的 `CONTENT_REFUSED` 枚举、DeepSeek 模型搜索默认、以及
+  liveshare / tmux / session-persistence / tool-cordis 等有实质差异但插件不 import
+  的包 —— 逐条理由见 followup 文档 §二与 §六。
+
 ## 1.26.4 (2026-11-18)
 
 > **修 issue #47：无 PAT 打开设置卡片，「活动」区报「HTTP 502」，真正的
