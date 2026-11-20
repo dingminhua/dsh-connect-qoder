@@ -2,6 +2,56 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.27.1 (2026-11-20)
+
+> **修 issue #48：上游 `code 147`（付费资源包余额不足）被误判成凭据失效，界面显示
+> 「API 密钥无效」，实际是 `qfmodel` 的专属资源包花完了。** 与 11-18 采纳 `144` 的
+> issue #45 完全同型 —— `147` 的 `message` 与 `144` 一字不差，只差 `modelKey` 与
+> `subCode`。码表漏一行，patch 版本。
+
+### 修复
+
+- **`QUOTA_CODES` 加 `147`（issue #48）。**
+  - **现场**：2026-11-20 上午同一会话、模型 `qfmodel`，最后一次正常出字 `02:16:30Z`，
+    之后两次失败落在 `02:19:03Z` / `02:26:43Z`。宿主持久化的失败原文是
+    `401: {"message":"上游信封错误: HTTP 403 {\"code\":\"147\",\"message\":\"Dedicated
+    resource package balance is low\",\"modelKey\":\"qfmodel\",…\"subCode\":\"MODEL_PAID_CONFIRM_REQUIRED\"}",
+    "code":"invalid_api_key","type":"qoder_error"}`。同一账号切 `dfmodel` 立即恢复 ⇒
+    账号、PAT 都是好的，就是 `qfmodel` 这个包空了。
+  - **根因**：`deepestBusinessCode` 把 `147` 当 fallback 带出来，但
+    `classifyBusinessCode('147')` 返回 `unknown` → `classifyFailure` 回落到
+    `classifyHttpStatus(403)` → `auth`。而 `auth` 档的 `hostMessageText` **刻意原文照送**，
+    那串含 `HTTP 403` 的原文进宿主 `classifyPiAiError` 后被第一道 `401/403` 正则截走，
+    改写成「API 密钥无效」。用户被叫去换 PAT，而真正该做的是充值或换模型 ——
+    处置方式完全相反。
+  - **改法**：`QUOTA_CODES` 加 `'147'` 一行。链路变为
+    `classifyFailure(403, 147)` → `quota-exhausted` → shim 映射 `429 quota_exceeded`
+    → 宿主显示「当日用量已达上限」；池记录 `out-of-credit` 走 `retryDue` 冷却，
+    到期自动回池，且探针带 `modelKey` 时按模型粒度排除（别的模型不受影响）。
+  - **为什么不再单独开 kind**：issue 附注提到「付费包余额不足」与「当日用量上限」
+    的自愈语义不同（前者不充值不会自愈）。但本单诉求是先把「换 PAT」这句误导文案
+    止掉，且 `out-of-credit` 冷却对两者都是安全处置（不会永久排除、能回池），
+    沿用 `144` 的归族方式即可；单独 kind 留作产品决策。
+
+### 测试
+
+- `tests/upstream.spec.ts`：`147` 加进配额族覆盖表；新增「code 147 判配额不判凭据」
+  与「147 的 SSE 信封路径也判配额并保留码」两条，带变异检查（码表没有 147 时
+  `classifyHttpStatus(403)` 确实返回 auth）。
+- `tests/index.spec.ts`：新增整条链用例 `147 → quota-exhausted → out-of-credit
+  冷却自愈`，并钉住按模型粒度排除。
+- `tests/shim.spec.ts`：在净化用例里加 issue #48 整帧，断言宿主侧文案不再含裸 `403`
+  （第一道 AUTH 正则不再命中）。新增断言修前均红、修后均绿。
+
+### 其余
+
+- 回归：`pnpm run check` 全绿，**1513 通过 / 12 跳过**（比上一版多 3 条）。
+- 明确排除：不是 1.27.0 升级带来的回归 —— 本机 1.26.4 与 1.27.0 的 `lib`
+  归一化逐字节比对，`host-*.js` 只差版本串；同形态误报在本机 10-20 出现过一次
+  （当时上游给的是 `code 403` / `10605`），新的是上游**第一次**回 `147`。
+  官方码表 `docs.qoder.com/zh/cli/sdk/errors` 抓取文本里 `110`/`144` 命中、
+  `147` 0 命中 —— 又一个没写进文档的新码（同 issue 附注）。
+
 ## 1.27.0 (2026-11-19)
 
 > **只升依赖树与文档，不改运行时代码。** 宿主从 `0.2.2-rc.3` 跨 rc.4、rc.5 升到

@@ -1601,6 +1601,24 @@ describe('凭据被拒要有凭据（issue #6）', () => {
     // 粒度）；这里钉住这一既有行为在 144 的结论上照常生效，别的模型不受影响。
     expect(exclusionOf(probe, probe!.atMs, 'another-model')).toBeUndefined()
   })
+
+  it('整条链：code 147（付费资源包余额不足）→ quota-exhausted → 会自愈的冷却，不是永久排除（issue #48）', () => {
+    // issue #48 现场：403 + code 147 + modelKey qfmodel + subCode
+    // MODEL_PAID_CONFIRM_REQUIRED。此前码表漏 147 → 403 回落 auth →
+    // credential-rejected → 账号被永久排除且充值后也不回，用户被叫去换 PAT。
+    const frame = '{"code":"147","message":"Dedicated resource package balance is low","modelKey":"qfmodel","product":"app","subCode":"MODEL_PAID_CONFIRM_REQUIRED"}'
+    const kind = classifyFailure(403, frame)
+    expect(kind).toBe('quota-exhausted')
+    const code = deepestBusinessCode(frame)
+    expect(code).toBe('147')
+    const probe = Qoder.liveRequestProbe(kind, '聊天请求失败: HTTP 403', 'qfmodel', { status: 403, code })
+    expect(probe?.outcome).toBe('out-of-credit')
+    expect(probe?.modelId).toBe('qfmodel')
+    expect(exclusionOf(probe, probe!.atMs, 'qfmodel')).toBe('out-of-credit')
+    expect(exclusionOf(probe, probe!.atMs + 31 * 60_000, 'qfmodel')).toBeUndefined()
+    // 按模型粒度：另一个模型不受影响（换模型即可，与 issue #45/#48 的处置一致）。
+    expect(exclusionOf(probe, probe!.atMs, 'another-model')).toBeUndefined()
+  })
 })
 
 // ==========================================================================

@@ -1899,6 +1899,12 @@ const QUOTA_CODES: ReadonlySet<string> = new Set([
   // 401 invalid_api_key + 账号被 credential-rejected 永久排除（充值也不自愈）。
   // 归到配额族后：shim 映射 429 quota_exceeded，池记录 out-of-credit 走冷却期、
   // 到期自动回池。探针记录了 modelId 时，exclusionOf 还会只排除那一个模型。
+  '147', // 付费资源包余额不足（issue #48）—— 与 144 message 一字不差，只差
+  // modelKey（qfmodel）与 subCode（MODEL_PAID_CONFIRM_REQUIRED）。官方码表
+  // （docs.qoder.com/zh/cli/sdk/errors）当天抓文本 147 仍是 0 命中，又一个没写进
+  // 文档的新码。漏码 → 403 回落 auth → 宿主 401 invalid_api_key「API 密钥无效」，
+  // 用户被叫去换 PAT，而真正该做的是充值/换模型 —— 处置方式完全相反。
+  // 与 144 同型：归配额族后走 out-of-credit 冷却、到期自愈，按 modelId 粒度排除。
   '402',
   '6004',
 ])

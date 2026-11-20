@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { classifyPiAiError, hostRendersOwnCopy, verifyFixtureAgainstInstalledHost } from './host-piai.ts'
 import { createQoderShim, hostFailureMessage, hostFailureMessageOf, hostMessageText, retryAfterNote, type QoderShim, type QoderShimOptions, type QoderServingAccount } from '../src/shim.ts'
 import { failoverNoticeText } from '../src/failover-notice.ts'
-import { QoderUpstreamError, type QoderUpstreamClient, type UpstreamErrorKind } from '../src/upstream.ts'
+import { QoderUpstreamError, classifyFailure, type QoderUpstreamClient, type UpstreamErrorKind } from '../src/upstream.ts'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -793,6 +793,12 @@ describe('写给宿主的失败文案：宿主正则分类器必须读对', () =
 
   it('hostMessageText / hostFailureMessage：只净化非 auth 档的裸 401/403', () => {
     expect(hostMessageText('quota-exhausted', 'HTTP 403 {"code":"110"}')).toBe('HTTP 4xx {"code":"110"}')
+    // issue #48：code 147（付费资源包余额不足）整帧。归配额族后裸 403 被净化，
+    // 宿主 classifyPiAiError 的第一道 401/403 正则不再命中 → 不会显示「API 密钥无效」。
+    const frame147 = '{"code":"147","message":"Dedicated resource package balance is low","modelKey":"qfmodel","product":"app","subCode":"MODEL_PAID_CONFIRM_REQUIRED"}'
+    expect(classifyFailure(403, frame147)).toBe('quota-exhausted')
+    expect(hostMessageText('quota-exhausted', `HTTP 403 ${frame147}`)).toBe(`HTTP 4xx ${frame147}`)
+    expect(hostMessageText('quota-exhausted', `HTTP 403 ${frame147}`)).not.toMatch(/\b403\b/u)
     expect(hostMessageText('rate-limited', 'HTTP 403 / 429')).toBe('HTTP 4xx / 429')
     expect(hostMessageText('auth', '401 TOKEN_EXPIRE')).toBe('401 TOKEN_EXPIRE')
     // 5xx 不能被动：宿主按它判 SERVER（可原地重试）。

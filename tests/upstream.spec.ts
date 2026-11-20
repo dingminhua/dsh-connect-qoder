@@ -389,8 +389,8 @@ describe('error classification', () => {
       expect(classifyFailure(429, '{"code":"99999"}')).toBe('rate-limited')
     })
 
-    it('配额族全覆盖（官方码表 110/112/113/115-119/122/144 + 早期实测的 402/6004）', () => {
-      for (const code of ['110', '112', '113', '115', '116', '117', '118', '119', '122', '144', '402', '6004']) {
+    it('配额族全覆盖（官方码表 110/112/113/115-119/122/144/147 + 早期实测的 402/6004）', () => {
+      for (const code of ['110', '112', '113', '115', '116', '117', '118', '119', '122', '144', '147', '402', '6004']) {
         expect(classifyFailure(403, `{"code":"${code}"}`)).toBe('quota-exhausted')
       }
     })
@@ -418,6 +418,33 @@ describe('error classification', () => {
       } catch (error) {
         expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
         expect((error as QoderUpstreamError).code).toBe('144')
+      }
+    })
+
+    // ======================================================================
+    // issue #48：上游 `code 147`（付费资源包余额不足）与 144 同族 —— message
+    // 一字不差，只差 modelKey（qfmodel）与 subCode（MODEL_PAID_CONFIRM_REQUIRED）。
+    // 码表漏 147 → 403 回落 auth → 宿主 401 invalid_api_key「API 密钥无效」，
+    // 用户被叫去换 PAT，而真正该做的是充值/换模型。
+    // ======================================================================
+    it('code 147（付费资源包余额不足）判成配额，不是凭据被拒（issue #48）', () => {
+      const body = '{"code":"147","message":"Dedicated resource package balance is low","modelKey":"qfmodel","product":"app","subCode":"MODEL_PAID_CONFIRM_REQUIRED"}'
+      expect(classifyBusinessCode('147')).toBe('quota-exhausted')
+      expect(classifyFailure(403, body)).toBe('quota-exhausted')
+      expect(deepestBusinessCode(body)).toBe('147')
+      // 变异检查：147 不在码表里时，403 兜底就是 auth —— 钉住误判的根因。
+      expect(classifyHttpStatus(403, body)).toBe('auth')
+    })
+
+    it('147 的 SSE 信封路径也判配额并保留码（issue #48）', () => {
+      const body = '{"code":"147","message":"Dedicated resource package balance is low","modelKey":"qfmodel","product":"app","subCode":"MODEL_PAID_CONFIRM_REQUIRED"}'
+      const frame = JSON.stringify({ body, statusCodeValue: 403 })
+      try {
+        parseStreamDelta(frame)
+        expect.unreachable('应该抛错')
+      } catch (error) {
+        expect((error as QoderUpstreamError).kind).toBe('quota-exhausted')
+        expect((error as QoderUpstreamError).code).toBe('147')
       }
     })
 
