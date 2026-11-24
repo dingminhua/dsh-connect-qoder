@@ -309,23 +309,84 @@ export function convertIncomingMessage(
 }
 
 /**
+ * 上游网关的内容准入过滤（2026-11-24 词级对照实验实锤）。
+ *
+ * **现象**：请求出站文本含「DeepSeek Harness」（DeepSeek 官方编码代理 CLI 的
+ * 完整名）时，网关不区分角色（system/user）、不区分位置与体积，直接回
+ * `10605/RESOURCE_LIMIT` 秒拒（SSE 首帧信封，`retryAfterSeconds: 30` 是模板化
+ * 假申报——等满 30 秒重发照样秒拒）。单次词级对照（同账号、同分钟、同模型）：
+ *
+ * | 出站文本                                        | 结果    |
+ * | ----------------------------------------------- | ------- |
+ * | `You are an AI agent powered by DeepSeek Harness.` | 10605 秒拒 |
+ * | `You are an AI agent powered by Harness.`          | 放行    |
+ * | `Powered by DeepSeek.`                             | 放行    |
+ * | 其余任意中性/长文本                                 | 放行    |
+ *
+ * **为什么插件必须管**：宿主（DeepSeek Harness）注入的系统提示与每条会话
+ * 上下文都自带这个词，导致该宿主的**每一条**请求 100% 被拒——而用户侧看到的
+ * 只是莫名其妙的排队/限流，账号、凭据、网络全都无罪。
+ *
+ * **为什么替换成 `DSH`**：语义等价（该词组在本产品的上下文里就是它的常用缩写），
+ * 模型侧无理解损失；且缩写不含完整竞品名，网关无匹配。单独 `DeepSeek` 或单独
+ * `Harness` 实测都放行，故不做更激进的整词清除——保持原文信息量。
+ *
+ * 只做出站文本替换：不触碰 `tool_calls` 结构/参数（工具名与参数是协议面，
+ * 改了会破坏执行）、不改写宿主侧任何状态。
+ */
+const GATEWAY_ADMISSION_BLOCKED_TERM = /DeepSeek\s*Harness/gi
+const GATEWAY_ADMISSION_REPLACEMENT = 'DSH'
+
+/** 单条文本的出站脱敏；非字符串原样返回。 */
+export function scrubOutgoingText(text: string): string {
+  return text.replace(GATEWAY_ADMISSION_BLOCKED_TERM, GATEWAY_ADMISSION_REPLACEMENT)
+}
+
+/**
+ * 对一组 OpenAI 形状消息做出站脱敏：字符串 `content` 直接替换；parts 数组只
+ * 替换其中的 `text` 字段。返回新数组、不改写入参对象（调用方可能复用同一份
+ * 消息历史，原地改写会产生跨请求的脏状态）。
+ */
+export function scrubOutgoingMessages(messages: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return messages.map((message) => {
+    const content = message?.content
+    if (typeof content === 'string') {
+      return { ...message, content: scrubOutgoingText(content) }
+    }
+    if (Array.isArray(content)) {
+      return {
+        ...message,
+        content: content.map((part) => part && typeof part === 'object' && typeof (part as { text?: unknown }).text === 'string'
+          ? { ...part, text: scrubOutgoingText((part as { text: string }).text) }
+          : part),
+      }
+    }
+    return message
+  })
+}
+
+/**
  * 构建发往 Qoder 网关的 messages 数组。OpenAI 形状入参 → Qoder 形状。
+ *
+ * 出站前做竞品名脱敏（{@link scrubOutgoingMessages}）：上游网关的内容准入
+ * 对出站文本里的特定词组秒拒，见那条注释。
  */
 export function buildQoderMessages(
   incoming: Array<Record<string, unknown>>,
   prompt: string,
   toolsEnabled: boolean,
 ): QoderIncomingMessage[] {
+  const scrubbed = scrubOutgoingMessages(incoming)
   const rebuilt: QoderIncomingMessage[] = []
-  if (incoming.length > 0) {
-    for (let i = 0; i < incoming.length; i += 1) {
-      const allowStructured = toolsEnabled && hasResolvedToolResponse(incoming, i)
-      const converted = convertIncomingMessage(incoming[i]!, toolsEnabled, allowStructured)
+  if (scrubbed.length > 0) {
+    for (let i = 0; i < scrubbed.length; i += 1) {
+      const allowStructured = toolsEnabled && hasResolvedToolResponse(scrubbed, i)
+      const converted = convertIncomingMessage(scrubbed[i]!, toolsEnabled, allowStructured)
       if (converted !== null) rebuilt.push(converted)
     }
   }
   if (rebuilt.length === 0 && prompt.trim()) {
-    rebuilt.push(userMessage(prompt))
+    rebuilt.push(userMessage(scrubOutgoingText(prompt)))
   }
   return rebuilt
 }

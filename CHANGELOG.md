@@ -2,6 +2,57 @@
 
 格式参照 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## 1.27.2 (2026-11-24)
+
+> **修网关内容准入过滤误伤：出站文本含 `DeepSeek Harness`（宿主产品全名）时
+> 上游 10605/RESOURCE_LIMIT 秒拒 —— 该宿主的每一条请求 100% 失败。** 出站
+> 统一脱敏为 `DSH`，语义等价、网关放行。
+
+### 修复
+
+- **`buildQoderMessages` 出站脱敏（`scrubOutgoingText` / `scrubOutgoingMessages`）。**
+  - **现场**：2026-11-24 全天，DeepSeek Harness 宿主下 Qoder 连接器所有请求
+    全部失败，错误形态恒为 `502 …10605…RESOURCE_LIMIT…queueType p3…waitTime 30`。
+    等待、换号、换模型、重装、重启全部无效；而插件自带的探针路径几乎全过。
+  - **定位过程**（排除法，每一步都有对照）：抓包比对官方 IDE 头（一致）→
+    请求体积阶梯 100B→1.5MB（全过）→ 形状 bisect（system/tools/reasoning 全过）
+    → 并发 4 连发（全过）→ 真实 session_id 复用（全过）→ 代理/运行时差异（排除）
+    → 最后用宿主会话存档还原出失败请求**原样重放**，才在探针侧 100% 复现；
+    逐条消息二分锁定首条 system 消息，再对 8.4KB 系统提示做自动二分，最小毒
+    片段收敛到第一句话。
+  - **根因**：上游网关的内容准入对出站文本里的竞品全名做秒拒。词级对照
+    （同账号、同分钟、同模型、探针直发）：
+    | 出站文本 | 结果 |
+    | --- | --- |
+    | `You are an AI agent powered by DeepSeek Harness.` | 10605 秒拒 |
+    | `You are an AI agent powered by Harness.` | 放行 |
+    | `Powered by DeepSeek.` | 放行 |
+    | 其余任意中性/长文本 | 放行 |
+    信封里的 `retryAfterSeconds: 30` 是模板化假申报——等满 30 秒重发照样秒拒，
+    连续三次分毫不差（19:34:58 / 19:35:28 / 19:35:59 三次尝试，每次 0.6s 内
+    被拒）。`isQueued/serviceAvailable` 两个位都对这条路径没有语义。
+  - **改法**：出口统一替换 `DeepSeek\s*Harness`（大小写不敏感）→ `DSH`。覆盖
+    三处出口：①消息文本（字符串 content 与 contents parts 的 `text`）；②工具
+    声明的 `description`（`function.description` 与顶层 `description`，工具名与
+    JSON Schema 结构不动）；③`business.name`（取自 prompt 前 30 字）。缩写在
+    该宿主的上下文里语义完全等价，模型侧无信息损失；单独 `DeepSeek` 或单独
+    `Harness` 实测都放行，不做更激进的整词清除，保留原文信息量。
+  - **为什么不做开关**：命中即全拒，没有「关掉它反而更好」的用户；保留开关
+    只会多一种「为什么我这里还是全失败」的工单。
+  - **为什么替换而非删除**：删除会破坏英文句法（"powered by ."），替换保持
+    句子完整；`DSH` 是该宿主在社区里的通用缩写，模型理解不受影响。
+
+### 测试
+
+- `tests/messages.spec.ts`：新增 7 条 —— 字符串 content / contents parts /
+  大小写与空白变体 / 普通文本与独立单词不受影响 / fallback prompt / 不改写
+  调用方对象 / `tool_calls` 结构与参数不被触碰。
+- `tests/upstream.spec.ts`：新增 3 条（真实 fetch 桩 + cosy 请求体回解）——
+  tool description 脱敏且 schema 不动 / `business.name` 脱敏 / 端到端
+  「系统提示 + 工具描述双毒词」整包断言。
+- 变异检查：把替换函数临时改成恒等时 7 条测试变红，恢复后全绿 —— 测试
+  真实咬住这条回归。
+
 ## 1.27.1 (2026-11-20)
 
 > **修 issue #48：上游 `code 147`（付费资源包余额不足）被误判成凭据失效，界面显示

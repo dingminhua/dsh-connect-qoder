@@ -1735,3 +1735,73 @@ describe('chatStream 的 session_id 稳定性（issue #42）', () => {
     expect((bodies[0]!.session_id as string).length).toBeGreaterThan(0)
   })
 })
+
+// ==========================================================================
+// 网关内容准入过滤：出站文本含被拒词组时 10605 秒拒（词级对照实验实锤，
+// 见 src/messages.ts 的注释）。messages 层已在 messages.spec.ts 钉住；这里
+// 钉「请求体组装层」的三个残余出口：tools 描述、business.name、以及一条
+// 「整条链路毒词不出门」的端到端断言。
+// ==========================================================================
+describe('chatStream 出站脱敏（tools / business.name）', () => {
+  /** 跑一次带 tools 的 chatStream，回解请求体。 */
+  function capture() {
+    const bodies: Array<Record<string, unknown>> = []
+    const fetchImpl = (async (url: string | URL, init?: RequestInit) => {
+      const u = String(url)
+      if (u.includes('jobToken')) {
+        return new Response(JSON.stringify({
+          id: 'u', name: 'n', expireTime: Date.now() + 1_000_000,
+          securityOauthToken: 'jt-TEST', refreshToken: 'r', userType: 'personal_standard',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })
+      }
+      const encoded = typeof init?.body === 'string' ? init.body : ''
+      const decoded = Buffer.from(cosyDecode(encoded)).toString('utf8')
+      bodies.push(JSON.parse(decoded) as Record<string, unknown>)
+      return new Response('', { status: 200, headers: { 'content-type': 'text/event-stream' } })
+    }) as unknown as typeof fetch
+    return { bodies, client: new QoderUpstreamClient('cn', { fetch: fetchImpl }) }
+  }
+
+  const TOXIC = 'DeepSeek Harness'
+
+  it('tool description 里的毒词被替换，工具名与 schema 不动', async () => {
+    const { bodies, client } = capture()
+    await client.chatStream('pt-x', 'qfmodel', [{ role: 'user', content: 'hi' }], {
+      tools: [{
+        type: 'function',
+        function: {
+          name: 'web_search',
+          description: `Search tools for ${TOXIC} users.`,
+          parameters: { type: 'object', properties: { query: { type: 'string' } } },
+        },
+      }],
+      onDelta: () => {},
+    })
+    expect(bodies).toHaveLength(1)
+    const tools = bodies[0]!.tools as Array<{ function: { name: string, description: string, parameters: unknown } }>
+    expect(tools[0]!.function.name).toBe('web_search')
+    expect(tools[0]!.function.description).not.toContain(TOXIC)
+    expect(tools[0]!.function.description).toContain('DSH')
+    expect(tools[0]!.function.parameters).toEqual({ type: 'object', properties: { query: { type: 'string' } } })
+  })
+
+  it('business.name（取自 prompt 前 30 字）同样脱敏', async () => {
+    const { bodies, client } = capture()
+    await client.chatStream('pt-x', 'qfmodel', [{ role: 'user', content: `关于${TOXIC}的问题` }], { onDelta: () => {} })
+    const business = bodies[0]!.business as Record<string, unknown>
+    expect(business.name).not.toContain(TOXIC)
+  })
+
+  it('端到端：系统提示词含毒词的整条请求，任何字段都不再含完整词组', async () => {
+    const { bodies, client } = capture()
+    await client.chatStream('pt-x', 'qfmodel', [
+      { role: 'system', content: `You are powered by ${TOXIC}.` },
+      { role: 'user', content: 'hello' },
+    ], {
+      tools: [{ type: 'function', function: { name: 't1', description: `built for ${TOXIC}`, parameters: {} } }],
+      onDelta: () => {},
+    })
+    const text = JSON.stringify(bodies[0])
+    expect(text).not.toMatch(/DeepSeek\s*Harness/i)
+  })
+})
