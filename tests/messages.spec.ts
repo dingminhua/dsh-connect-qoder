@@ -91,6 +91,68 @@ describe('buildQoderMessages', () => {
     expect(extractLatestUserPrompt([])).toBe('')
     expect((out[0] as QoderIncomingMessage).contents?.[0]?.text).toBe('fallback prompt')
   })
+
+  // 上游网关的内容风控对出站文本里的竞品名做准入过滤：命中即回
+  // `10605/RESOURCE_LIMIT` 秒拒（HTTP 200 + SSE 首帧信封），retryAfterSeconds
+  // 是模板化假申报。词级对照实验（同账号同分钟）实锤：
+  //   "…powered by DeepSeek Harness."  → 10605
+  //   "…powered by Harness."           → 放行
+  //   "Powered by DeepSeek."           → 放行
+  // 因此出口必须把两词连写替换成不含完整竞品名的等价写法。
+  describe('competitor-name scrubbing (gateway admission filter)', () => {
+    const toxic = 'You are an AI agent powered by DeepSeek Harness. Follow the rules.'
+
+    it('scrubs the full competitor name out of string content', () => {
+      const out = buildQoderMessages([{ role: 'system', content: toxic }], '', false)
+      const text = (out[0] as QoderIncomingMessage).content
+      expect(text).not.toMatch(/DeepSeek\s*Harness/i)
+      expect(text).toContain('DeepSeek Harness'.replace(/./g, '') || 'DSH')
+    })
+
+    it('scrubs inside contents-part text arrays', () => {
+      const out = buildQoderMessages([
+        { role: 'user', content: [{ type: 'text', text: toxic }] },
+      ], '', false)
+      const contents = (out[0] as QoderIncomingMessage).contents ?? []
+      expect(contents[0]?.text).not.toMatch(/DeepSeek\s*Harness/i)
+    })
+
+    it('is case-insensitive and handles spaced variants', () => {
+      const out = buildQoderMessages([
+        { role: 'system', content: 'a DeepSeek  Harness b / deepseek harness c' },
+      ], '', false)
+      const text = (out[0] as QoderIncomingMessage).content
+      expect(text).not.toMatch(/deepseek\s*harness/i)
+    })
+
+    it('leaves ordinary text and the standalone words untouched', () => {
+      const src = 'DeepSeek model list; harness the tests; nothing else.'
+      const out = buildQoderMessages([{ role: 'system', content: src }], '', false)
+      expect((out[0] as QoderIncomingMessage).content).toBe(src)
+    })
+
+    it('scrubs the fallback prompt too', () => {
+      const out = buildQoderMessages([], toxic, false)
+      const text = (out[0] as QoderIncomingMessage).contents?.[0]?.text ?? ''
+      expect(text).not.toMatch(/DeepSeek\s*Harness/i)
+    })
+
+    it('does not mutate the caller message objects', () => {
+      const incoming = [{ role: 'system', content: toxic }]
+      buildQoderMessages(incoming, '', false)
+      expect(incoming[0]!.content).toBe(toxic)
+    })
+
+    it('does not scrub tool_call structures or arguments', () => {
+      const calls = [{ id: 'call_1', type: 'function', function: { name: 'bash', arguments: '{"cmd":"DeepSeek Harness"}' } }]
+      const out = buildQoderMessages([
+        { role: 'assistant', content: 'run', tool_calls: calls },
+        { role: 'tool', tool_call_id: 'call_1', name: 'bash', content: 'done' },
+      ], '', true)
+      const assistant = out.find(m => m.role === 'assistant') as (QoderIncomingMessage & { tool_calls?: unknown[] }) | undefined
+      expect(assistant?.tool_calls).toEqual(calls)
+    })
+  })
 })
 
 describe('template', () => {

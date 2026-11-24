@@ -41,7 +41,7 @@ import {
   type CosyFingerprint,
   type CosySessionContext,
 } from './cosy.ts'
-import { createChatBodyTemplate, buildQoderMessages, extractLatestUserPrompt, deepClone, applyModelKey, type QoderChatTemplate } from './messages.ts'
+import { createChatBodyTemplate, buildQoderMessages, extractLatestUserPrompt, deepClone, applyModelKey, scrubOutgoingText, type QoderChatTemplate } from './messages.ts'
 import { readDeviceRisk } from './device-risk.ts'
 import { QODER_UPSTREAM_DOMAIN } from './status-paths.ts'
 import { isRouterModelId } from './native-modality.ts'
@@ -805,7 +805,28 @@ export class QoderUpstreamClient {
     const built = buildQoderMessages(messages, prompt, Array.isArray(options.tools) && options.tools.length > 0)
     template.messages = built as unknown as unknown[]
     if (options.tools !== undefined) {
-      template.tools = options.tools
+      // 工具声明的 description 也可能带被网关拒的词组（宿主注入的工具说明是
+      // 任意文本）。只替换字符串字段，工具名与 JSON Schema 结构不动 ——
+      // schema 是协议面，改动会让模型产出无法通过宿主校验的参数。
+      template.tools = options.tools.map((tool) => {
+        if (!tool || typeof tool !== 'object') return tool
+        const record = tool as Record<string, unknown>
+        const fn = record.function
+        if (fn && typeof fn === 'object') {
+          const fnRecord = fn as Record<string, unknown>
+          return {
+            ...record,
+            function: {
+              ...fnRecord,
+              ...(typeof fnRecord.description === 'string' ? { description: scrubOutgoingText(fnRecord.description) } : {}),
+            },
+          }
+        }
+        return {
+          ...record,
+          ...(typeof record.description === 'string' ? { description: scrubOutgoingText(record.description) } : {}),
+        }
+      }) as typeof options.tools
     }
     template.request_id = randomId()
     template.chat_record_id = template.request_id
@@ -818,7 +839,7 @@ export class QoderUpstreamClient {
       ? options.sessionId
       : randomId()
     template.business.id = randomId()
-    template.business.name = prompt.slice(0, 30) || 'hi'
+    template.business.name = scrubOutgoingText(prompt).slice(0, 30) || 'hi'
     template.business.begin_at = Date.now()
 
     const body = JSON.stringify(template)
